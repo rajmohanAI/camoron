@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="mode_photo">Photo</string>
+    <string name="mode_pro">Pro</string>
+    <string name="control_iso">ISO</string>
+    <string name="control_shutter">Shutter</string>
+    <string name="control_ev">Exposure</string>
+    <string name="control_wb">White balance</string>
+    <string name="control_auto">Auto</string>
+    <string name="unsupported_on_camera">Not supported on this camera</string>
+    <string name="ev_off_in_manual">Off while ISO or shutter is manual</string>
+    <string name="wb_auto">Auto</string>
+    <string name="wb_daylight">Daylight</string>
+    <string name="wb_cloudy">Cloudy</string>
+    <string name="wb_shade">Shade</string>
+    <string name="wb_incandescent">Tungsten</string>
+    <string name="wb_fluorescent">Fluorescent</string>
+    <string name="wb_kelvin">Kelvin</string>
+    <string name="saved_to_gallery">Saved to Pictures/Camoron</string>
+    <string name="capture_failed">Couldn\'t take the photo. Please try again.</string>
+    <string name="cd_shutter">Take photo</string>
+    <string name="cd_switch_camera">Switch camera</string>
+    <string name="error_in_use">The camera is being used by another app.</string>
+    <string name="error_disabled">The camera is disabled by a device policy.</string>
+    <string name="error_permission">Camera permission is required.</string>
+    <string name="error_device">The camera stopped responding. Try reopening Camoron.</string>
+    <string name="error_no_camera">No usable camera was found.</string>
+</resources>

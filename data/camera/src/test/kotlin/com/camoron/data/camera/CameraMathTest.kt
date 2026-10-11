@@ -1,0 +1,67 @@
+package com.camoron.data.camera
+
+import com.camoron.domain.model.PixelSize
+import com.google.common.truth.Truth.assertThat
+import org.junit.Test
+
+class CameraMathTest {
+
+    @Test
+    fun `preview size matches still aspect ratio and stays within 1080p`() {
+        val sizes = listOf(
+            PixelSize(3840, 2160),
+            PixelSize(1920, 1080),
+            PixelSize(1440, 1080),
+            PixelSize(1280, 960),
+            PixelSize(640, 480),
+        )
+        assertThat(CameraMath.choosePreviewSize(sizes, targetAspect = 4.0 / 3)).isEqualTo(PixelSize(1440, 1080))
+        assertThat(CameraMath.choosePreviewSize(sizes, targetAspect = 16.0 / 9)).isEqualTo(PixelSize(1920, 1080))
+    }
+
+    @Test
+    fun `preview size falls back to largest fitting size when no aspect matches`() {
+        val sizes = listOf(PixelSize(1920, 1080), PixelSize(1280, 720))
+        assertThat(CameraMath.choosePreviewSize(sizes, targetAspect = 4.0 / 3)).isEqualTo(PixelSize(1920, 1080))
+    }
+
+    @Test
+    fun `jpeg orientation for a typical back camera`() {
+        assertThat(CameraMath.jpegOrientation(90, 0, isFrontFacing = false)).isEqualTo(90)
+        assertThat(CameraMath.jpegOrientation(90, 90, isFrontFacing = false)).isEqualTo(180)
+        assertThat(CameraMath.jpegOrientation(90, 268, isFrontFacing = false)).isEqualTo(0)
+    }
+
+    @Test
+    fun `jpeg orientation for a typical front camera`() {
+        assertThat(CameraMath.jpegOrientation(270, 0, isFrontFacing = true)).isEqualTo(270)
+        assertThat(CameraMath.jpegOrientation(270, 90, isFrontFacing = true)).isEqualTo(180)
+    }
+
+    @Test
+    fun `tap in portrait view maps onto landscape sensor`() {
+        // Top-left of a portrait preview is the sensor's bottom-left for a 90 degree back camera.
+        assertThat(CameraMath.viewToSensor(0f, 0f, 90, isFrontFacing = false)).isEqualTo(0f to 1f)
+        assertThat(CameraMath.viewToSensor(0.5f, 0.5f, 90, isFrontFacing = false)).isEqualTo(0.5f to 0.5f)
+        assertThat(CameraMath.viewToSensor(0.25f, 0f, 0, isFrontFacing = false)).isEqualTo(0.25f to 0f)
+    }
+
+    @Test
+    fun `warm light boosts blue and cuts red, cool light the opposite`() {
+        val (warmR, _, warmB) = CameraMath.kelvinToGains(3000)
+        assertThat(warmB).isGreaterThan(1f)
+        assertThat(warmR).isLessThan(1f)
+
+        val (coolR, _, coolB) = CameraMath.kelvinToGains(9000)
+        assertThat(coolR).isGreaterThan(1f)
+        assertThat(coolB).isLessThan(1f)
+    }
+
+    @Test
+    fun `daylight is close to neutral`() {
+        val (r, g, b) = CameraMath.kelvinToGains(6500)
+        assertThat(g).isEqualTo(1f)
+        assertThat(r).isWithin(0.1f).of(1f)
+        assertThat(b).isWithin(0.1f).of(1f)
+    }
+}
