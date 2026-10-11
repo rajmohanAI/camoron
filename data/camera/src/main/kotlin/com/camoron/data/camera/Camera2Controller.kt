@@ -18,6 +18,8 @@ import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.RggbChannelVector
 import android.hardware.camera2.params.SessionConfiguration
+import android.hardware.camera2.DngCreator
+import android.media.Image
 import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
@@ -26,11 +28,14 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.view.SurfaceHolder
+import com.camoron.core.common.DefaultDispatcher
 import com.camoron.core.common.SurfacePreviewTarget
 import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.CameraError
 import com.camoron.domain.model.CameraState
+import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.CapturedImage
+import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.LensFacing
 import com.camoron.domain.model.LiveExposure
@@ -43,6 +48,10 @@ import com.camoron.domain.repository.PreviewTarget
 import com.camoron.domain.usecase.SanitizeManualSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +59,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executor
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -65,6 +75,7 @@ class Camera2Controller @Inject constructor(
     @ApplicationContext context: Context,
     private val mapper: CapabilityMapper,
     private val sanitize: SanitizeManualSettings,
+    @DefaultDispatcher private val processing: CoroutineDispatcher,
 ) : CameraController {
 
     private val manager = context.getSystemService(CameraManager::class.java)
@@ -75,6 +86,10 @@ class Camera2Controller @Inject constructor(
 
     private val _state = MutableStateFlow<CameraState>(CameraState.Closed)
     override val state: StateFlow<CameraState> = _state.asStateFlow()
+
+    private val _histogram = MutableStateFlow<Histogram?>(null)
+    override val histogram: StateFlow<Histogram?> = _histogram.asStateFlow()
+    private var lastHistogramAt = 0L
 
     @Volatile
     private var active: ActiveCamera? = null
@@ -87,6 +102,8 @@ class Camera2Controller @Inject constructor(
         val session: CameraCaptureSession,
         val previewSurface: Surface,
         val jpegReader: ImageReader,
+        val rawReader: ImageReader?,
+        val analysisReader: ImageReader?,
     ) {
         var settings: ManualSettings = ManualSettings.AUTO
         var focusRegion: MeteringRectangle? = null
@@ -99,6 +116,12 @@ class Camera2Controller @Inject constructor(
         val afModes: Set<Int> = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.toSet().orEmpty()
         val maxAeRegions: Int = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
         val isFront: Boolean get() = capabilities.lensFacing == LensFacing.FRONT
+
+        fun closeReaders() {
+            runCatching { jpegReader.close() }
+            runCatching { rawReader?.close() }
+            runCatching { analysisReader?.close() }
+        }
     }
 
     override suspend fun cameras(): List<CameraCapabilities> = manager.cameraIdList.mapNotNull { id ->
@@ -117,38 +140,63 @@ class Camera2Controller @Inject constructor(
         return CameraMath.choosePreviewSize(sizes, CameraMath.aspectOf(caps.maxJpegSize))
     }
 
-    override suspend fun open(cameraId: String, target: PreviewTarget) {
+    override suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean) {
         mutex.withLock {
             val surface = (target as? SurfacePreviewTarget)?.surface
                 ?: error("Camera2Controller needs a SurfacePreviewTarget")
-            openLocked(cameraId, surface)
+            openLocked(cameraId, surface, rawEnabled)
         }
     }
 
-    private suspend fun openLocked(cameraId: String, surface: Surface) {
+    private suspend fun openLocked(cameraId: String, surface: Surface, rawEnabled: Boolean) {
         closeLocked()
         _state.value = CameraState.Opening(cameraId)
 
         var device: CameraDevice? = null
-        var reader: ImageReader? = null
+        val readers = mutableListOf<ImageReader>()
         try {
             val characteristics = manager.getCameraCharacteristics(cameraId)
             val caps = mapper.map(cameraId, characteristics)
+            val streams = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             device = openDevice(cameraId)
-            reader = ImageReader.newInstance(
+
+            val jpegReader = ImageReader.newInstance(
                 caps.maxJpegSize.width,
                 caps.maxJpegSize.height,
                 AndroidImageFormat.JPEG,
                 MAX_IMAGES,
-            )
-            val session = createSession(device, listOf(surface, reader.surface))
-            val camera = ActiveCamera(caps, characteristics, device, session, surface, reader)
+            ).also(readers::add)
+
+            // Camera2 guarantees preview + max JPEG + one more stream: RAW when the user wants DNGs,
+            // otherwise a small YUV stream for the histogram.
+            val rawSize = streams?.getOutputSizes(AndroidImageFormat.RAW_SENSOR)
+                ?.maxByOrNull { it.width.toLong() * it.height }
+                ?.takeIf { rawEnabled && caps.supportsRaw }
+            val rawReader = rawSize?.let {
+                ImageReader.newInstance(it.width, it.height, AndroidImageFormat.RAW_SENSOR, MAX_IMAGES).also(readers::add)
+            }
+            val analysisSize = if (rawReader == null) {
+                streams?.getOutputSizes(AndroidImageFormat.YUV_420_888)
+                    ?.map { PixelSize(it.width, it.height) }
+                    ?.let(CameraMath::chooseAnalysisSize)
+            } else {
+                null
+            }
+            val analysisReader = analysisSize?.let {
+                ImageReader.newInstance(it.width, it.height, AndroidImageFormat.YUV_420_888, ANALYSIS_IMAGES)
+                    .also(readers::add)
+                    .apply { setOnImageAvailableListener(::onAnalysisFrame, handler) }
+            }
+
+            val outputs = listOfNotNull(surface, jpegReader.surface, rawReader?.surface, analysisReader?.surface)
+            val session = createSession(device, outputs)
+            val camera = ActiveCamera(caps, characteristics, device, session, surface, jpegReader, rawReader, analysisReader)
             active = camera
             startRepeating(camera)
             _state.value = CameraState.Previewing(caps, camera.settings, liveExposure = null)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to open camera $cameraId", e)
-            reader?.close()
+            readers.forEach { runCatching { it.close() } }
             device?.close()
             active = null
             if (e is CancellationException) {
@@ -156,6 +204,20 @@ class Camera2Controller @Inject constructor(
                 throw e
             }
             _state.value = CameraState.Error(e.toCameraError())
+        }
+    }
+
+    /** Runs on the camera thread for every analysis frame; throttled so the UI isn't flooded. */
+    private fun onAnalysisFrame(reader: ImageReader) {
+        val image = reader.acquireLatestImage() ?: return
+        image.use {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastHistogramAt < HISTOGRAM_INTERVAL_MS) return
+            lastHistogramAt = now
+            val plane = it.planes[0]
+            _histogram.value = Histogram(
+                CameraMath.luminanceHistogram(plane.buffer, it.width, it.height, plane.rowStride, plane.pixelStride),
+            )
         }
     }
 
@@ -202,61 +264,115 @@ class Camera2Controller @Inject constructor(
         }
     }
 
-    override suspend fun capture(deviceRotationDegrees: Int): CapturedImage = mutex.withLock {
+    @OptIn(ExperimentalCoroutinesApi::class) // getCompleted() to release an unconsumed RAW frame
+    override suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean): CaptureBundle = mutex.withLock {
         val camera = active ?: error("Camera is not open")
-        val reader = camera.jpegReader
-        // Drop any stale frame so we only return the one this request produces.
-        reader.acquireLatestImage()?.close()
+        val jpegReader = camera.jpegReader
+        val rawReader = camera.rawReader?.takeIf { includeRaw }
+        val rotation = CameraMath.jpegOrientation(camera.sensorOrientation, deviceRotationDegrees, camera.isFront)
+
+        // Drop any stale frames so we only return the ones this request produces.
+        jpegReader.acquireLatestImage()?.close()
+        rawReader?.acquireLatestImage()?.close()
+
+        val jpegBytes = CompletableDeferred<ByteArray>()
+        val rawImage = rawReader?.let { CompletableDeferred<Image>() }
+        val result = CompletableDeferred<TotalCaptureResult>()
+        var rawConsumed = false
+        fun failAll(cause: Throwable) {
+            jpegBytes.completeExceptionally(cause)
+            rawImage?.completeExceptionally(cause)
+            result.completeExceptionally(cause)
+        }
+
+        jpegReader.setOnImageAvailableListener({ r ->
+            r.acquireNextImage()?.use { image ->
+                val buffer = image.planes[0].buffer
+                jpegBytes.complete(ByteArray(buffer.remaining()).also(buffer::get))
+            }
+        }, handler)
+        rawReader?.setOnImageAvailableListener({ r ->
+            val image = r.acquireNextImage() ?: return@setOnImageAvailableListener
+            if (rawImage?.complete(image) != true) image.close()
+        }, handler)
 
         val request = camera.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-            addTarget(reader.surface)
+            addTarget(jpegReader.surface)
+            rawReader?.let { addTarget(it.surface) }
             applyControls(camera, this)
             set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY)
-            set(
-                CaptureRequest.JPEG_ORIENTATION,
-                CameraMath.jpegOrientation(camera.sensorOrientation, deviceRotationDegrees, camera.isFront),
-            )
+            set(CaptureRequest.JPEG_ORIENTATION, rotation)
         }.build()
 
-        suspendCancellableCoroutine { cont ->
-            reader.setOnImageAvailableListener({ r ->
-                val image = r.acquireNextImage() ?: return@setOnImageAvailableListener
-                r.setOnImageAvailableListener(null, null)
-                val bytes = image.use {
-                    val buffer = it.planes[0].buffer
-                    ByteArray(buffer.remaining()).also(buffer::get)
+        try {
+            camera.session.capture(request, object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    totalResult: TotalCaptureResult,
+                ) {
+                    result.complete(totalResult)
                 }
-                if (cont.isActive) {
-                    cont.resume(
-                        CapturedImage(
-                            bytes = bytes,
-                            format = ImageFormat.JPEG,
-                            size = PixelSize(reader.width, reader.height),
-                            timestampMillis = System.currentTimeMillis(),
-                        ),
-                    )
+
+                override fun onCaptureFailed(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    failure: android.hardware.camera2.CaptureFailure,
+                ) {
+                    failAll(IllegalStateException("Capture failed, reason ${failure.reason}"))
                 }
             }, handler)
-            cont.invokeOnCancellation { reader.setOnImageAvailableListener(null, null) }
 
-            try {
-                camera.session.capture(request, object : CameraCaptureSession.CaptureCallback() {
-                    override fun onCaptureFailed(
-                        session: CameraCaptureSession,
-                        request: CaptureRequest,
-                        failure: android.hardware.camera2.CaptureFailure,
-                    ) {
-                        reader.setOnImageAvailableListener(null, null)
-                        if (cont.isActive) {
-                            cont.resumeWithException(IllegalStateException("Capture failed, reason ${failure.reason}"))
-                        }
-                    }
-                }, handler)
-            } catch (e: CameraAccessException) {
-                reader.setOnImageAvailableListener(null, null)
-                if (cont.isActive) cont.resumeWithException(e)
+            val timestamp = System.currentTimeMillis()
+            val primary = CapturedImage(
+                bytes = jpegBytes.await(),
+                format = ImageFormat.JPEG,
+                size = PixelSize(jpegReader.width, jpegReader.height),
+                timestampMillis = timestamp,
+            )
+            val raw = rawImage?.let { deferred ->
+                val captureResult = result.await()
+                val image = deferred.await()
+                rawConsumed = true
+                // DNG encoding of a full sensor frame is heavy; keep it off the caller's thread.
+                withContext(processing) {
+                    image.use { encodeDng(camera, captureResult, it, rotation, timestamp) }
+                }
+            }
+            CaptureBundle(primary, raw)
+        } catch (e: CameraAccessException) {
+            failAll(e)
+            throw e
+        } finally {
+            jpegReader.setOnImageAvailableListener(null, null)
+            rawReader?.setOnImageAvailableListener(null, null)
+            // If we bailed out before consuming the RAW frame, release its buffer.
+            if (rawImage != null && !rawConsumed) {
+                rawImage.cancel()
+                if (rawImage.isCompleted && !rawImage.isCancelled) {
+                    runCatching { rawImage.getCompleted().close() }
+                }
             }
         }
+    }
+
+    private fun encodeDng(
+        camera: ActiveCamera,
+        result: TotalCaptureResult,
+        image: Image,
+        rotation: Int,
+        timestamp: Long,
+    ): CapturedImage {
+        val bytes = DngCreator(camera.characteristics, result).use { dng ->
+            dng.setOrientation(CameraMath.exifOrientation(rotation))
+            ByteArrayOutputStream().also { dng.writeImage(it, image) }.toByteArray()
+        }
+        return CapturedImage(
+            bytes = bytes,
+            format = ImageFormat.DNG,
+            size = PixelSize(image.width, image.height),
+            timestampMillis = timestamp,
+        )
     }
 
     override suspend fun close() {
@@ -269,7 +385,8 @@ class Camera2Controller @Inject constructor(
         runCatching { camera.session.stopRepeating() }
         runCatching { camera.session.close() }
         runCatching { camera.device.close() }
-        runCatching { camera.jpegReader.close() }
+        camera.closeReaders()
+        _histogram.value = null
         _state.value = CameraState.Closed
     }
 
@@ -312,7 +429,8 @@ class Camera2Controller @Inject constructor(
         val camera = active
         if (camera != null && camera.device == device) {
             active = null
-            runCatching { camera.jpegReader.close() }
+            camera.closeReaders()
+            _histogram.value = null
             _state.value = CameraState.Error(error)
         }
     }
@@ -346,6 +464,7 @@ class Camera2Controller @Inject constructor(
     private fun previewRequest(camera: ActiveCamera): CaptureRequest.Builder =
         camera.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(camera.previewSurface)
+            camera.analysisReader?.let { addTarget(it.surface) }
             applyControls(camera, this)
         }
 
@@ -460,6 +579,8 @@ class Camera2Controller @Inject constructor(
         const val FOCUS_REGION_FRACTION = 0.15f
         const val DEFAULT_EXPOSURE_NS = 16_666_667L // 1/60 s
         const val LIVE_EXPOSURE_INTERVAL_MS = 250L
+        const val ANALYSIS_IMAGES = 2
+        const val HISTOGRAM_INTERVAL_MS = 200L
         val IDENTITY_TRANSFORM = ColorSpaceTransform(intArrayOf(1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1))
     }
 }

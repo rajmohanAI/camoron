@@ -2,7 +2,8 @@ package com.camoron.domain.repository
 
 import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.CameraState
-import com.camoron.domain.model.CapturedImage
+import com.camoron.domain.model.CaptureBundle
+import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
 import kotlinx.coroutines.flow.StateFlow
@@ -27,16 +28,28 @@ interface CameraController {
      */
     suspend fun previewSize(cameraId: String): PixelSize
 
-    /** Opens [cameraId] and starts streaming into [target]. Replaces any open session. */
-    suspend fun open(cameraId: String, target: PreviewTarget)
+    /** Brightness histogram of recent preview frames. Only produced while RAW is off. */
+    val histogram: StateFlow<Histogram?>
+
+    /**
+     * Opens [cameraId] and starts streaming into [target]. Replaces any open session.
+     *
+     * With [rawEnabled] (and a RAW-capable camera) the session carries a RAW stream so captures can
+     * include a DNG. Without it, a small analysis stream feeds [histogram] instead: Camera2 only
+     * guarantees one of the two alongside preview and full-size JPEG.
+     */
+    suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean = false)
 
     suspend fun applySettings(settings: ManualSettings)
 
     /** Focus and meter on a point given in normalised preview coordinates (0..1). */
     suspend fun focusAt(x: Float, y: Float)
 
-    /** [deviceRotationDegrees] is the physical rotation of the phone, used to orient the JPEG. */
-    suspend fun capture(deviceRotationDegrees: Int): CapturedImage
+    /**
+     * [deviceRotationDegrees] is the physical rotation of the phone, used to orient the output.
+     * [includeRaw] adds a DNG when the session was opened with RAW enabled.
+     */
+    suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean = false): CaptureBundle
 
     suspend fun close()
 }

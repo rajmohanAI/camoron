@@ -1,6 +1,7 @@
 package com.camoron.data.camera
 
 import com.camoron.domain.model.PixelSize
+import java.nio.ByteBuffer
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.pow
@@ -70,6 +71,53 @@ internal object CameraMath {
         return Triple((g / r).toFloat(), 1f, (g / safeB).toFloat().coerceAtMost(MAX_GAIN))
     }
 
+    /** EXIF orientation tag value (as written into DNGs) for a clockwise rotation in degrees. */
+    fun exifOrientation(rotationDegrees: Int): Int = when ((rotationDegrees % 360 + 360) % 360) {
+        90 -> EXIF_ROTATE_90
+        180 -> EXIF_ROTATE_180
+        270 -> EXIF_ROTATE_270
+        else -> EXIF_NORMAL
+    }
+
+    /** Smallest analysis stream at least [minWidth] wide; small keeps the histogram cheap. */
+    fun chooseAnalysisSize(candidates: List<PixelSize>, minWidth: Int = 320): PixelSize? =
+        candidates.filter { maxOf(it.width, it.height) >= minWidth }
+            .minByOrNull { it.width.toLong() * it.height }
+            ?: candidates.maxByOrNull { it.width.toLong() * it.height }
+
+    /**
+     * Luminance histogram from a YUV Y plane, sampling every [step]th pixel in both directions.
+     * Reads by absolute index so the buffer's position is left untouched.
+     */
+    fun luminanceHistogram(
+        yPlane: ByteBuffer,
+        width: Int,
+        height: Int,
+        rowStride: Int,
+        pixelStride: Int,
+        bins: Int = HISTOGRAM_BINS,
+        step: Int = 2,
+    ): IntArray {
+        val counts = IntArray(bins)
+        var y = 0
+        while (y < height) {
+            val rowStart = y * rowStride
+            var x = 0
+            while (x < width) {
+                val luma = yPlane.get(rowStart + x * pixelStride).toInt() and 0xFF
+                counts[luma * bins / 256]++
+                x += step
+            }
+            y += step
+        }
+        return counts
+    }
+
+    const val HISTOGRAM_BINS = 64
+    private const val EXIF_NORMAL = 1
+    private const val EXIF_ROTATE_180 = 3
+    private const val EXIF_ROTATE_90 = 6
+    private const val EXIF_ROTATE_270 = 8
     private const val ASPECT_TOLERANCE = 0.02
     private const val MAX_GAIN = 8f
 }
