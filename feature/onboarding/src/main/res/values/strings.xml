@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="onboarding_title">Welcome to Camoron</string>
+    <string name="disclaimer_heading">Before you start</string>
+    <!-- Keep in sync with the Play Store listing, paywall and Settings > About. -->
+    <string name="disclaimer_body">Camoron enhances the photo your camera actually captures. Results depend on your phone\'s camera hardware, and a minimum compatible camera is required.\n\nEnhancement corrects lens distortion, reduces noise and increases the resolution of the captured image. It does not recreate or generate scene content.</string>
+    <string name="disclaimer_privacy">All processing happens on your phone. Your photos are never uploaded.</string>
+    <string name="disclaimer_accept">I understand</string>
+    <string name="device_below_minimum_title">Your camera is below the recommended spec</string>
+    <string name="device_below_minimum_body">You can still use Camoron, but enhancement results will be limited and some Pro controls will be unavailable.</string>
+    <string name="reason_hardware_level">Camera hardware support is limited (legacy)</string>
+    <string name="reason_resolution">Main camera is below 8 MP</string>
+    <string name="reason_no_back_camera">No rear camera found</string>
+    <string name="permission_heading">Camera access</string>
+    <string name="permission_body">Camoron needs camera access to show the live preview and take photos.</string>
+    <string name="permission_denied">Camera access was denied. You can allow it in system settings.</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_allow_camera">Allow camera</string>
+    <string name="action_open_settings">Open settings</string>
+</resources>
