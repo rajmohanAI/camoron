@@ -21,7 +21,10 @@ class CapturedImage(
     val format: ImageFormat,
     val size: PixelSize,
     val timestampMillis: Long,
-)
+) {
+    /** Same shot with replaced pixels, after a processing step. */
+    fun withBytes(bytes: ByteArray, size: PixelSize = this.size) = CapturedImage(bytes, format, size, timestampMillis)
+}
 
 /** One shot: the processed-quality JPEG plus, when requested, the sensor's RAW frame as a DNG. */
 class CaptureBundle(

@@ -2,10 +2,13 @@ package com.camoron.domain.repository
 
 import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.CameraState
+import com.camoron.domain.model.DeviceProfile
+import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.StillAspect
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -22,11 +25,14 @@ interface CameraController {
 
     suspend fun cameras(): List<CameraCapabilities>
 
+    /** Full capability scan of every camera plus device-wide facts. */
+    suspend fun deviceProfile(): DeviceProfile
+
     /**
      * Preview buffer size for [cameraId], already matched to the aspect ratio of its full-resolution
      * still output. The UI sizes its surface to this before calling [open].
      */
-    suspend fun previewSize(cameraId: String): PixelSize
+    suspend fun previewSize(cameraId: String, aspect: StillAspect = StillAspect.FOUR_THREE): PixelSize
 
     /** Brightness histogram of recent preview frames. Only produced while RAW is off. */
     val histogram: StateFlow<Histogram?>
@@ -38,7 +44,15 @@ interface CameraController {
      * include a DNG. Without it, a small analysis stream feeds [histogram] instead: Camera2 only
      * guarantees one of the two alongside preview and full-size JPEG.
      */
-    suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean = false)
+    suspend fun open(
+        cameraId: String,
+        target: PreviewTarget,
+        rawEnabled: Boolean = false,
+        aspect: StillAspect = StillAspect.FOUR_THREE,
+    )
+
+    /** Flash for still captures. ON/AUTO run an exposure precapture so the flash is metered. */
+    suspend fun setFlashMode(mode: FlashMode)
 
     suspend fun applySettings(settings: ManualSettings)
 

@@ -9,6 +9,11 @@ data class PixelSize(val width: Int, val height: Int) {
     val megapixels: Double get() = width.toLong() * height / 1_000_000.0
 }
 
+/** Aspect ratio of the sensor output the session is configured for (landscape, as the sensor sees it). */
+enum class StillAspect(val ratio: Double) { FOUR_THREE(4.0 / 3), SIXTEEN_NINE(16.0 / 9) }
+
+enum class CameraExtension { NIGHT, BOKEH, HDR, FACE_RETOUCH, AUTO }
+
 /** Manual controls exposed in Pro mode. */
 enum class ManualControl { ISO, SHUTTER_SPEED, EXPOSURE_COMPENSATION, WHITE_BALANCE }
 
@@ -31,7 +36,26 @@ data class CameraCapabilities(
     val supportsRaw: Boolean,
     val supportsTapToFocus: Boolean,
     val hasLensDistortionCalibration: Boolean,
+    val hasFlash: Boolean = false,
+    /** Native still-output aspect ratios with a full-resolution size available. */
+    val stillAspects: Set<StillAspect> = setOf(StillAspect.FOUR_THREE),
+    /** Zoom range the logical camera accepts (Android 11+); below 1.0 means an ultra-wide is reachable. */
+    val zoomRatioRange: ClosedFloatingPointRange<Float>? = null,
+    /** Closest focus in diopters (1/metres); 0 means fixed focus. */
+    val minFocusDistanceDiopters: Float = 0f,
+    /** 35mm-equivalent focal length of the primary lens, used to classify wide/ultra-wide/tele. */
+    val equivalentFocalLengthMm: Float? = null,
+    val physicalCameraCount: Int = 1,
+    /** Upper bounds of the AE target fps ranges, e.g. 24, 30, 60. */
+    val videoFrameRates: Set<Int> = emptySet(),
+    val supportsHighSpeedVideo: Boolean = false,
+    /** Phone-maker processing modes exposed through Camera2 Extensions (Android 12+). */
+    val extensions: Set<CameraExtension> = emptySet(),
+    val supportsFaceDetection: Boolean = false,
 ) {
+    /** Front cameras without an LED still get a screen flash. */
+    val supportsFlashControl: Boolean get() = hasFlash || lensFacing == LensFacing.FRONT
+
     /** ISO and shutter speed can only be set together, so both ranges are required. */
     val supportsManualSensor: Boolean get() = isoRange != null && exposureTimeRangeNs != null
 

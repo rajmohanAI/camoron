@@ -64,9 +64,11 @@ dependencies {
     implementation(projects.core.designsystem)
     implementation(projects.data.camera)
     implementation(projects.data.media)
+    implementation(projects.data.processing)
     implementation(projects.data.settings)
     implementation(projects.feature.onboarding)
     implementation(projects.feature.camera)
+    implementation(projects.feature.settings)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

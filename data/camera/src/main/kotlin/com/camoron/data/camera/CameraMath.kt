@@ -1,6 +1,7 @@
 package com.camoron.data.camera
 
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.StillAspect
 import java.nio.ByteBuffer
 import kotlin.math.abs
 import kotlin.math.ln
@@ -71,6 +72,26 @@ internal object CameraMath {
         return Triple((g / r).toFloat(), 1f, (g / safeB).toFloat().coerceAtMost(MAX_GAIN))
     }
 
+    /** Native aspect ratios with a still size of at least 40% of the largest output's area. */
+    fun stillAspects(jpegSizes: List<PixelSize>): Set<StillAspect> {
+        val maxArea = jpegSizes.maxOfOrNull { it.width.toLong() * it.height } ?: return setOf(StillAspect.FOUR_THREE)
+        val aspects = StillAspect.entries.filter { aspect ->
+            jpegSizes.any { abs(aspectOf(it) - aspect.ratio) < ASPECT_TOLERANCE && it.width.toLong() * it.height * 10 >= maxArea * 4 }
+        }.toSet()
+        return aspects.ifEmpty { setOf(StillAspect.FOUR_THREE) }
+    }
+
+    /** Largest still size of [aspect], or the largest overall if the camera has none (cropped later). */
+    fun chooseStillSize(jpegSizes: List<PixelSize>, aspect: StillAspect): PixelSize {
+        require(jpegSizes.isNotEmpty()) { "Camera reports no JPEG sizes" }
+        val matching = jpegSizes.filter { abs(aspectOf(it) - aspect.ratio) < ASPECT_TOLERANCE }
+        return matching.ifEmpty { jpegSizes }.maxBy { it.width.toLong() * it.height }
+    }
+
+    /** 35mm-equivalent focal length: scales by the ratio of a full-frame diagonal (43.27 mm) to the sensor's. */
+    fun equivalentFocalLength(focalLengthMm: Float, sensorDiagonalMm: Float): Float =
+        if (sensorDiagonalMm <= 0f) focalLengthMm else focalLengthMm * FULL_FRAME_DIAGONAL_MM / sensorDiagonalMm
+
     /** EXIF orientation tag value (as written into DNGs) for a clockwise rotation in degrees. */
     fun exifOrientation(rotationDegrees: Int): Int = when ((rotationDegrees % 360 + 360) % 360) {
         90 -> EXIF_ROTATE_90
@@ -114,6 +135,7 @@ internal object CameraMath {
     }
 
     const val HISTOGRAM_BINS = 64
+    private const val FULL_FRAME_DIAGONAL_MM = 43.27f
     private const val EXIF_NORMAL = 1
     private const val EXIF_ROTATE_180 = 3
     private const val EXIF_ROTATE_90 = 6

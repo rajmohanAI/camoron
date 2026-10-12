@@ -7,6 +7,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.camoron.feature.camera.CameraScreen
 import com.camoron.feature.onboarding.OnboardingScreen
+import com.camoron.feature.settings.CameraInfoScreen
+import com.camoron.feature.settings.SettingsScreen
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -14,6 +16,12 @@ object OnboardingRoute
 
 @Serializable
 object CameraRoute
+
+@Serializable
+object SettingsRoute
+
+@Serializable
+object CameraInfoRoute
 
 @Composable
 fun CamoronNavHost(startOnCamera: Boolean) {
@@ -32,7 +40,16 @@ fun CamoronNavHost(startOnCamera: Boolean) {
             )
         }
         composable<CameraRoute> {
-            CameraScreen()
+            CameraScreen(onOpenSettings = { navController.navigate(SettingsRoute) })
+        }
+        composable<SettingsRoute> {
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenCameraInfo = { navController.navigate(CameraInfoRoute) },
+            )
+        }
+        composable<CameraInfoRoute> {
+            CameraInfoScreen(onBack = { navController.popBackStack() })
         }
     }
 }
