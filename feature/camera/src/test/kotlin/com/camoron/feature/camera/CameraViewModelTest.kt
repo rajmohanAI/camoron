@@ -2,6 +2,8 @@ package com.camoron.feature.camera
 
 import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.CameraState
+import com.camoron.domain.model.CaptureBundle
+import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.HardwareLevel
 import com.camoron.domain.model.ImageFormat
@@ -92,25 +94,51 @@ class CameraViewModelTest {
         assertThat(vm.uiState.value.isCapturing).isFalse()
     }
 
+    @Test
+    fun `raw toggles the session only in pro mode on a raw capable camera`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setRawEnabled(true) // photo mode: no effect on the session
+        assertThat(controller.openedWithRaw).containsExactly(false)
+
+        vm.setMode(CaptureMode.PRO)
+        assertThat(controller.openedWithRaw).containsExactly(false, true).inOrder()
+
+        vm.capture(0)
+        assertThat(controller.capturedWithRaw).containsExactly(true)
+        assertThat(media.saved).isEqualTo(2) // JPEG and DNG
+
+        vm.setMode(CaptureMode.PHOTO)
+        assertThat(controller.openedWithRaw.last()).isFalse()
+    }
+
     private data class Target(override val width: Int, override val height: Int) : PreviewTarget
 
     private class FakeCameraController(private val all: List<CameraCapabilities>) : CameraController {
         override val state = MutableStateFlow<CameraState>(CameraState.Closed)
+        override val histogram = MutableStateFlow<Histogram?>(null)
         val opened = mutableListOf<String>()
+        val openedWithRaw = mutableListOf<Boolean>()
+        val capturedWithRaw = mutableListOf<Boolean>()
         val applied = mutableListOf<ManualSettings>()
 
         override suspend fun cameras() = all
         override suspend fun previewSize(cameraId: String) = PixelSize(1440, 1080)
-        override suspend fun open(cameraId: String, target: PreviewTarget) {
+        override suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean) {
             opened += cameraId
+            openedWithRaw += rawEnabled
             state.value = CameraState.Previewing(all.first { it.cameraId == cameraId }, ManualSettings.AUTO, null)
         }
         override suspend fun applySettings(settings: ManualSettings) {
             applied += settings
         }
         override suspend fun focusAt(x: Float, y: Float) = Unit
-        override suspend fun capture(deviceRotationDegrees: Int) =
-            CapturedImage(ByteArray(1), ImageFormat.JPEG, PixelSize(4000, 3000), 0L)
+        override suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean): CaptureBundle {
+            capturedWithRaw += includeRaw
+            val jpeg = CapturedImage(ByteArray(1), ImageFormat.JPEG, PixelSize(4000, 3000), 0L)
+            val raw = CapturedImage(ByteArray(1), ImageFormat.DNG, PixelSize(4000, 3000), 0L).takeIf { includeRaw }
+            return CaptureBundle(jpeg, raw)
+        }
         override suspend fun close() {
             state.value = CameraState.Closed
         }
@@ -128,7 +156,7 @@ class CameraViewModelTest {
         exposureCompensationStep = 1f / 3,
         whiteBalancePresets = emptySet(),
         supportsManualWhiteBalance = false,
-        supportsRaw = false,
+        supportsRaw = true,
         supportsTapToFocus = true,
         hasLensDistortionCalibration = false,
     )

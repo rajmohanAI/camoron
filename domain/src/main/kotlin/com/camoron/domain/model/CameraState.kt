@@ -22,3 +22,14 @@ class CapturedImage(
     val size: PixelSize,
     val timestampMillis: Long,
 )
+
+/** One shot: the processed-quality JPEG plus, when requested, the sensor's RAW frame as a DNG. */
+class CaptureBundle(
+    val primary: CapturedImage,
+    val raw: CapturedImage? = null,
+)
+
+/** Luminance distribution of a preview frame, [bins] buckets from black to white. */
+class Histogram(val bins: IntArray) {
+    val max: Int = bins.maxOrNull() ?: 0
+}

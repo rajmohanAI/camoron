@@ -12,7 +12,7 @@ MVP 1 in progress. See the milestone plan in the project thread.
 |---|---|
 | 1. Project foundation, CI | Done |
 | 2. Camera2 core, live preview, onboarding consent gate | Done |
-| 3. Pro mode manual controls | ISO, shutter, EV, WB done; RAW capture next |
+| 3. Pro mode manual controls | ISO, shutter, EV, WB, RAW (DNG) and histogram done |
 | 4. Processing pipeline (OpenCV + LiteRT) | Not started |
 | 5. Saving with EXIF carry-over | Basic MediaStore save done |
 | 6. Subscription, paywall, compliance screens | Not started (tier rules in `FeatureGate`) |

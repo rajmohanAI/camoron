@@ -12,6 +12,11 @@ class CaptureAndSavePhoto @Inject constructor(
     private val camera: CameraController,
     private val media: MediaRepository,
 ) {
-    suspend operator fun invoke(deviceRotationDegrees: Int): String =
-        media.save(camera.capture(deviceRotationDegrees))
+    /** Returns the gallery URI of the JPEG; the DNG, if any, is saved alongside it. */
+    suspend operator fun invoke(deviceRotationDegrees: Int, includeRaw: Boolean = false): String {
+        val bundle = camera.capture(deviceRotationDegrees, includeRaw)
+        val uri = media.save(bundle.primary)
+        bundle.raw?.let { media.save(it) }
+        return uri
+    }
 }

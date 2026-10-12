@@ -64,4 +64,37 @@ class CameraMathTest {
         assertThat(r).isWithin(0.1f).of(1f)
         assertThat(b).isWithin(0.1f).of(1f)
     }
+
+    @Test
+    fun `rotation maps to exif orientation tags`() {
+        assertThat(CameraMath.exifOrientation(0)).isEqualTo(1)
+        assertThat(CameraMath.exifOrientation(90)).isEqualTo(6)
+        assertThat(CameraMath.exifOrientation(180)).isEqualTo(3)
+        assertThat(CameraMath.exifOrientation(270)).isEqualTo(8)
+    }
+
+    @Test
+    fun `analysis stream is the smallest size at least 320 wide`() {
+        val sizes = listOf(PixelSize(1920, 1080), PixelSize(640, 480), PixelSize(320, 240), PixelSize(176, 144))
+        assertThat(CameraMath.chooseAnalysisSize(sizes)).isEqualTo(PixelSize(320, 240))
+    }
+
+    @Test
+    fun `histogram buckets luma and respects row stride`() {
+        // 4x2 image with a 6-byte row stride (2 bytes padding per row).
+        val bytes = byteArrayOf(
+            0, 0, -1, -1, 9, 9, // row 0: black, black, white, white, padding
+            0, 0, -1, -1, 9, 9, // row 1
+        )
+        val counts = CameraMath.luminanceHistogram(
+            java.nio.ByteBuffer.wrap(bytes),
+            width = 4,
+            height = 2,
+            rowStride = 6,
+            pixelStride = 1,
+            bins = 4,
+            step = 1,
+        )
+        assertThat(counts.toList()).containsExactly(4, 0, 0, 4).inOrder()
+    }
 }

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.CameraState
+import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.LensFacing
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
@@ -29,8 +30,13 @@ data class CameraUiState(
     val mode: CaptureMode = CaptureMode.PHOTO,
     val settings: ManualSettings = ManualSettings.AUTO,
     val isCapturing: Boolean = false,
+    val rawEnabled: Boolean = false,
     val event: CameraEvent? = null,
-)
+) {
+    /** RAW is a Pro mode option, and only on cameras that can deliver it. */
+    val rawActive: Boolean
+        get() = rawEnabled && mode == CaptureMode.PRO && selectedCamera?.supportsRaw == true
+}
 
 sealed interface CameraEvent {
     data class Saved(val uri: String) : CameraEvent
@@ -45,6 +51,8 @@ class CameraViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
+
+    val histogram: StateFlow<Histogram?> = camera.histogram
 
     private var cameras: List<CameraCapabilities> = emptyList()
     private var surface: PreviewTarget? = null
@@ -81,7 +89,13 @@ class CameraViewModel @Inject constructor(
     }
 
     fun setMode(mode: CaptureMode) {
+        val rawBefore = _uiState.value.rawActive
         _uiState.update { it.copy(mode = mode) }
+        if (_uiState.value.rawActive != rawBefore) {
+            // Leaving or entering Pro with RAW on changes the session's streams.
+            openIfReady()
+            return
+        }
         // Photo mode is fully automatic; Pro mode restores whatever the user dialled in.
         applySettings(if (mode == CaptureMode.PHOTO) ManualSettings.AUTO else _uiState.value.settings)
     }
@@ -97,6 +111,12 @@ class CameraViewModel @Inject constructor(
     fun setExposureCompensation(steps: Int) = updateSettings { it.copy(exposureCompensation = steps) }
     fun setWhiteBalance(wb: WhiteBalance) = updateSettings { it.copy(whiteBalance = wb) }
 
+    fun setRawEnabled(enabled: Boolean) {
+        val rawBefore = _uiState.value.rawActive
+        _uiState.update { it.copy(rawEnabled = enabled) }
+        if (_uiState.value.rawActive != rawBefore) openIfReady()
+    }
+
     fun focusAt(x: Float, y: Float) {
         viewModelScope.launch { camera.focusAt(x, y) }
     }
@@ -105,7 +125,8 @@ class CameraViewModel @Inject constructor(
         if (_uiState.value.isCapturing || _uiState.value.cameraState !is CameraState.Previewing) return
         _uiState.update { it.copy(isCapturing = true) }
         viewModelScope.launch {
-            val event = runCatching { captureAndSave(deviceRotationDegrees) }
+            val includeRaw = _uiState.value.rawActive
+            val event = runCatching { captureAndSave(deviceRotationDegrees, includeRaw) }
                 .fold(onSuccess = { CameraEvent.Saved(it) }, onFailure = { CameraEvent.CaptureFailed })
             _uiState.update { it.copy(isCapturing = false, event = event) }
         }
@@ -130,7 +151,7 @@ class CameraViewModel @Inject constructor(
         val size = state.previewSize ?: return
         if (target.width != size.width || target.height != size.height) return
         viewModelScope.launch {
-            camera.open(selected.cameraId, target)
+            camera.open(selected.cameraId, target, rawEnabled = state.rawActive)
             if (state.mode == CaptureMode.PRO) camera.applySettings(_uiState.value.settings)
         }
     }

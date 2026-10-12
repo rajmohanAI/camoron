@@ -1,20 +1,29 @@
 package com.camoron.feature.camera
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.camoron.core.designsystem.LabeledSlider
 import com.camoron.domain.model.CameraCapabilities
+import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.LiveExposure
 import com.camoron.domain.model.ManualControl
 import com.camoron.domain.model.ManualSettings
@@ -31,6 +40,8 @@ internal fun ProControls(
     capabilities: CameraCapabilities,
     settings: ManualSettings,
     liveExposure: LiveExposure?,
+    rawEnabled: Boolean,
+    histogram: Histogram?,
     viewModel: CameraViewModel,
     modifier: Modifier = Modifier,
 ) {
@@ -38,6 +49,32 @@ internal fun ProControls(
     val auto = stringResource(R.string.control_auto)
 
     Column(modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(Modifier.weight(1f).height(48.dp)) {
+                when {
+                    rawEnabled && capabilities.supportsRaw -> Text(
+                        stringResource(R.string.histogram_off_with_raw),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.CenterStart),
+                    )
+                    histogram != null -> HistogramView(histogram, Modifier.fillMaxSize())
+                }
+            }
+            FilterChip(
+                selected = rawEnabled && capabilities.supportsRaw,
+                onClick = { viewModel.setRawEnabled(!rawEnabled) },
+                enabled = capabilities.supportsRaw,
+                label = {
+                    Text(stringResource(if (capabilities.supportsRaw) R.string.raw_label else R.string.raw_unsupported))
+                },
+            )
+        }
+
         // ISO
         val isoRange = capabilities.isoRange
         val manualIso = settings.iso
@@ -152,6 +189,25 @@ private fun WhiteBalanceControls(
                 onChange(WhiteBalance.Kelvin((kelvin / KELVIN_STEP) * KELVIN_STEP))
             },
         )
+    }
+}
+
+/** Luminance histogram drawn as bars, scaled to the tallest bucket. */
+@Composable
+private fun HistogramView(histogram: Histogram, modifier: Modifier = Modifier) {
+    val barColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+    Canvas(modifier) {
+        val bins = histogram.bins
+        if (histogram.max == 0 || bins.isEmpty()) return@Canvas
+        val barWidth = size.width / bins.size
+        bins.forEachIndexed { index, count ->
+            val barHeight = size.height * count / histogram.max
+            drawRect(
+                color = barColor,
+                topLeft = Offset(index * barWidth, size.height - barHeight),
+                size = Size(barWidth, barHeight),
+            )
+        }
     }
 }
 

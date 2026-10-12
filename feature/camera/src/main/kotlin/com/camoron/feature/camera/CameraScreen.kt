@@ -56,6 +56,7 @@ import java.util.concurrent.atomic.AtomicInteger
 @Composable
 fun CameraScreen(viewModel: CameraViewModel = hiltViewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val histogram by viewModel.histogram.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val rotation = rememberDeviceRotation()
 
@@ -95,6 +96,8 @@ fun CameraScreen(viewModel: CameraViewModel = hiltViewModel()) {
                     capabilities = previewing.capabilities,
                     settings = state.settings,
                     liveExposure = previewing.liveExposure,
+                    rawEnabled = state.rawEnabled,
+                    histogram = histogram,
                     viewModel = viewModel,
                     modifier = Modifier.background(Color.Black.copy(alpha = 0.6f)),
                 )
