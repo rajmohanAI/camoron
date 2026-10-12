@@ -70,4 +70,27 @@ class CapabilityMapperTest {
         assertThat(caps.supportsManualSensor).isFalse()
         assertThat(caps.supportsManualWhiteBalance).isFalse()
     }
+
+    @Test
+    fun `macro needs close focus and a way to hold it`() {
+        val close = fullRaw.copy(minFocusDistance = 12.5f, afModes = setOf(CameraMetadata.CONTROL_AF_MODE_MACRO))
+        assertThat(mapper.map("0", close).supportsMacro).isTrue()
+
+        val manualOnly = fullRaw.copy(minFocusDistance = 12.5f, afModes = setOf(CameraMetadata.CONTROL_AF_MODE_OFF))
+        assertThat(mapper.map("0", manualOnly).supportsManualFocus).isTrue()
+        assertThat(mapper.map("0", manualOnly).supportsMacro).isTrue()
+
+        val farFocus = close.copy(minFocusDistance = 5f)
+        assertThat(mapper.map("0", farFocus).supportsMacro).isFalse()
+
+        val legacy = manualOnly.copy(hardwareLevel = CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY)
+        assertThat(mapper.map("0", legacy).supportsManualFocus).isFalse()
+    }
+
+    @Test
+    fun `digital zoom range comes from max digital zoom without a zoom ratio range`() {
+        val caps = mapper.map("0", fullRaw.copy(maxDigitalZoom = 8f))
+        assertThat(caps.zoomRange.endInclusive).isEqualTo(8f)
+        assertThat(caps.zoomRange.start).isEqualTo(1f)
+    }
 }

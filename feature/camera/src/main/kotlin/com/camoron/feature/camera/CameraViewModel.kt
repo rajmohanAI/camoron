@@ -8,6 +8,7 @@ import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.FlashMode
+import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.LensFacing
 import com.camoron.domain.model.ManualSettings
@@ -15,11 +16,13 @@ import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.model.TimerSetting
 import com.camoron.domain.model.WhiteBalance
+import com.camoron.domain.model.ZoomPreset
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.MediaRepository
 import com.camoron.domain.repository.PreviewTarget
 import com.camoron.domain.repository.SettingsRepository
 import com.camoron.domain.usecase.CaptureAndSavePhoto
+import com.camoron.domain.usecase.PlanZoomPresets
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -53,8 +56,27 @@ data class CameraUiState(
     val lastCaptureUri: String? = null,
     /** Local law requires the shutter sound, whatever the setting says. */
     val shutterSoundForced: Boolean = false,
+    /** Zoom buttons for the current side (front or back), only those the hardware supports. */
+    val zoomPresets: List<ZoomPreset> = emptyList(),
+    /** Zoom of the open camera itself (1 = no zoom on that camera). */
+    val zoomRatio: Float = 1f,
+    /** How wide the open camera is relative to the main one: 1, or e.g. 0.5 for a separate ultra-wide. */
+    val lensBase: Float = 1f,
+    val macroAvailable: Boolean = false,
+    val macro: Boolean = false,
     val event: CameraEvent? = null,
 ) {
+    /** Zoom as the user thinks of it, relative to the main camera. */
+    val displayZoom: Float get() = lensBase * zoomRatio
+
+    /** The zoom button to highlight: the widest preset at or below the current zoom, on this camera. */
+    val activePreset: ZoomPreset?
+        get() {
+            val cameraId = selectedCamera?.cameraId ?: return null
+            return zoomPresets.filter { it.cameraId == cameraId && it.zoomRatio <= zoomRatio + ZOOM_EPSILON }
+                .maxByOrNull { it.zoomRatio }
+        }
+
     /** RAW is a Pro mode option, and only on cameras that can deliver it. */
     val rawActive: Boolean
         get() = rawEnabled && mode == CaptureMode.PRO && selectedCamera?.supportsRaw == true
@@ -78,6 +100,7 @@ class CameraViewModel @Inject constructor(
     private val captureAndSave: CaptureAndSavePhoto,
     private val settingsRepository: SettingsRepository,
     private val media: MediaRepository,
+    private val planZoomPresets: PlanZoomPresets,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CameraUiState())
@@ -87,6 +110,8 @@ class CameraViewModel @Inject constructor(
     val effects: SharedFlow<CameraEffect> = _effects.asSharedFlow()
 
     val histogram: StateFlow<Histogram?> = camera.histogram
+
+    val focusTarget: StateFlow<FocusTarget?> = camera.focusTarget
 
     private var profile = DeviceProfile(emptyList())
     private var surface: PreviewTarget? = null
@@ -145,7 +170,53 @@ class CameraViewModel @Inject constructor(
     fun switchCamera() {
         val current = _uiState.value.selectedCamera ?: return
         val facing = if (current.lensFacing == LensFacing.FRONT) LensFacing.BACK else LensFacing.FRONT
-        profile.bestCamera(facing)?.let { viewModelScope.launch { select(it) } }
+        val target = profile.bestCamera(facing) ?: return
+        viewModelScope.launch {
+            if (_uiState.value.macro) {
+                _uiState.update { it.copy(macro = false) }
+                camera.setMacro(false)
+            }
+            select(target)
+        }
+    }
+
+    /** A zoom button: zooms the open camera, or switches to a separate lens such as an ultra-wide. */
+    fun selectZoomPreset(preset: ZoomPreset) {
+        val state = _uiState.value
+        if (state.selectedCamera?.cameraId == preset.cameraId) {
+            setZoom(preset.zoomRatio)
+            return
+        }
+        val target = profile.cameras.firstOrNull { it.cameraId == preset.cameraId } ?: return
+        viewModelScope.launch { select(target, zoom = preset.zoomRatio) }
+    }
+
+    /** Pinch gesture: [scale] is the change since the last event (above 1 zooms in). */
+    fun onPinch(scale: Float) {
+        val selected = _uiState.value.selectedCamera ?: return
+        val range = selected.zoomRange
+        setZoom((_uiState.value.zoomRatio * scale).coerceIn(range.start, range.endInclusive))
+    }
+
+    /**
+     * Macro: close-up focus. Uses the camera on this side that focuses closest, switching to it if
+     * it isn't the open one, and back to the main camera when turned off.
+     */
+    fun toggleMacro() {
+        val state = _uiState.value
+        val selected = state.selectedCamera ?: return
+        viewModelScope.launch {
+            if (state.macro) {
+                _uiState.update { it.copy(macro = false) }
+                camera.setMacro(false)
+                profile.bestCamera(selected.lensFacing)?.takeIf { it.cameraId != selected.cameraId }?.let { select(it) }
+                return@launch
+            }
+            val target = macroCamera(selected) ?: return@launch
+            _uiState.update { it.copy(macro = true) }
+            camera.setMacro(true)
+            if (target.cameraId != selected.cameraId) select(target)
+        }
     }
 
     fun setMode(mode: CaptureMode) {
@@ -190,7 +261,8 @@ class CameraViewModel @Inject constructor(
     }
 
     fun focusAt(x: Float, y: Float) {
-        viewModelScope.launch { camera.focusAt(x, y) }
+        val track = _uiState.value.cameraSettings.autoFocusTracking
+        viewModelScope.launch { camera.focusAt(x, y, track) }
     }
 
     /** Shutter button: takes the photo, starts the self-timer, or cancels a running countdown. */
@@ -286,13 +358,43 @@ class CameraViewModel @Inject constructor(
         }
     }
 
-    private suspend fun select(capabilities: CameraCapabilities) {
+    private fun setZoom(ratio: Float) {
+        _uiState.update { it.copy(zoomRatio = ratio) }
+        viewModelScope.launch { camera.setZoom(ratio) }
+    }
+
+    /** The camera on [current]'s side that focuses closest, preferring the open one when it qualifies. */
+    private fun macroCamera(current: CameraCapabilities): CameraCapabilities? {
+        if (current.supportsMacro) return current
+        return profile.cameras
+            .filter { it.lensFacing == current.lensFacing && it.supportsMacro }
+            .maxByOrNull { it.minFocusDistanceDiopters }
+    }
+
+    private suspend fun select(capabilities: CameraCapabilities, zoom: Float = 1f) {
         cancelTimer()
         val aspect = _uiState.value.cameraSettings.aspectRatio.stillAspect
         val size = runCatching { camera.previewSize(capabilities.cameraId, aspect) }.getOrNull()
+        val main = profile.bestCamera(capabilities.lensFacing) ?: capabilities
+        val sameSide = profile.cameras.filter { it.lensFacing == capabilities.lensFacing }
+        val presets = planZoomPresets(main, sameSide)
+        // A separate lens's 1x is its button's label, e.g. 0.5 for an ultra-wide.
+        val base = if (capabilities.cameraId == main.cameraId) {
+            1f
+        } else {
+            presets.firstOrNull { it.cameraId == capabilities.cameraId }?.label ?: 1f
+        }
         _uiState.update {
             // Manual values are per-sensor, so start each camera from automatic.
-            it.copy(selectedCamera = capabilities, previewSize = size, settings = ManualSettings.AUTO)
+            it.copy(
+                selectedCamera = capabilities,
+                previewSize = size,
+                settings = ManualSettings.AUTO,
+                zoomPresets = presets,
+                zoomRatio = zoom,
+                lensBase = base,
+                macroAvailable = sameSide.any { camera -> camera.supportsMacro },
+            )
         }
         // If the surface is already the right size the UI will not resize it, so open directly.
         openIfReady()
@@ -312,6 +414,8 @@ class CameraViewModel @Inject constructor(
                 aspect = state.cameraSettings.aspectRatio.stillAspect,
             )
             if (state.mode == CaptureMode.PRO) camera.applySettings(_uiState.value.settings)
+            val zoom = _uiState.value.zoomRatio
+            if (zoom != 1f) camera.setZoom(zoom)
         }
     }
 
@@ -325,3 +429,5 @@ class CameraViewModel @Inject constructor(
         const val LOW_LIGHT_ISO = 800
     }
 }
+
+private const val ZOOM_EPSILON = 0.01f

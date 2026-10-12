@@ -52,7 +52,21 @@ data class CameraCapabilities(
     /** Phone-maker processing modes exposed through Camera2 Extensions (Android 12+). */
     val extensions: Set<CameraExtension> = emptySet(),
     val supportsFaceDetection: Boolean = false,
+    /** Crop-based zoom limit, used where [zoomRatioRange] is unavailable (before Android 11). */
+    val maxDigitalZoom: Float = 1f,
+    /** The camera has a dedicated close-up autofocus mode (CONTROL_AF_MODE_MACRO). */
+    val supportsMacroAf: Boolean = false,
+    /** Focus distance can be set directly, so focus can be locked near the minimum distance. */
+    val supportsManualFocus: Boolean = false,
 ) {
+    /** Zoom the camera can reach on its own, through its zoom ratio or by cropping. */
+    val zoomRange: ClosedFloatingPointRange<Float>
+        get() = zoomRatioRange ?: 1f..maxDigitalZoom.coerceAtLeast(1f)
+
+    /** Focuses close enough to be worth a Macro mode, and has a way to hold focus there. */
+    val supportsMacro: Boolean
+        get() = minFocusDistanceDiopters >= MACRO_MIN_DIOPTERS && (supportsMacroAf || supportsManualFocus)
+
     /** Front cameras without an LED still get a screen flash. */
     val supportsFlashControl: Boolean get() = hasFlash || lensFacing == LensFacing.FRONT
 
@@ -64,5 +78,10 @@ data class CameraCapabilities(
         ManualControl.EXPOSURE_COMPENSATION ->
             exposureCompensationRange != null && exposureCompensationRange.first != exposureCompensationRange.last
         ManualControl.WHITE_BALANCE -> supportsManualWhiteBalance || whiteBalancePresets.size > 1
+    }
+
+    companion object {
+        /** 10 diopters is a 10 cm closest focus distance. */
+        const val MACRO_MIN_DIOPTERS = 10f
     }
 }

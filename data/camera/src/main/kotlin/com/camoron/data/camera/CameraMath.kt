@@ -49,6 +49,30 @@ internal object CameraMath {
         }
     }
 
+    /** Inverse of [viewToSensor]: normalised sensor coordinates back to the portrait preview. */
+    fun sensorToView(sx: Float, sy: Float, sensorOrientation: Int, isFrontFacing: Boolean): Pair<Float, Float> {
+        val (vx, y) = when (sensorOrientation % 360) {
+            90 -> 1f - sy to sx
+            180 -> 1f - sx to 1f - sy
+            270 -> sy to 1f - sx
+            else -> sx to sy
+        }
+        return (if (isFrontFacing) 1f - vx else vx) to y
+    }
+
+    /**
+     * Centred crop of a [width]x[height] active array for digital zoom by [ratio], as
+     * (left, top, right, bottom). Used where CONTROL_ZOOM_RATIO is unavailable.
+     */
+    fun cropForZoom(width: Int, height: Int, ratio: Float): IntArray {
+        val r = ratio.coerceAtLeast(1f)
+        val w = (width / r).toInt()
+        val h = (height / r).toInt()
+        val left = (width - w) / 2
+        val top = (height - h) / 2
+        return intArrayOf(left, top, left + w, top + h)
+    }
+
     /**
      * Per-channel white balance gains (R, G, B; G fixed at 1) that neutralise a light source of
      * [kelvin]. Uses Tanner Helland's black-body approximation, which is good to a few percent

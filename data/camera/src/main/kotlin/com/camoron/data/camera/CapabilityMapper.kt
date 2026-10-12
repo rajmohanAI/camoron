@@ -36,6 +36,8 @@ internal data class RawCharacteristics(
     val physicalCameraCount: Int = 1,
     val fpsRangeUppers: Set<Int> = emptySet(),
     val faceDetectModes: Set<Int> = emptySet(),
+    val maxDigitalZoom: Float = 1f,
+    val afModes: Set<Int> = emptySet(),
 )
 
 class CapabilityMapper @Inject constructor() {
@@ -84,6 +86,11 @@ class CapabilityMapper @Inject constructor() {
             supportsHighSpeedVideo =
                 CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_CONSTRAINED_HIGH_SPEED_VIDEO in raw.capabilities,
             supportsFaceDetection = raw.faceDetectModes.any { it != CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF },
+            maxDigitalZoom = raw.maxDigitalZoom,
+            supportsMacroAf = CameraMetadata.CONTROL_AF_MODE_MACRO in raw.afModes,
+            // LENS_FOCUS_DISTANCE needs AF off and real manual sensor control to be honoured.
+            supportsManualFocus = manualSensor && raw.minFocusDistance > 0f &&
+                CameraMetadata.CONTROL_AF_MODE_OFF in raw.afModes,
         )
     }
 
@@ -145,6 +152,8 @@ class CapabilityMapper @Inject constructor() {
             fpsRangeUppers = c.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
                 ?.map { it.upper }?.toSet().orEmpty(),
             faceDetectModes = c.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES)?.toSet().orEmpty(),
+            maxDigitalZoom = c.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f,
+            afModes = c.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.toSet().orEmpty(),
         )
     }
 }

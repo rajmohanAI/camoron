@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -55,6 +56,7 @@ import com.camoron.core.common.SurfacePreviewTarget
 import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.CameraError
 import com.camoron.domain.model.CameraState
+import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.PixelSize
 
 @Composable
@@ -64,6 +66,7 @@ fun CameraScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val histogram by viewModel.histogram.collectAsStateWithLifecycle()
+    val focusTarget by viewModel.focusTarget.collectAsStateWithLifecycle()
     val context = LocalContext.current
     TrackDeviceRotation(viewModel::onDeviceRotation)
     ShutterSounds(viewModel)
@@ -95,9 +98,11 @@ fun CameraScreen(
         }
         PreviewArea(
             state = state,
+            focusTarget = focusTarget,
             onSurfaceReady = viewModel::onSurfaceReady,
             onSurfaceDestroyed = viewModel::onSurfaceDestroyed,
             onTap = viewModel::focusAt,
+            onPinch = viewModel::onPinch,
             modifier = previewArea.align(Alignment.TopCenter),
         )
 
@@ -125,6 +130,12 @@ fun CameraScreen(
                     modifier = Modifier.background(Color.Black.copy(alpha = 0.6f)),
                 )
             }
+            LensRow(
+                state = state,
+                onMacro = viewModel::toggleMacro,
+                onPreset = viewModel::selectZoomPreset,
+                modifier = Modifier.padding(vertical = 8.dp),
+            )
             BottomBar(
                 state = state,
                 onModeChange = viewModel::setMode,
@@ -145,30 +156,50 @@ fun CameraScreen(
 @Composable
 private fun PreviewArea(
     state: CameraUiState,
+    focusTarget: FocusTarget?,
     onSurfaceReady: (SurfacePreviewTarget) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     onTap: (Float, Float) -> Unit,
+    onPinch: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     BoxWithConstraints(modifier.clipToBounds(), contentAlignment = Alignment.Center) {
-        val size = state.previewSize
-        if (size != null) {
-            val previewAspect = minOf(size.width, size.height).toFloat() / maxOf(size.width, size.height)
+        val bufferSize = state.previewSize
+        if (bufferSize != null) {
+            val previewAspect = minOf(bufferSize.width, bufferSize.height).toFloat() /
+                maxOf(bufferSize.width, bufferSize.height)
             val (width, height) = if (maxWidth / maxHeight > previewAspect) {
                 maxWidth to maxWidth / previewAspect
             } else {
                 maxHeight * previewAspect to maxHeight
             }
-            CameraPreview(
-                previewSize = size,
-                onSurfaceReady = onSurfaceReady,
-                onSurfaceDestroyed = onSurfaceDestroyed,
-                onTap = onTap,
-                modifier = Modifier.requiredSize(width, height),
-            )
+            // Taps and the focus box share the full (partly clipped) preview's coordinates.
+            Box(
+                Modifier
+                    .requiredSize(width, height)
+                    .pointerInput(Unit) {
+                        detectTapGestures { offset -> onTap(offset.x / size.width, offset.y / size.height) }
+                    }
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, _, zoom, _ -> if (zoom != 1f) onPinch(zoom) }
+                    },
+            ) {
+                CameraPreview(
+                    previewSize = bufferSize,
+                    onSurfaceReady = onSurfaceReady,
+                    onSurfaceDestroyed = onSurfaceDestroyed,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                FocusIndicator(focusTarget, Modifier.fillMaxSize())
+            }
         }
         if (state.cameraSettings.grid) GridOverlay(Modifier.fillMaxSize())
         if (state.cameraSettings.leveller) LevellerOverlay(Modifier.fillMaxSize())
+        if (state.macro) {
+            // In full screen the preview runs under the top menu, so keep the badge below it.
+            val top = if (state.cameraSettings.aspectRatio == AspectRatioSetting.FULL_SCREEN) TOP_BAR_HEIGHT + 8.dp else 12.dp
+            MacroBadge(Modifier.align(Alignment.TopCenter).padding(top = top))
+        }
         state.countdown?.let { CountdownOverlay(it) }
     }
 }
@@ -179,7 +210,6 @@ private fun CameraPreview(
     previewSize: PixelSize,
     onSurfaceReady: (SurfacePreviewTarget) -> Unit,
     onSurfaceDestroyed: () -> Unit,
-    onTap: (Float, Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val ready by rememberUpdatedState(onSurfaceReady)
@@ -200,11 +230,7 @@ private fun CameraPreview(
             }
         },
         update = { view -> view.holder.setFixedSize(previewSize.width, previewSize.height) },
-        modifier = modifier.pointerInput(Unit) {
-            detectTapGestures { offset ->
-                onTap(offset.x / size.width, offset.y / size.height)
-            }
-        },
+        modifier = modifier,
     )
 }
 

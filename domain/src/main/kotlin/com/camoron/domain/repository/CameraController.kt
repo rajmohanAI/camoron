@@ -4,6 +4,7 @@ import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.FlashMode
+import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.ManualSettings
@@ -56,8 +57,21 @@ interface CameraController {
 
     suspend fun applySettings(settings: ManualSettings)
 
-    /** Focus and meter on a point given in normalised preview coordinates (0..1). */
-    suspend fun focusAt(x: Float, y: Float)
+    /**
+     * Focus and meter on a point given in normalised preview coordinates (0..1). With [track], the
+     * focus point follows the subject as it moves, until it is lost (needs the analysis stream, so
+     * not while RAW is on).
+     */
+    suspend fun focusAt(x: Float, y: Float, track: Boolean = false)
+
+    /** Current focus point for the UI, or null when the camera focuses on its own. */
+    val focusTarget: StateFlow<FocusTarget?>
+
+    /** Zoom of the open camera, within its [com.camoron.domain.model.CameraCapabilities.zoomRange]. Resets to 1 on open. */
+    suspend fun setZoom(ratio: Float)
+
+    /** Close-up focus. Survives reopening; ignored on cameras without macro support. */
+    suspend fun setMacro(enabled: Boolean)
 
     /**
      * [deviceRotationDegrees] is the physical rotation of the phone, used to orient the output.
