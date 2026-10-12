@@ -1,6 +1,14 @@
 package com.camoron.feature.camera
 
+import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.CameraCapabilities
+import com.camoron.domain.model.CameraSettings
+import com.camoron.domain.model.DeviceProfile
+import com.camoron.domain.model.FlashMode
+import com.camoron.domain.model.LiveExposure
+import com.camoron.domain.model.PhotoAdjustments
+import com.camoron.domain.model.StillAspect
+import com.camoron.domain.model.TimerSetting
 import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.Histogram
@@ -12,13 +20,18 @@ import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.MediaRepository
+import com.camoron.domain.repository.PhotoProcessor
+import com.camoron.domain.repository.SettingsRepository
 import com.camoron.domain.repository.PreviewTarget
 import com.camoron.domain.usecase.CaptureAndSavePhoto
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -36,7 +49,16 @@ class CameraViewModelTest {
     private val media = object : MediaRepository {
         var saved = 0
         override suspend fun save(image: CapturedImage): String = "content://saved/${++saved}"
+        override suspend fun latestCapture(): String? = "content://saved/earlier"
     }
+    private val processor = object : PhotoProcessor {
+        val applied = mutableListOf<PhotoAdjustments>()
+        override suspend fun apply(image: CapturedImage, adjustments: PhotoAdjustments): CapturedImage {
+            applied += adjustments
+            return image
+        }
+    }
+    private val settings = FakeSettingsRepository()
 
     @Before
     fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -44,7 +66,8 @@ class CameraViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
-    private fun viewModel() = CameraViewModel(controller, CaptureAndSavePhoto(controller, media))
+    private fun viewModel() =
+        CameraViewModel(controller, CaptureAndSavePhoto(controller, media, processor), settings, media)
 
     @Test
     fun `starts on the highest resolution back camera`() = runTest {
@@ -89,7 +112,7 @@ class CameraViewModelTest {
     fun `capture saves and reports the uri`() = runTest {
         val vm = viewModel()
         vm.onSurfaceReady(Target(1440, 1080))
-        vm.capture(0)
+        vm.onShutter()
         assertThat(vm.uiState.value.event).isEqualTo(CameraEvent.Saved("content://saved/1"))
         assertThat(vm.uiState.value.isCapturing).isFalse()
     }
@@ -104,12 +127,123 @@ class CameraViewModelTest {
         vm.setMode(CaptureMode.PRO)
         assertThat(controller.openedWithRaw).containsExactly(false, true).inOrder()
 
-        vm.capture(0)
+        vm.onShutter()
         assertThat(controller.capturedWithRaw).containsExactly(true)
         assertThat(media.saved).isEqualTo(2) // JPEG and DNG
 
         vm.setMode(CaptureMode.PHOTO)
         assertThat(controller.openedWithRaw.last()).isFalse()
+    }
+
+    @Test
+    fun `shows the last saved photo until a new one is taken`() = runTest {
+        val vm = viewModel()
+        assertThat(vm.uiState.value.lastCaptureUri).isEqualTo("content://saved/earlier")
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.onShutter()
+        assertThat(vm.uiState.value.lastCaptureUri).isEqualTo("content://saved/1")
+    }
+
+    @Test
+    fun `timer counts down before capturing and a second tap cancels`() = runTest {
+        settings.state.update { it.copy(timer = TimerSetting.THREE) }
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+
+        vm.onShutter()
+        assertThat(vm.uiState.value.countdown).isEqualTo(3)
+        advanceTimeBy(1_500)
+        assertThat(vm.uiState.value.countdown).isEqualTo(2)
+        vm.onShutter() // cancel
+        assertThat(vm.uiState.value.countdown).isNull()
+        advanceTimeBy(5_000)
+        assertThat(controller.capturedWithRaw).isEmpty()
+
+        vm.onShutter()
+        advanceTimeBy(3_100)
+        runCurrent()
+        assertThat(controller.capturedWithRaw).hasSize(1)
+        assertThat(vm.uiState.value.countdown).isNull()
+    }
+
+    @Test
+    fun `flash setting reaches the camera`() = runTest {
+        val vm = viewModel()
+        assertThat(controller.flashModes).containsExactly(FlashMode.OFF)
+        vm.cycleFlash()
+        assertThat(controller.flashModes.last()).isEqualTo(FlashMode.AUTO)
+    }
+
+    @Test
+    fun `changing to a 16 by 9 based ratio reopens with the new sensor shape`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(controller.openedWithAspect).containsExactly(StillAspect.FOUR_THREE)
+
+        vm.cycleAspectRatio() // 9:16
+        assertThat(controller.previewAspects.last()).isEqualTo(StillAspect.SIXTEEN_NINE)
+        vm.onSurfaceReady(Target(1920, 1080))
+        assertThat(controller.openedWithAspect.last()).isEqualTo(StillAspect.SIXTEEN_NINE)
+
+        vm.cycleAspectRatio() // full screen: same sensor shape, no new session
+        assertThat(controller.openedWithAspect).hasSize(2)
+    }
+
+    @Test
+    fun `full screen photos are cropped to the display shape`() = runTest {
+        settings.state.update { it.copy(aspectRatio = AspectRatioSetting.FULL_SCREEN) }
+        val vm = viewModel()
+        vm.onDisplayAspect(0.45f)
+        vm.onSurfaceReady(Target(1920, 1080))
+        vm.onShutter()
+        assertThat(processor.applied.single()).isEqualTo(PhotoAdjustments(cropAspect = 0.45f, mirror = false))
+    }
+
+    @Test
+    fun `front camera photos are mirrored only when selfie mirror is on`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.switchCamera()
+        vm.onShutter()
+        assertThat(processor.applied.last().mirror).isTrue()
+
+        settings.state.update { it.copy(selfieMirror = false) }
+        vm.onShutter()
+        assertThat(processor.applied.last().mirror).isFalse()
+    }
+
+    @Test
+    fun `front camera without flash lights the screen in low light on auto`() = runTest {
+        settings.state.update { it.copy(flash = FlashMode.AUTO) }
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.switchCamera()
+        controller.state.update {
+            (it as CameraState.Previewing).copy(liveExposure = LiveExposure(iso = 1600, exposureTimeNs = 33_000_000L))
+        }
+        vm.onShutter()
+        assertThat(vm.uiState.value.screenFlash).isTrue()
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertThat(vm.uiState.value.screenFlash).isFalse()
+        assertThat(controller.capturedWithRaw).hasSize(1)
+    }
+
+    @Test
+    fun `shutter sound is forced where the law requires it`() = runTest {
+        controller.mustPlayShutterSound = true
+        settings.state.update { it.copy(shutterSound = false) }
+        val vm = viewModel()
+        assertThat(vm.uiState.value.shutterSoundOn).isTrue()
+    }
+
+    private class FakeSettingsRepository : SettingsRepository {
+        val state = MutableStateFlow(CameraSettings())
+        override val settings = state
+        override suspend fun update(transform: (CameraSettings) -> CameraSettings) = state.update(transform)
+        override suspend fun reset() {
+            state.value = CameraSettings()
+        }
     }
 
     private data class Target(override val width: Int, override val height: Int) : PreviewTarget
@@ -121,13 +255,25 @@ class CameraViewModelTest {
         val openedWithRaw = mutableListOf<Boolean>()
         val capturedWithRaw = mutableListOf<Boolean>()
         val applied = mutableListOf<ManualSettings>()
+        val flashModes = mutableListOf<FlashMode>()
+        val previewAspects = mutableListOf<StillAspect>()
+        val openedWithAspect = mutableListOf<StillAspect>()
+        var mustPlayShutterSound = false
 
         override suspend fun cameras() = all
-        override suspend fun previewSize(cameraId: String) = PixelSize(1440, 1080)
-        override suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean) {
+        override suspend fun deviceProfile() = DeviceProfile(all, mustPlayShutterSound = mustPlayShutterSound)
+        override suspend fun previewSize(cameraId: String, aspect: StillAspect): PixelSize {
+            previewAspects += aspect
+            return if (aspect == StillAspect.FOUR_THREE) PixelSize(1440, 1080) else PixelSize(1920, 1080)
+        }
+        override suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean, aspect: StillAspect) {
             opened += cameraId
             openedWithRaw += rawEnabled
+            openedWithAspect += aspect
             state.value = CameraState.Previewing(all.first { it.cameraId == cameraId }, ManualSettings.AUTO, null)
+        }
+        override suspend fun setFlashMode(mode: FlashMode) {
+            flashModes += mode
         }
         override suspend fun applySettings(settings: ManualSettings) {
             applied += settings

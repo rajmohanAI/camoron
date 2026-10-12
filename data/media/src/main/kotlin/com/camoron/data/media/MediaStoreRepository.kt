@@ -1,5 +1,6 @@
 package com.camoron.data.media
 
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.os.Build
@@ -82,6 +83,35 @@ class MediaStoreRepository @Inject constructor(
             throw e
         }
         uri.toString()
+    }
+
+    @Suppress("DEPRECATION") // MediaStore DATA is the only way to filter by folder before Android 10.
+    override suspend fun latestCapture(): String? = withContext(io) {
+        // Scoped storage lets us see the files we inserted; anything else is invisible, which is
+        // what we want for the "last photo" thumbnail.
+        val (selection, args) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Images.Media.MIME_TYPE} = ?" to
+                arrayOf("${Environment.DIRECTORY_PICTURES}/$ALBUM%", "image/jpeg")
+        } else {
+            "${MediaStore.Images.Media.DATA} LIKE ? AND ${MediaStore.Images.Media.MIME_TYPE} = ?" to
+                arrayOf("%/${Environment.DIRECTORY_PICTURES}/$ALBUM/%", "image/jpeg")
+        }
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        }
+        runCatching {
+            context.contentResolver.query(
+                collection,
+                arrayOf(MediaStore.Images.Media._ID),
+                selection,
+                args,
+                "${MediaStore.Images.Media.DATE_TAKEN} DESC",
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) ContentUris.withAppendedId(collection, cursor.getLong(0)).toString() else null
+            }
+        }.getOrNull()
     }
 
     private companion object {

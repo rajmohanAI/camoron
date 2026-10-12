@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_title">Settings</string>
+    <string name="cd_back">Back</string>
+    <string name="selfie_mirror">Selfie mirror</string>
+    <string name="selfie_mirror_desc">Save front-camera photos the way they appear in the preview.</string>
+    <string name="shutter_sound">Shutter sound</string>
+    <string name="shutter_sound_desc">Play a sound when taking a photo.</string>
+    <string name="shutter_sound_locked">Always on: the law in your region requires a shutter sound.</string>
+    <string name="af_tracking">Auto focus tracking</string>
+    <string name="af_tracking_desc">Keep focus locked on a tapped subject as it moves.</string>
+    <string name="capture_assistant">Capture assistant</string>
+    <string name="grid">Grid</string>
+    <string name="grid_desc">Show a 3×3 grid to help with composition.</string>
+    <string name="leveller">Leveller</string>
+    <string name="leveller_desc">Show a level line that turns yellow when the phone is straight.</string>
+    <string name="reset_settings">Reset settings</string>
+    <string name="reset_settings_desc">Restore all camera settings to their defaults.</string>
+    <string name="reset_confirm_title">Reset settings?</string>
+    <string name="reset_confirm_body">Flash, timer, aspect ratio and every option on this screen go back to their defaults. Your photos are not affected.</string>
+    <string name="action_reset">Reset</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="camera_info">Camera info</string>
+    <string name="camera_info_desc">See what this phone\'s cameras support.</string>
+    <string name="camera_info_loading">Reading camera details…</string>
+    <string name="about">About</string>
+    <!-- Keep in sync with the onboarding disclaimer, Play Store listing and paywall. -->
+    <string name="about_disclaimer">Camoron enhances the photo your camera actually captures. Results depend on your phone\'s camera hardware, and a minimum compatible camera is required. Enhancement does not recreate or generate scene content.</string>
+    <string name="about_privacy">All processing happens on your phone. Your photos are never uploaded.</string>
+</resources>

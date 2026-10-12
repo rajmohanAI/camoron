@@ -17,6 +17,17 @@ MVP 1 in progress. See the milestone plan in the project thread.
 | 5. Saving with EXIF carry-over | Basic MediaStore save done |
 | 6. Subscription, paywall, compliance screens | Not started (tier rules in `FeatureGate`) |
 
+Camera UI plan v2 (phases A to F):
+
+| Phase | State |
+|---|---|
+| A. Device scan, new layout, flash, timer, aspect ratio, settings | Done |
+| B. Lenses and focus | Not started |
+| C. Looks and night | Not started |
+| D. Video family | Not started |
+| E. Portrait, Scan, Google Lens | Not started |
+| F. Dual capture, Panorama | Not started |
+
 ## Architecture
 
 Clean Architecture with MVVM, one Gradle module per layer:
@@ -27,10 +38,12 @@ Clean Architecture with MVVM, one Gradle module per layer:
 :core:designsystem    Compose theme and shared controls
 :domain               Pure Kotlin models, repository interfaces, use cases
 :data:camera          Camera2Controller, CapabilityMapper
-:data:media           MediaStore writer
-:data:settings        On-device consent store (DataStore)
+:data:media           MediaStore writer, last-capture lookup
+:data:processing      Saved-photo adjustments: aspect crop, selfie mirror
+:data:settings        On-device consent and camera settings stores (DataStore)
 :feature:onboarding   Disclaimer, minimum-spec check, permissions
-:feature:camera       Camera screen, Pro mode controls
+:feature:camera       Camera screen, top menu, Pro mode controls
+:feature:settings     Settings and Camera info screens
 ```
 
 Key rules:
@@ -38,6 +51,10 @@ Key rules:
 * Hardware capabilities are read once by `CapabilityMapper`; every manual control in the UI is
   enabled or disabled from the resulting `CameraCapabilities`. LEGACY devices never get manual
   sensor controls even if they report ranges.
+* `CameraController.deviceProfile()` scans every camera at startup (flash, zoom range, focal
+  length, close focus, frame rates, high-speed video, maker extensions, concurrent cameras,
+  mandatory shutter sound). Menus and modes only appear when the profile says the hardware can do
+  them.
 * `SanitizeManualSettings` clamps user values to the camera's ranges before they reach Camera2.
 * `FeatureGate` is the only place that decides what Pro (including the 1-month trial) and Basic
   (after the trial) can do.

@@ -28,6 +28,14 @@ internal data class RawCharacteristics(
     val awbModes: Set<Int>,
     val maxAfRegions: Int,
     val hasDistortionCalibration: Boolean,
+    val flashAvailable: Boolean = false,
+    val zoomRatioRange: ClosedFloatingPointRange<Float>? = null,
+    val minFocusDistance: Float = 0f,
+    val focalLengthsMm: List<Float> = emptyList(),
+    val sensorPhysicalDiagonalMm: Float? = null,
+    val physicalCameraCount: Int = 1,
+    val fpsRangeUppers: Set<Int> = emptySet(),
+    val faceDetectModes: Set<Int> = emptySet(),
 )
 
 class CapabilityMapper @Inject constructor() {
@@ -64,6 +72,18 @@ class CapabilityMapper @Inject constructor() {
             supportsRaw = CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW in raw.capabilities,
             supportsTapToFocus = raw.maxAfRegions > 0,
             hasLensDistortionCalibration = raw.hasDistortionCalibration,
+            hasFlash = raw.flashAvailable,
+            stillAspects = CameraMath.stillAspects(raw.jpegSizes),
+            zoomRatioRange = raw.zoomRatioRange,
+            minFocusDistanceDiopters = raw.minFocusDistance,
+            equivalentFocalLengthMm = raw.focalLengthsMm.minOrNull()?.let { focal ->
+                raw.sensorPhysicalDiagonalMm?.let { CameraMath.equivalentFocalLength(focal, it) }
+            },
+            physicalCameraCount = raw.physicalCameraCount,
+            videoFrameRates = raw.fpsRangeUppers,
+            supportsHighSpeedVideo =
+                CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_CONSTRAINED_HIGH_SPEED_VIDEO in raw.capabilities,
+            supportsFaceDetection = raw.faceDetectModes.any { it != CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF },
         )
     }
 
@@ -106,6 +126,25 @@ class CapabilityMapper @Inject constructor() {
             awbModes = c.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES)?.toSet().orEmpty(),
             maxAfRegions = c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0,
             hasDistortionCalibration = distortion != null,
+            flashAvailable = c.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true,
+            zoomRatioRange = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.let { it.lower..it.upper }
+            } else {
+                null
+            },
+            minFocusDistance = c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f,
+            focalLengthsMm = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.toList().orEmpty(),
+            sensorPhysicalDiagonalMm = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)?.let {
+                kotlin.math.hypot(it.width, it.height)
+            },
+            physicalCameraCount = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                c.physicalCameraIds.size.coerceAtLeast(1)
+            } else {
+                1
+            },
+            fpsRangeUppers = c.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                ?.map { it.upper }?.toSet().orEmpty(),
+            faceDetectModes = c.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES)?.toSet().orEmpty(),
         )
     }
 }

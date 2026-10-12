@@ -18,9 +18,11 @@ import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.RggbChannelVector
 import android.hardware.camera2.params.SessionConfiguration
+import android.hardware.camera2.CameraExtensionCharacteristics
 import android.hardware.camera2.DngCreator
 import android.media.Image
 import android.media.ImageReader
+import android.media.MediaActionSound
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -32,7 +34,10 @@ import com.camoron.core.common.DefaultDispatcher
 import com.camoron.core.common.SurfacePreviewTarget
 import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.CameraError
+import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraState
+import com.camoron.domain.model.DeviceProfile
+import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.Histogram
@@ -41,6 +46,7 @@ import com.camoron.domain.model.LensFacing
 import com.camoron.domain.model.LiveExposure
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.StillAspect
 import com.camoron.domain.model.WhiteBalance
 import com.camoron.domain.model.WhiteBalancePreset
 import com.camoron.domain.repository.CameraController
@@ -52,6 +58,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -94,6 +101,19 @@ class Camera2Controller @Inject constructor(
     @Volatile
     private var active: ActiveCamera? = null
 
+    /** Survives reopening, so switching camera or aspect keeps the user's flash choice. */
+    @Volatile
+    private var flashMode: FlashMode = FlashMode.OFF
+
+    /** Set while a still capture waits for the AE precapture sequence to settle. */
+    @Volatile
+    private var precapture: PrecaptureWaiter? = null
+
+    private class PrecaptureWaiter {
+        val done = CompletableDeferred<Unit>()
+        var sawPrecapture = false
+    }
+
     /** Everything tied to one open camera; discarded as a unit on close. */
     private class ActiveCamera(
         val capabilities: CameraCapabilities,
@@ -125,30 +145,76 @@ class Camera2Controller @Inject constructor(
     }
 
     override suspend fun cameras(): List<CameraCapabilities> = manager.cameraIdList.mapNotNull { id ->
-        runCatching { mapper.map(id, manager.getCameraCharacteristics(id)) }
+        runCatching { mapper.map(id, manager.getCameraCharacteristics(id)).copy(extensions = extensionsFor(id)) }
             .onFailure { Log.w(TAG, "Skipping camera $id", it) }
             .getOrNull()
     }
 
-    override suspend fun previewSize(cameraId: String): PixelSize {
+    override suspend fun deviceProfile(): DeviceProfile {
+        val cameras = cameras()
+        val facingById = cameras.associate { it.cameraId to it.lensFacing }
+        val concurrent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                manager.concurrentCameraIds.any { ids ->
+                    val facings = ids.mapNotNull(facingById::get)
+                    LensFacing.FRONT in facings && LensFacing.BACK in facings
+                }
+            }.getOrDefault(false)
+        } else {
+            false
+        }
+        val mustPlayShutter = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            MediaActionSound.mustPlayShutterSound()
+        return DeviceProfile(cameras, supportsConcurrentFrontBack = concurrent, mustPlayShutterSound = mustPlayShutter)
+    }
+
+    /** Phone-maker extensions (Night, Bokeh, ...) exposed through Camera2 on Android 12+. */
+    private fun extensionsFor(cameraId: String): Set<CameraExtension> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return emptySet()
+        return runCatching {
+            manager.getCameraExtensionCharacteristics(cameraId).supportedExtensions.mapNotNull { ext ->
+                when (ext) {
+                    CameraExtensionCharacteristics.EXTENSION_AUTOMATIC -> CameraExtension.AUTO
+                    EXTENSION_FACE_RETOUCH -> CameraExtension.FACE_RETOUCH
+                    CameraExtensionCharacteristics.EXTENSION_BOKEH -> CameraExtension.BOKEH
+                    CameraExtensionCharacteristics.EXTENSION_HDR -> CameraExtension.HDR
+                    CameraExtensionCharacteristics.EXTENSION_NIGHT -> CameraExtension.NIGHT
+                    else -> null
+                }
+            }.toSet()
+        }.getOrDefault(emptySet())
+    }
+
+    override suspend fun previewSize(cameraId: String, aspect: StillAspect): PixelSize {
         val characteristics = manager.getCameraCharacteristics(cameraId)
         val caps = mapper.map(cameraId, characteristics)
         val sizes = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?.getOutputSizes(SurfaceHolder::class.java)
             ?.map { PixelSize(it.width, it.height) }
             .orEmpty()
-        return CameraMath.choosePreviewSize(sizes, CameraMath.aspectOf(caps.maxJpegSize))
+        return CameraMath.choosePreviewSize(sizes, effectiveAspect(caps, aspect).ratio)
     }
 
-    override suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean) {
+    /** Falls back to 4:3 when the sensor has no large native output in the requested shape. */
+    private fun effectiveAspect(caps: CameraCapabilities, aspect: StillAspect): StillAspect =
+        if (aspect in caps.stillAspects) aspect else StillAspect.FOUR_THREE
+
+    override suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean, aspect: StillAspect) {
         mutex.withLock {
             val surface = (target as? SurfacePreviewTarget)?.surface
                 ?: error("Camera2Controller needs a SurfacePreviewTarget")
-            openLocked(cameraId, surface, rawEnabled)
+            openLocked(cameraId, surface, rawEnabled, aspect)
         }
     }
 
-    private suspend fun openLocked(cameraId: String, surface: Surface, rawEnabled: Boolean) {
+    override suspend fun setFlashMode(mode: FlashMode) {
+        mutex.withLock {
+            flashMode = mode
+            active?.let(::startRepeating)
+        }
+    }
+
+    private suspend fun openLocked(cameraId: String, surface: Surface, rawEnabled: Boolean, aspect: StillAspect) {
         closeLocked()
         _state.value = CameraState.Opening(cameraId)
 
@@ -160,9 +226,13 @@ class Camera2Controller @Inject constructor(
             val streams = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             device = openDevice(cameraId)
 
+            val jpegSizes = streams?.getOutputSizes(AndroidImageFormat.JPEG)?.map { PixelSize(it.width, it.height) }
+            val jpegSize = jpegSizes?.takeIf { it.isNotEmpty() }
+                ?.let { CameraMath.chooseStillSize(it, effectiveAspect(caps, aspect)) }
+                ?: caps.maxJpegSize
             val jpegReader = ImageReader.newInstance(
-                caps.maxJpegSize.width,
-                caps.maxJpegSize.height,
+                jpegSize.width,
+                jpegSize.height,
                 AndroidImageFormat.JPEG,
                 MAX_IMAGES,
             ).also(readers::add)
@@ -271,6 +341,8 @@ class Camera2Controller @Inject constructor(
         val rawReader = camera.rawReader?.takeIf { includeRaw }
         val rotation = CameraMath.jpegOrientation(camera.sensorOrientation, deviceRotationDegrees, camera.isFront)
 
+        if (usesAutoFlash(camera)) runPrecapture(camera)
+
         // Drop any stale frames so we only return the ones this request produces.
         jpegReader.acquireLatestImage()?.close()
         rawReader?.acquireLatestImage()?.close()
@@ -302,6 +374,10 @@ class Camera2Controller @Inject constructor(
             applyControls(camera, this)
             set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY)
             set(CaptureRequest.JPEG_ORIENTATION, rotation)
+            // With manual exposure the AE routine is off, so fire the flash directly for this frame.
+            if (camera.capabilities.hasFlash && flashMode == FlashMode.ON && isManualExposure(camera)) {
+                set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_SINGLE)
+            }
         }.build()
 
         try {
@@ -353,6 +429,31 @@ class Camera2Controller @Inject constructor(
                     runCatching { rawImage.getCompleted().close() }
                 }
             }
+        }
+    }
+
+    private fun isManualExposure(camera: ActiveCamera): Boolean =
+        camera.settings.isManualExposure && camera.capabilities.supportsManualSensor
+
+    /** Flash handled by the AE routine, which needs a precapture metering pass before the still. */
+    private fun usesAutoFlash(camera: ActiveCamera): Boolean =
+        camera.capabilities.hasFlash && flashMode != FlashMode.OFF && !isManualExposure(camera)
+
+    /**
+     * Runs the AE precapture sequence (the metering pre-flash) and waits for it to settle, so the
+     * flash exposure is right. Gives up after a timeout: some devices never report the transition.
+     */
+    private suspend fun runPrecapture(camera: ActiveCamera) {
+        val waiter = PrecaptureWaiter()
+        precapture = waiter
+        try {
+            val trigger = previewRequest(camera).apply {
+                set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_START)
+            }
+            camera.session.capture(trigger.build(), previewCallback, handler)
+            withTimeoutOrNull(PRECAPTURE_TIMEOUT_MS) { waiter.done.await() }
+        } finally {
+            precapture = null
         }
     }
 
@@ -502,7 +603,14 @@ class Camera2Controller @Inject constructor(
             builder.set(CaptureRequest.SENSOR_SENSITIVITY, iso.coerceIn(caps.isoRange!!))
             builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposure.coerceIn(caps.exposureTimeRangeNs!!))
         } else {
-            builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+            val aeMode = when {
+                !caps.hasFlash -> CameraMetadata.CONTROL_AE_MODE_ON
+                flashMode == FlashMode.AUTO -> CameraMetadata.CONTROL_AE_MODE_ON_AUTO_FLASH
+                flashMode == FlashMode.ON -> CameraMetadata.CONTROL_AE_MODE_ON_ALWAYS_FLASH
+                else -> CameraMetadata.CONTROL_AE_MODE_ON
+            }
+            builder.set(CaptureRequest.CONTROL_AE_MODE, aeMode)
+            if (caps.hasFlash) builder.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, settings.exposureCompensation)
         }
 
@@ -532,6 +640,13 @@ class Camera2Controller @Inject constructor(
             result: TotalCaptureResult,
         ) {
             val camera = active?.takeIf { it.session == session } ?: return
+            precapture?.let { waiter ->
+                when (result.get(CaptureResult.CONTROL_AE_STATE)) {
+                    null -> waiter.done.complete(Unit)
+                    CameraMetadata.CONTROL_AE_STATE_PRECAPTURE -> waiter.sawPrecapture = true
+                    else -> if (waiter.sawPrecapture) waiter.done.complete(Unit)
+                }
+            }
             val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
             val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
             if (iso != null && exposure != null) camera.lastExposure = LiveExposure(iso, exposure)
@@ -581,6 +696,10 @@ class Camera2Controller @Inject constructor(
         const val LIVE_EXPOSURE_INTERVAL_MS = 250L
         const val ANALYSIS_IMAGES = 2
         const val HISTOGRAM_INTERVAL_MS = 200L
+        const val PRECAPTURE_TIMEOUT_MS = 1500L
+
+        /** EXTENSION_FACE_RETOUCH (named EXTENSION_BEAUTY before Android 14). */
+        const val EXTENSION_FACE_RETOUCH = 1
         val IDENTITY_TRANSFORM = ColorSpaceTransform(intArrayOf(1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1))
     }
 }

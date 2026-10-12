@@ -1,6 +1,7 @@
 package com.camoron.data.camera
 
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.StillAspect
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -96,5 +97,27 @@ class CameraMathTest {
             step = 1,
         )
         assertThat(counts.toList()).containsExactly(4, 0, 0, 4).inOrder()
+    }
+
+    @Test
+    fun `still aspects ignore tiny sizes`() {
+        val sizes = listOf(PixelSize(4000, 3000), PixelSize(4000, 2250), PixelSize(1280, 720))
+        assertThat(CameraMath.stillAspects(sizes)).containsExactly(StillAspect.FOUR_THREE, StillAspect.SIXTEEN_NINE)
+        val only43 = listOf(PixelSize(4000, 3000), PixelSize(640, 360))
+        assertThat(CameraMath.stillAspects(only43)).containsExactly(StillAspect.FOUR_THREE)
+    }
+
+    @Test
+    fun `still size picks the largest of the requested aspect`() {
+        val sizes = listOf(PixelSize(4000, 3000), PixelSize(4000, 2250), PixelSize(1920, 1080))
+        assertThat(CameraMath.chooseStillSize(sizes, StillAspect.SIXTEEN_NINE)).isEqualTo(PixelSize(4000, 2250))
+        assertThat(CameraMath.chooseStillSize(listOf(PixelSize(4000, 3000)), StillAspect.SIXTEEN_NINE))
+            .isEqualTo(PixelSize(4000, 3000))
+    }
+
+    @Test
+    fun `equivalent focal length for a typical phone main camera`() {
+        // 6.9 mm lens on a 1/1.3" sensor (about 12.3 mm diagonal) is roughly a 24 mm equivalent.
+        assertThat(CameraMath.equivalentFocalLength(6.9f, 12.3f)).isWithin(1f).of(24.3f)
     }
 }
