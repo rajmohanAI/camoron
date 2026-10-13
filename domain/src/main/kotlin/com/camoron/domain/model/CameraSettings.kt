@@ -25,6 +25,8 @@ data class CameraSettings(
     val autoFocusTracking: Boolean = true,
     val grid: Boolean = false,
     val leveller: Boolean = false,
+    val night: NightSetting = NightSetting.OFF,
+    val look: ShotLook = ShotLook.NORMAL,
 )
 
 /** How a saved JPEG should be adjusted so it matches the preview. */
@@ -33,8 +35,10 @@ data class PhotoAdjustments(
     val cropAspect: Float? = null,
     /** Mirror horizontally, as the front-camera preview appears. */
     val mirror: Boolean = false,
+    /** Colour look, the same one the preview shows. */
+    val look: ShotLook = ShotLook.NORMAL,
 ) {
-    val isIdentity: Boolean get() = cropAspect == null && !mirror
+    val isIdentity: Boolean get() = cropAspect == null && !mirror && look == ShotLook.NORMAL
 
     companion object {
         val NONE = PhotoAdjustments()

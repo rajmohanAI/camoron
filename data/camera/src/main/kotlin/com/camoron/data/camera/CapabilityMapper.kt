@@ -38,6 +38,8 @@ internal data class RawCharacteristics(
     val faceDetectModes: Set<Int> = emptySet(),
     val maxDigitalZoom: Float = 1f,
     val afModes: Set<Int> = emptySet(),
+    val noiseReductionModes: Set<Int> = emptySet(),
+    val distortionCorrectionModes: Set<Int> = emptySet(),
 )
 
 class CapabilityMapper @Inject constructor() {
@@ -91,6 +93,8 @@ class CapabilityMapper @Inject constructor() {
             // LENS_FOCUS_DISTANCE needs AF off and real manual sensor control to be honoured.
             supportsManualFocus = manualSensor && raw.minFocusDistance > 0f &&
                 CameraMetadata.CONTROL_AF_MODE_OFF in raw.afModes,
+            supportsHqNoiseReduction = CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY in raw.noiseReductionModes,
+            supportsDistortionCorrection = DISTORTION_CORRECTION_HIGH_QUALITY in raw.distortionCorrectionModes,
         )
     }
 
@@ -154,6 +158,18 @@ class CapabilityMapper @Inject constructor() {
             faceDetectModes = c.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES)?.toSet().orEmpty(),
             maxDigitalZoom = c.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f,
             afModes = c.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.toSet().orEmpty(),
+            noiseReductionModes = c.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)
+                ?.toSet().orEmpty(),
+            distortionCorrectionModes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                c.get(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES)?.toSet().orEmpty()
+            } else {
+                emptySet()
+            },
         )
+    }
+
+    internal companion object {
+        /** CameraMetadata.DISTORTION_CORRECTION_MODE_HIGH_QUALITY, added in Android 9. */
+        const val DISTORTION_CORRECTION_HIGH_QUALITY = 2
     }
 }

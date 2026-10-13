@@ -115,6 +115,8 @@ internal fun describeCamera(c: CameraCapabilities): String = buildString {
     )
     appendLine("Manual ISO and shutter: ${yesNo(c.supportsManualSensor)}")
     appendLine("RAW: ${yesNo(c.supportsRaw)}")
+    appendLine("Hardware noise reduction: ${yesNo(c.supportsHqNoiseReduction)}")
+    appendLine("Hardware distortion correction: ${yesNo(c.supportsDistortionCorrection)}")
     if (c.videoFrameRates.isNotEmpty()) appendLine("Frame rates: ${c.videoFrameRates.sorted().joinToString()} fps")
     appendLine("Slow motion: ${yesNo(c.supportsHighSpeedVideo)}")
     appendLine("Face detection: ${yesNo(c.supportsFaceDetection)}")

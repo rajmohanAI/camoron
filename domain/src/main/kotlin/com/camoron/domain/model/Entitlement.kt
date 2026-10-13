@@ -15,4 +15,10 @@ enum class Feature {
     AI_NOISE_REDUCTION,
     AI_UPSCALING,
     SAVE_WITH_EXIF,
+    /** Multi-frame night merge (the phone maker's Night extension counts too). */
+    NIGHT_MODE,
+    /** Normal and Black & White looks. */
+    BASIC_LOOKS,
+    /** Vivid, Cool, Warm and Studio. */
+    ALL_LOOKS,
 }

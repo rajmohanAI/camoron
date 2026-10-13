@@ -29,6 +29,8 @@ import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.LocalFlorist
+import androidx.compose.material.icons.filled.NightsStay
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.TimerOff
@@ -37,6 +39,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,19 +59,22 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.FlashMode
+import com.camoron.domain.model.NightSetting
+import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.TimerSetting
 import com.camoron.domain.model.ZoomPreset
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Flash, timer, aspect ratio and settings. Each button cycles through its options. */
+/** Flash, timer, aspect ratio, Night and settings. Each button cycles through its options. */
 @Composable
 internal fun TopMenu(
     state: CameraUiState,
     onFlash: () -> Unit,
     onTimer: () -> Unit,
     onAspectRatio: () -> Unit,
+    onNight: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -109,12 +117,32 @@ internal fun TopMenu(
             stringResource(R.string.cd_aspect_ratio),
             onAspectRatio,
         )
+        if (state.showNightControl) {
+            val nightLabel = when (settings.night) {
+                NightSetting.OFF -> R.string.option_off
+                NightSetting.AUTO -> R.string.option_auto
+                NightSetting.ON -> R.string.option_on
+            }
+            TopMenuButton(
+                Icons.Filled.NightsStay,
+                stringResource(nightLabel),
+                stringResource(R.string.cd_night),
+                onNight,
+                tint = if (state.nightActive) MODE_SELECTED else Color.White,
+            )
+        }
         TopMenuButton(Icons.Filled.Settings, null, stringResource(R.string.cd_settings), onSettings)
     }
 }
 
 @Composable
-private fun TopMenuButton(icon: ImageVector, label: String?, description: String, onClick: () -> Unit) {
+private fun TopMenuButton(
+    icon: ImageVector,
+    label: String?,
+    description: String,
+    onClick: () -> Unit,
+    tint: Color = Color.White,
+) {
     Column(
         Modifier
             .clip(CircleShape)
@@ -123,68 +151,137 @@ private fun TopMenuButton(icon: ImageVector, label: String?, description: String
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // The label is read with the description, e.g. "Flash, Auto".
-        Icon(icon, contentDescription = description, tint = Color.White, modifier = Modifier.size(24.dp))
+        Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(24.dp))
         if (label != null) Text(label, color = Color.White, fontSize = 11.sp)
     }
 }
 
 /**
- * Layer 1: Macro and the zoom buttons. Each appears only when this side's hardware supports it;
- * the active zoom button shows the exact current zoom, e.g. 1.4× while pinching.
+ * Layer 1: Macro, the zoom buttons and shot modes (looks). Macro and zoom buttons appear only when
+ * this side's hardware supports them; the active zoom button shows the exact current zoom, e.g.
+ * 1.4× while pinching. The shot mode button opens a row of looks above it.
  */
 @Composable
 internal fun LensRow(
     state: CameraUiState,
     onMacro: () -> Unit,
     onPreset: (ZoomPreset) -> Unit,
+    onLook: (ShotLook) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val presets = state.zoomPresets.takeIf { it.size > 1 }.orEmpty()
-    if (!state.macroAvailable && presets.isEmpty()) return
     val active = state.activePreset
-    Row(
-        modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (state.macroAvailable) {
-            val description = stringResource(R.string.cd_macro)
+    var looksOpen by rememberSaveable { mutableStateOf(false) }
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (looksOpen) LookPicker(state.cameraSettings.look, onLook)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val looksDescription = stringResource(R.string.cd_looks)
             Box(
                 Modifier
                     .size(40.dp)
                     .clip(CircleShape)
                     .background(Color.Black.copy(alpha = 0.5f))
-                    .clickable(role = Role.Switch, onClickLabel = description, onClick = onMacro),
+                    .clickable(role = Role.Button, onClickLabel = looksDescription) { looksOpen = !looksOpen },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    Icons.Filled.LocalFlorist,
-                    contentDescription = description,
-                    tint = if (state.macro) MODE_SELECTED else Color.White,
+                    Icons.Filled.Palette,
+                    contentDescription = looksDescription,
+                    tint = if (looksOpen || state.cameraSettings.look != ShotLook.NORMAL) MODE_SELECTED else Color.White,
                     modifier = Modifier.size(20.dp),
                 )
             }
-        }
-        presets.forEach { preset ->
-            val isActive = preset == active && !state.macro
-            val text = if (isActive) formatZoom(state.displayZoom) + "×" else formatZoom(preset.label)
-            val description = stringResource(R.string.cd_zoom, formatZoom(preset.label))
-            Box(
-                Modifier
-                    .size(if (isActive) 44.dp else 36.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .clickable(role = Role.Button, onClickLabel = description) { onPreset(preset) },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text,
-                    color = if (isActive) MODE_SELECTED else Color.White,
-                    fontSize = if (isActive) 13.sp else 12.sp,
-                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
-                )
+            if (state.macroAvailable) {
+                val description = stringResource(R.string.cd_macro)
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.5f))
+                        .clickable(role = Role.Switch, onClickLabel = description, onClick = onMacro),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.LocalFlorist,
+                        contentDescription = description,
+                        tint = if (state.macro) MODE_SELECTED else Color.White,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+            presets.forEach { preset ->
+                val isActive = preset == active && !state.macro
+                val text = if (isActive) formatZoom(state.displayZoom) + "×" else formatZoom(preset.label)
+                val description = stringResource(R.string.cd_zoom, formatZoom(preset.label))
+                Box(
+                    Modifier
+                        .size(if (isActive) 44.dp else 36.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.5f))
+                        .clickable(role = Role.Button, onClickLabel = description) { onPreset(preset) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text,
+                        color = if (isActive) MODE_SELECTED else Color.White,
+                        fontSize = if (isActive) 13.sp else 12.sp,
+                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                    )
+                }
             }
         }
+    }
+}
+
+/** Shot modes: colour looks shown live on the preview and applied to the saved photo. */
+@Composable
+private fun LookPicker(selected: ShotLook, onSelect: (ShotLook) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+    ) {
+        ShotLook.entries.forEach { look ->
+            val isSelected = look == selected
+            Text(
+                text = stringResource(lookLabel(look)),
+                color = if (isSelected) Color.Black else Color.White,
+                fontSize = 13.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(if (isSelected) MODE_SELECTED else Color.Black.copy(alpha = 0.5f))
+                    .clickable(role = Role.RadioButton) { onSelect(look) }
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+            )
+        }
+    }
+}
+
+private fun lookLabel(look: ShotLook): Int = when (look) {
+    ShotLook.NORMAL -> R.string.look_normal
+    ShotLook.VIVID -> R.string.look_vivid
+    ShotLook.BLACK_AND_WHITE -> R.string.look_black_and_white
+    ShotLook.COOL -> R.string.look_cool
+    ShotLook.WARM -> R.string.look_warm
+    ShotLook.STUDIO -> R.string.look_studio
+}
+
+@Composable
+internal fun NightBadge(modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.55f))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Icon(Icons.Filled.NightsStay, contentDescription = null, tint = MODE_SELECTED, modifier = Modifier.size(14.dp))
+        Text(stringResource(R.string.night_label), color = Color.White, fontSize = 12.sp)
     }
 }
 

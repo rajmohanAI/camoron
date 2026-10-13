@@ -3,6 +3,8 @@ package com.camoron.data.settings
 import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.FlashMode
+import com.camoron.domain.model.NightSetting
+import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.TimerSetting
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
@@ -20,6 +22,8 @@ class StoredCameraSettingsTest {
             aspectRatio = AspectRatioSetting.FULL_SCREEN,
             selfieMirror = false,
             grid = true,
+            night = NightSetting.AUTO,
+            look = ShotLook.STUDIO,
         )
         val out = ByteArrayOutputStream()
         StoredCameraSettingsSerializer.writeTo(StoredCameraSettings.from(settings), out)

@@ -5,6 +5,8 @@ import androidx.datastore.core.Serializer
 import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.FlashMode
+import com.camoron.domain.model.NightSetting
+import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.TimerSetting
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
@@ -26,6 +28,8 @@ internal data class StoredCameraSettings(
     val autoFocusTracking: Boolean? = null,
     val grid: Boolean? = null,
     val leveller: Boolean? = null,
+    val night: String? = null,
+    val look: String? = null,
 ) {
     fun toDomain(): CameraSettings {
         val defaults = CameraSettings()
@@ -38,6 +42,8 @@ internal data class StoredCameraSettings(
             autoFocusTracking = autoFocusTracking ?: defaults.autoFocusTracking,
             grid = grid ?: defaults.grid,
             leveller = leveller ?: defaults.leveller,
+            night = enumOrNull<NightSetting>(night) ?: defaults.night,
+            look = enumOrNull<ShotLook>(look) ?: defaults.look,
         )
     }
 
@@ -51,6 +57,8 @@ internal data class StoredCameraSettings(
             autoFocusTracking = settings.autoFocusTracking,
             grid = settings.grid,
             leveller = settings.leveller,
+            night = settings.night.name,
+            look = settings.look.name,
         )
     }
 }

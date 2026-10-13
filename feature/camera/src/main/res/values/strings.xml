@@ -39,6 +39,16 @@
     <string name="ratio_full">Full</string>
     <string name="cd_macro">Macro</string>
     <string name="macro_label">Macro</string>
+    <string name="cd_night">Night</string>
+    <string name="night_label">Night</string>
+    <string name="night_hold_still">Hold still…</string>
+    <string name="cd_looks">Shot mode</string>
+    <string name="look_normal">Normal</string>
+    <string name="look_vivid">Vivid</string>
+    <string name="look_black_and_white">B&amp;W</string>
+    <string name="look_cool">Cool</string>
+    <string name="look_warm">Warm</string>
+    <string name="look_studio">Studio</string>
     <string name="cd_zoom">Zoom %1$s×</string>
     <string name="error_in_use">The camera is being used by another app.</string>
     <string name="error_disabled">The camera is disabled by a device policy.</string>

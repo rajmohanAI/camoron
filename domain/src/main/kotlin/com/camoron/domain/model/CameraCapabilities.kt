@@ -58,6 +58,10 @@ data class CameraCapabilities(
     val supportsMacroAf: Boolean = false,
     /** Focus distance can be set directly, so focus can be locked near the minimum distance. */
     val supportsManualFocus: Boolean = false,
+    /** The camera's own high-quality noise reduction can be requested for stills. */
+    val supportsHqNoiseReduction: Boolean = false,
+    /** The camera can correct lens distortion itself (Android 9+). */
+    val supportsDistortionCorrection: Boolean = false,
 ) {
     /** Zoom the camera can reach on its own, through its zoom ratio or by cropping. */
     val zoomRange: ClosedFloatingPointRange<Float>
