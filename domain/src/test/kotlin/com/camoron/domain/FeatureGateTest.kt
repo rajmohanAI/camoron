@@ -15,12 +15,14 @@ class FeatureGateTest {
     }
 
     @Test
-    fun `basic keeps distortion correction, noise reduction and saving only`() {
+    fun `basic keeps distortion correction, noise reduction, saving, night and basic looks`() {
         val enabled = Feature.entries.filter { gate.isEnabled(it, Entitlement.Basic) }
         assertThat(enabled).containsExactly(
             Feature.LENS_DISTORTION_CORRECTION,
             Feature.CLASSICAL_NOISE_REDUCTION,
             Feature.SAVE_WITH_EXIF,
+            Feature.NIGHT_MODE,
+            Feature.BASIC_LOOKS,
         )
     }
 }

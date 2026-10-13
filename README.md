@@ -13,7 +13,7 @@ MVP 1 in progress. See the milestone plan in the project thread.
 | 1. Project foundation, CI | Done |
 | 2. Camera2 core, live preview, onboarding consent gate | Done |
 | 3. Pro mode manual controls | ISO, shutter, EV, WB, RAW (DNG) and histogram done |
-| 4. Processing pipeline (OpenCV + LiteRT) | Not started |
+| 4. Processing pipeline (OpenCV + LiteRT) | Night merge, hardware noise reduction and distortion correction done; ML stages not started |
 | 5. Saving with EXIF carry-over | Basic MediaStore save done |
 | 6. Subscription, paywall, compliance screens | Not started (tier rules in `FeatureGate`) |
 
@@ -23,7 +23,7 @@ Camera UI plan v2 (phases A to F):
 |---|---|
 | A. Device scan, new layout, flash, timer, aspect ratio, settings | Done |
 | B. Lenses and focus | Done |
-| C. Looks and night | Not started |
+| C. Looks and night | Done: six shot modes live on the preview and photo; Night via the maker extension or an on-device multi-frame merge; hardware noise reduction and distortion correction on stills |
 | D. Video family | Not started |
 | E. Portrait, Scan, Google Lens | Not started |
 | F. Dual capture, Panorama | Not started |

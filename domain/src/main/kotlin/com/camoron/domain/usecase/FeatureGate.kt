@@ -17,6 +17,8 @@ class FeatureGate @Inject constructor() {
             Feature.LENS_DISTORTION_CORRECTION,
             Feature.CLASSICAL_NOISE_REDUCTION,
             Feature.SAVE_WITH_EXIF,
+            Feature.NIGHT_MODE,
+            Feature.BASIC_LOOKS,
         )
     }
 }

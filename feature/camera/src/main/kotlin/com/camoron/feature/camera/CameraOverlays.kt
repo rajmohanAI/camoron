@@ -7,7 +7,12 @@ import android.hardware.SensorManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -102,6 +107,22 @@ internal fun FocusIndicator(target: FocusTarget?, modifier: Modifier = Modifier)
 internal fun CountdownOverlay(seconds: Int) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text(seconds.toString(), color = Color.White, fontSize = 96.sp, fontWeight = FontWeight.Light)
+    }
+}
+
+/** Shown while a night photo's frames are captured and merged. */
+@Composable
+internal fun HoldStillOverlay() {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(
+            stringResource(R.string.night_hold_still),
+            color = Color.White,
+            fontSize = 18.sp,
+            modifier = Modifier
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.6f))
+                .padding(horizontal = 20.dp, vertical = 10.dp),
+        )
     }
 }
 

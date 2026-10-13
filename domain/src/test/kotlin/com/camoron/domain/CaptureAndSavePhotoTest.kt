@@ -43,7 +43,13 @@ class CaptureAndSavePhotoTest {
             processed += adjustments
             return image.withBytes(byteArrayOf(9))
         }
+
+        override suspend fun mergeNight(frames: List<CapturedImage>): CapturedImage {
+            merged += frames.size
+            return frames.first().withBytes(byteArrayOf(7))
+        }
     }
+    private val merged = mutableListOf<Int>()
 
     private fun useCase(includeDng: Boolean) = CaptureAndSavePhoto(camera(includeDng), media, processor)
 
@@ -64,13 +70,29 @@ class CaptureAndSavePhotoTest {
         assertThat(saved.map { it.bytes.single() }).containsExactly(9.toByte(), 2.toByte()).inOrder()
     }
 
+    @Test
+    fun `night burst is merged then adjusted and saved without raw`() = runTest {
+        val uri = useCase(includeDng = true)(0, includeRaw = true, nightFrames = 6)
+        assertThat(uri).isEqualTo("content://1")
+        assertThat(merged).containsExactly(6)
+        assertThat(saved.single().bytes.single()).isEqualTo(7.toByte())
+    }
+
     private fun camera(includeDng: Boolean) = object : CameraController {
         override val state = MutableStateFlow<CameraState>(CameraState.Closed)
         override val histogram = MutableStateFlow<Histogram?>(null)
         override suspend fun cameras(): List<CameraCapabilities> = listOf(fullCamera())
         override suspend fun deviceProfile(): DeviceProfile = DeviceProfile(cameras())
-        override suspend fun previewSize(cameraId: String, aspect: StillAspect) = PixelSize(1440, 1080)
-        override suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean, aspect: StillAspect) = Unit
+        override suspend fun previewSize(cameraId: String, aspect: StillAspect, nightExtension: Boolean) =
+            PixelSize(1440, 1080)
+        override suspend fun open(
+            cameraId: String,
+            target: PreviewTarget,
+            rawEnabled: Boolean,
+            aspect: StillAspect,
+            nightExtension: Boolean,
+        ) = Unit
+        override suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int) = List(frames) { jpeg }
         override suspend fun setFlashMode(mode: FlashMode) = Unit
         override suspend fun applySettings(settings: ManualSettings) = Unit
         override suspend fun focusAt(x: Float, y: Float, track: Boolean) = Unit

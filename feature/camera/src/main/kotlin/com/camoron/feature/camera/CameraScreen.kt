@@ -3,10 +3,14 @@ package com.camoron.feature.camera
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
+import android.graphics.SurfaceTexture
 import android.media.MediaActionSound
 import android.view.OrientationEventListener
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.Surface
+import android.view.TextureView
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.compose.foundation.background
@@ -57,6 +61,8 @@ import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.CameraError
 import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.FocusTarget
+import com.camoron.domain.model.LookMatrix
+import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.PixelSize
 
 @Composable
@@ -113,6 +119,7 @@ fun CameraScreen(
             onFlash = viewModel::cycleFlash,
             onTimer = viewModel::cycleTimer,
             onAspectRatio = viewModel::cycleAspectRatio,
+            onNight = viewModel::cycleNight,
             onSettings = onOpenSettings,
             modifier = Modifier.align(Alignment.TopCenter),
         )
@@ -134,6 +141,7 @@ fun CameraScreen(
                 state = state,
                 onMacro = viewModel::toggleMacro,
                 onPreset = viewModel::selectZoomPreset,
+                onLook = viewModel::setLook,
                 modifier = Modifier.padding(vertical = 8.dp),
             )
             BottomBar(
@@ -186,6 +194,7 @@ private fun PreviewArea(
             ) {
                 CameraPreview(
                     previewSize = bufferSize,
+                    look = state.cameraSettings.look,
                     onSurfaceReady = onSurfaceReady,
                     onSurfaceDestroyed = onSurfaceDestroyed,
                     modifier = Modifier.fillMaxSize(),
@@ -195,19 +204,28 @@ private fun PreviewArea(
         }
         if (state.cameraSettings.grid) GridOverlay(Modifier.fillMaxSize())
         if (state.cameraSettings.leveller) LevellerOverlay(Modifier.fillMaxSize())
-        if (state.macro) {
-            // In full screen the preview runs under the top menu, so keep the badge below it.
-            val top = if (state.cameraSettings.aspectRatio == AspectRatioSetting.FULL_SCREEN) TOP_BAR_HEIGHT + 8.dp else 12.dp
-            MacroBadge(Modifier.align(Alignment.TopCenter).padding(top = top))
+        // In full screen the preview runs under the top menu, so keep the badges below it.
+        val badgeTop = if (state.cameraSettings.aspectRatio == AspectRatioSetting.FULL_SCREEN) TOP_BAR_HEIGHT + 8.dp else 12.dp
+        Row(
+            Modifier.align(Alignment.TopCenter).padding(top = badgeTop),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (state.macro) MacroBadge()
+            if (state.nightActive) NightBadge()
         }
         state.countdown?.let { CountdownOverlay(it) }
+        if (state.nightCapturing) HoldStillOverlay()
     }
 }
 
-/** SurfaceView-backed preview. The buffer is fixed to the camera's preview size so it is never stretched. */
+/**
+ * TextureView-backed preview, so the shot look can be drawn live as a colour filter. The buffer is
+ * fixed to the camera's preview size so it is never stretched.
+ */
 @Composable
 private fun CameraPreview(
     previewSize: PixelSize,
+    look: ShotLook,
     onSurfaceReady: (SurfacePreviewTarget) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     modifier: Modifier = Modifier,
@@ -216,22 +234,61 @@ private fun CameraPreview(
     val destroyed by rememberUpdatedState(onSurfaceDestroyed)
 
     AndroidView(
-        factory = { ctx ->
-            SurfaceView(ctx).apply {
-                holder.addCallback(object : SurfaceHolder.Callback {
-                    override fun surfaceCreated(holder: SurfaceHolder) = Unit
-
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                        ready(SurfacePreviewTarget(holder.surface, width, height))
-                    }
-
-                    override fun surfaceDestroyed(holder: SurfaceHolder) = destroyed()
-                })
-            }
+        factory = { ctx -> PreviewTextureView(ctx, onReady = { ready(it) }, onDestroyed = { destroyed() }) },
+        update = { view ->
+            view.setBufferSize(previewSize)
+            view.setLook(look)
         },
-        update = { view -> view.holder.setFixedSize(previewSize.width, previewSize.height) },
         modifier = modifier,
     )
+}
+
+private class PreviewTextureView(
+    context: Context,
+    private val onReady: (SurfacePreviewTarget) -> Unit,
+    private val onDestroyed: () -> Unit,
+) : TextureView(context), TextureView.SurfaceTextureListener {
+
+    private var bufferSize: PixelSize? = null
+    private var surface: Surface? = null
+    private var look: ShotLook = ShotLook.NORMAL
+
+    init {
+        surfaceTextureListener = this
+    }
+
+    fun setBufferSize(size: PixelSize) {
+        if (size == bufferSize) return
+        bufferSize = size
+        surfaceTexture?.let(::report)
+    }
+
+    fun setLook(next: ShotLook) {
+        if (next == look) return
+        look = next
+        val matrix = LookMatrix.forLook(next).takeUnless(LookMatrix::isIdentity)
+        setLayerPaint(matrix?.let { Paint().apply { colorFilter = ColorMatrixColorFilter(ColorMatrix(it)) } })
+    }
+
+    private fun report(texture: SurfaceTexture) {
+        val size = bufferSize ?: return
+        texture.setDefaultBufferSize(size.width, size.height)
+        val target = surface ?: Surface(texture).also { surface = it }
+        onReady(SurfacePreviewTarget(target, size.width, size.height))
+    }
+
+    override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) = report(texture)
+
+    override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) = Unit
+
+    override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+        onDestroyed()
+        surface?.release()
+        surface = null
+        return true
+    }
+
+    override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
 }
 
 @Composable

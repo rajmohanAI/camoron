@@ -6,6 +6,7 @@ import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.CaptureBundle
+import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
@@ -33,7 +34,11 @@ interface CameraController {
      * Preview buffer size for [cameraId], already matched to the aspect ratio of its full-resolution
      * still output. The UI sizes its surface to this before calling [open].
      */
-    suspend fun previewSize(cameraId: String, aspect: StillAspect = StillAspect.FOUR_THREE): PixelSize
+    suspend fun previewSize(
+        cameraId: String,
+        aspect: StillAspect = StillAspect.FOUR_THREE,
+        nightExtension: Boolean = false,
+    ): PixelSize
 
     /** Brightness histogram of recent preview frames. Only produced while RAW is off. */
     val histogram: StateFlow<Histogram?>
@@ -44,12 +49,17 @@ interface CameraController {
      * With [rawEnabled] (and a RAW-capable camera) the session carries a RAW stream so captures can
      * include a DNG. Without it, a small analysis stream feeds [histogram] instead: Camera2 only
      * guarantees one of the two alongside preview and full-size JPEG.
+     *
+     * With [nightExtension] (and a camera that reports the phone maker's Night extension) the
+     * session is a Camera2 Extensions session instead: captures come back already night-processed,
+     * and RAW, histogram, manual controls, zoom, flash and focus tracking are unavailable.
      */
     suspend fun open(
         cameraId: String,
         target: PreviewTarget,
         rawEnabled: Boolean = false,
         aspect: StillAspect = StillAspect.FOUR_THREE,
+        nightExtension: Boolean = false,
     )
 
     /** Flash for still captures. ON/AUTO run an exposure precapture so the flash is metered. */
@@ -78,6 +88,12 @@ interface CameraController {
      * [includeRaw] adds a DNG when the session was opened with RAW enabled.
      */
     suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean = false): CaptureBundle
+
+    /**
+     * Night mode without the maker extension: [frames] JPEGs back to back at one locked exposure,
+     * without flash, for merging.
+     */
+    suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage>
 
     suspend fun close()
 }

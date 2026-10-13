@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.ImageFormat as AndroidImageFormat
 import android.graphics.Rect
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -19,6 +20,8 @@ import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.RggbChannelVector
 import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.camera2.CameraExtensionCharacteristics
+import android.hardware.camera2.CameraExtensionSession
+import android.hardware.camera2.params.ExtensionSessionConfiguration
 import android.hardware.camera2.DngCreator
 import android.media.Image
 import android.media.ImageReader
@@ -28,8 +31,8 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
 import android.util.Log
+import androidx.annotation.RequiresApi
 import android.view.Surface
-import android.view.SurfaceHolder
 import com.camoron.core.common.DefaultDispatcher
 import com.camoron.core.common.SurfacePreviewTarget
 import com.camoron.domain.model.CameraCapabilities
@@ -60,6 +63,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -121,6 +125,25 @@ class Camera2Controller @Inject constructor(
     private class PrecaptureWaiter {
         val done = CompletableDeferred<Unit>()
         var sawPrecapture = false
+    }
+
+    /**
+     * The phone maker's Night mode, open instead of [active]. It runs its own pipeline, so focus,
+     * zoom, flash and manual controls don't apply while it is open.
+     */
+    @Volatile
+    private var activeNight: NightExtensionCamera? = null
+
+    private class NightExtensionCamera(
+        val capabilities: CameraCapabilities,
+        val sensorOrientation: Int,
+        val device: CameraDevice,
+        /** A CameraExtensionSession; typed loosely so this class loads before Android 12. */
+        val session: AutoCloseable,
+        val previewSurface: Surface,
+        val jpegReader: ImageReader,
+    ) {
+        val isFront: Boolean get() = capabilities.lensFacing == LensFacing.FRONT
     }
 
     /** Everything tied to one open camera; discarded as a unit on close. */
@@ -212,25 +235,165 @@ class Camera2Controller @Inject constructor(
         }.getOrDefault(emptySet())
     }
 
-    override suspend fun previewSize(cameraId: String, aspect: StillAspect): PixelSize {
+    override suspend fun previewSize(cameraId: String, aspect: StillAspect, nightExtension: Boolean): PixelSize {
         val characteristics = manager.getCameraCharacteristics(cameraId)
         val caps = mapper.map(cameraId, characteristics)
+        val ratio = effectiveAspect(caps, aspect).ratio
+        if (nightExtension && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            nightPreviewSizes(cameraId).takeIf { it.isNotEmpty() }?.let { return CameraMath.choosePreviewSize(it, ratio) }
+        }
         val sizes = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            ?.getOutputSizes(SurfaceHolder::class.java)
+            ?.getOutputSizes(SurfaceTexture::class.java)
             ?.map { PixelSize(it.width, it.height) }
             .orEmpty()
-        return CameraMath.choosePreviewSize(sizes, effectiveAspect(caps, aspect).ratio)
+        return CameraMath.choosePreviewSize(sizes, ratio)
     }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun nightPreviewSizes(cameraId: String): List<PixelSize> = runCatching {
+        val ext = manager.getCameraExtensionCharacteristics(cameraId)
+        if (CameraExtensionCharacteristics.EXTENSION_NIGHT !in ext.supportedExtensions) return emptyList()
+        ext.getExtensionSupportedSizes(CameraExtensionCharacteristics.EXTENSION_NIGHT, SurfaceTexture::class.java)
+            .map { PixelSize(it.width, it.height) }
+    }.getOrDefault(emptyList())
 
     /** Falls back to 4:3 when the sensor has no large native output in the requested shape. */
     private fun effectiveAspect(caps: CameraCapabilities, aspect: StillAspect): StillAspect =
         if (aspect in caps.stillAspects) aspect else StillAspect.FOUR_THREE
 
-    override suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean, aspect: StillAspect) {
+    override suspend fun open(
+        cameraId: String,
+        target: PreviewTarget,
+        rawEnabled: Boolean,
+        aspect: StillAspect,
+        nightExtension: Boolean,
+    ) {
         mutex.withLock {
             val surface = (target as? SurfacePreviewTarget)?.surface
                 ?: error("Camera2Controller needs a SurfacePreviewTarget")
+            if (nightExtension && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                openNightLocked(cameraId, surface, aspect)
+            ) {
+                return@withLock
+            }
             openLocked(cameraId, surface, rawEnabled, aspect)
+        }
+    }
+
+    /**
+     * Opens the phone maker's Night extension. Returns false (with everything released) when the
+     * camera doesn't offer it or it fails to start, so the caller can fall back to a normal session.
+     */
+    @RequiresApi(Build.VERSION_CODES.S)
+    private suspend fun openNightLocked(cameraId: String, surface: Surface, aspect: StillAspect): Boolean {
+        closeLocked()
+        _state.value = CameraState.Opening(cameraId)
+        var device: CameraDevice? = null
+        var reader: ImageReader? = null
+        try {
+            val characteristics = manager.getCameraCharacteristics(cameraId)
+            val caps = mapper.map(cameraId, characteristics).copy(extensions = extensionsFor(cameraId))
+            if (CameraExtension.NIGHT !in caps.extensions) return false
+            val ext = manager.getCameraExtensionCharacteristics(cameraId)
+            val jpegSize = ext.getExtensionSupportedSizes(CameraExtensionCharacteristics.EXTENSION_NIGHT, AndroidImageFormat.JPEG)
+                .map { PixelSize(it.width, it.height) }
+                .takeIf { it.isNotEmpty() }
+                ?.let { CameraMath.chooseStillSize(it, effectiveAspect(caps, aspect)) }
+                ?: return false
+            device = openDevice(cameraId)
+            val jpegReader = ImageReader.newInstance(jpegSize.width, jpegSize.height, AndroidImageFormat.JPEG, MAX_IMAGES)
+            reader = jpegReader
+            val session = createNightSession(device, surface, jpegReader.surface)
+            val night = NightExtensionCamera(
+                capabilities = caps,
+                sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90,
+                device = device,
+                session = session,
+                previewSurface = surface,
+                jpegReader = jpegReader,
+            )
+            activeNight = night
+            val preview = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(surface) }.build()
+            session.setRepeatingRequest(preview, executor, object : CameraExtensionSession.ExtensionCaptureCallback() {})
+            _state.value = CameraState.Previewing(caps, ManualSettings.AUTO, liveExposure = null)
+            return true
+        } catch (e: CancellationException) {
+            releaseFailedNight(device, reader)
+            _state.value = CameraState.Closed
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Night extension unavailable on camera $cameraId; using the normal camera", e)
+            releaseFailedNight(device, reader)
+            return false
+        }
+    }
+
+    private fun releaseFailedNight(device: CameraDevice?, reader: ImageReader?) {
+        activeNight?.let { runCatching { it.session.close() } }
+        activeNight = null
+        runCatching { reader?.close() }
+        runCatching { device?.close() }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private suspend fun createNightSession(device: CameraDevice, preview: Surface, jpeg: Surface): CameraExtensionSession =
+        suspendCancellableCoroutine { cont ->
+            device.createExtensionSession(
+                ExtensionSessionConfiguration(
+                    CameraExtensionCharacteristics.EXTENSION_NIGHT,
+                    listOf(OutputConfiguration(preview), OutputConfiguration(jpeg)),
+                    executor,
+                    object : CameraExtensionSession.StateCallback() {
+                        override fun onConfigured(session: CameraExtensionSession) {
+                            if (cont.isActive) cont.resume(session) else session.close()
+                        }
+
+                        override fun onConfigureFailed(session: CameraExtensionSession) {
+                            if (cont.isActive) cont.resumeWithException(IllegalStateException("Night session failed"))
+                        }
+                    },
+                ),
+            )
+        }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private suspend fun captureNight(night: NightExtensionCamera, deviceRotationDegrees: Int): CaptureBundle {
+        val session = night.session as CameraExtensionSession
+        val reader = night.jpegReader
+        reader.acquireLatestImage()?.close()
+        val jpegBytes = CompletableDeferred<ByteArray>()
+        reader.setOnImageAvailableListener({ r ->
+            r.acquireNextImage()?.use { image ->
+                val buffer = image.planes[0].buffer
+                jpegBytes.complete(ByteArray(buffer.remaining()).also(buffer::get))
+            }
+        }, handler)
+        try {
+            val request = night.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                addTarget(reader.surface)
+                set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY)
+                set(
+                    CaptureRequest.JPEG_ORIENTATION,
+                    CameraMath.jpegOrientation(night.sensorOrientation, deviceRotationDegrees, night.isFront),
+                )
+            }.build()
+            session.capture(request, executor, object : CameraExtensionSession.ExtensionCaptureCallback() {
+                override fun onCaptureFailed(session: CameraExtensionSession, request: CaptureRequest) {
+                    jpegBytes.completeExceptionally(IllegalStateException("Night capture failed"))
+                }
+            })
+            // The maker's pipeline takes several exposures and merges them, which can take seconds.
+            val bytes = withTimeoutOrNull(NIGHT_CAPTURE_TIMEOUT_MS) { jpegBytes.await() }
+                ?: error("Night capture timed out")
+            val primary = CapturedImage(
+                bytes = bytes,
+                format = ImageFormat.JPEG,
+                size = PixelSize(reader.width, reader.height),
+                timestampMillis = System.currentTimeMillis(),
+            )
+            return CaptureBundle(primary, raw = null)
+        } finally {
+            reader.setOnImageAvailableListener(null, null)
         }
     }
 
@@ -492,6 +655,9 @@ class Camera2Controller @Inject constructor(
 
     @OptIn(ExperimentalCoroutinesApi::class) // getCompleted() to release an unconsumed RAW frame
     override suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean): CaptureBundle = mutex.withLock {
+        activeNight?.let { night ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return@withLock captureNight(night, deviceRotationDegrees)
+        }
         val camera = active ?: error("Camera is not open")
         val jpegReader = camera.jpegReader
         val rawReader = camera.rawReader?.takeIf { includeRaw }
@@ -530,6 +696,7 @@ class Camera2Controller @Inject constructor(
             applyControls(camera, this)
             set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY)
             set(CaptureRequest.JPEG_ORIENTATION, rotation)
+            applyStillProcessing(camera, this)
             // With manual exposure the AE routine is off, so fire the flash directly for this frame.
             if (camera.capabilities.hasFlash && flashMode == FlashMode.ON && isManualExposure(camera)) {
                 set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_SINGLE)
@@ -588,6 +755,76 @@ class Camera2Controller @Inject constructor(
         }
     }
 
+    override suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage> = mutex.withLock {
+        val camera = active ?: error("Camera is not open")
+        val reader = camera.jpegReader
+        val rotation = CameraMath.jpegOrientation(camera.sensorOrientation, deviceRotationDegrees, camera.isFront)
+        reader.acquireLatestImage()?.close()
+
+        // Each frame (or an empty marker for a failed one) lands here as soon as it is ready, which
+        // frees the reader's buffer for the next frame of the burst.
+        val results = Channel<ByteArray>(Channel.UNLIMITED)
+        reader.setOnImageAvailableListener({ r ->
+            r.acquireNextImage()?.use { image ->
+                val buffer = image.planes[0].buffer
+                results.trySend(ByteArray(buffer.remaining()).also(buffer::get))
+            }
+        }, handler)
+        try {
+            val requests = List(frames) {
+                camera.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                    addTarget(reader.surface)
+                    applyControls(camera, this)
+                    // Identical exposures without flash merge cleanly.
+                    if (!isManualExposure(camera)) {
+                        set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+                        set(CaptureRequest.CONTROL_AE_LOCK, true)
+                    }
+                    if (camera.capabilities.hasFlash) set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
+                    set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY)
+                    set(CaptureRequest.JPEG_ORIENTATION, rotation)
+                    applyStillProcessing(camera, this)
+                }.build()
+            }
+            camera.session.captureBurst(requests, object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureFailed(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    failure: android.hardware.camera2.CaptureFailure,
+                ) {
+                    results.trySend(ByteArray(0))
+                }
+            }, handler)
+
+            val timestamp = System.currentTimeMillis()
+            val size = PixelSize(reader.width, reader.height)
+            val collected = mutableListOf<CapturedImage>()
+            withTimeoutOrNull(BURST_TIMEOUT_MS) {
+                repeat(frames) {
+                    val bytes = results.receive()
+                    if (bytes.isNotEmpty()) collected += CapturedImage(bytes, ImageFormat.JPEG, size, timestamp)
+                }
+            }
+            if (collected.isEmpty()) error("Night burst produced no frames")
+            collected
+        } finally {
+            reader.setOnImageAvailableListener(null, null)
+            results.close()
+            // Unlock auto exposure for the preview again.
+            runCatching { startRepeating(camera) }
+        }
+    }
+
+    /** The camera's best noise reduction and lens distortion correction for stills, where offered. */
+    private fun applyStillProcessing(camera: ActiveCamera, builder: CaptureRequest.Builder) {
+        if (camera.capabilities.supportsHqNoiseReduction) {
+            builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && camera.capabilities.supportsDistortionCorrection) {
+            builder.set(CaptureRequest.DISTORTION_CORRECTION_MODE, CapabilityMapper.DISTORTION_CORRECTION_HIGH_QUALITY)
+        }
+    }
+
     private fun isManualExposure(camera: ActiveCamera): Boolean =
         camera.settings.isManualExposure && camera.capabilities.supportsManualSensor
 
@@ -637,6 +874,13 @@ class Camera2Controller @Inject constructor(
     }
 
     private fun closeLocked() {
+        activeNight?.let { night ->
+            activeNight = null
+            runCatching { night.session.close() }
+            runCatching { night.device.close() }
+            runCatching { night.jpegReader.close() }
+            _state.value = CameraState.Closed
+        }
         val camera = active ?: return
         active = null
         runCatching { camera.session.stopRepeating() }
@@ -684,6 +928,12 @@ class Camera2Controller @Inject constructor(
 
     /** Called on the camera thread when an already-open device is taken away from us. */
     private fun onLostDevice(device: CameraDevice, error: CameraError) {
+        activeNight?.takeIf { it.device == device }?.let { night ->
+            activeNight = null
+            runCatching { night.jpegReader.close() }
+            _state.value = CameraState.Error(error)
+            return
+        }
         val camera = active
         if (camera != null && camera.device == device) {
             active = null
@@ -879,6 +1129,8 @@ class Camera2Controller @Inject constructor(
         const val ANALYSIS_IMAGES = 2
         const val HISTOGRAM_INTERVAL_MS = 200L
         const val PRECAPTURE_TIMEOUT_MS = 1500L
+        const val BURST_TIMEOUT_MS = 15_000L
+        const val NIGHT_CAPTURE_TIMEOUT_MS = 20_000L
         const val TRACK_INTERVAL_MS = 66L
         /** Normalised movement below which the focus region is left where it is. */
         const val TRACK_MIN_MOVE = 0.015f

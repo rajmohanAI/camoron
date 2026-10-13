@@ -2,6 +2,7 @@ package com.camoron.feature.camera
 
 import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.CameraCapabilities
+import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.FlashMode
@@ -19,6 +20,8 @@ import com.camoron.domain.model.HardwareLevel
 import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.LensFacing
 import com.camoron.domain.model.ManualSettings
+import com.camoron.domain.model.NightSetting
+import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.MediaRepository
@@ -56,9 +59,14 @@ class CameraViewModelTest {
     }
     private val processor = object : PhotoProcessor {
         val applied = mutableListOf<PhotoAdjustments>()
+        val merged = mutableListOf<Int>()
         override suspend fun apply(image: CapturedImage, adjustments: PhotoAdjustments): CapturedImage {
             applied += adjustments
             return image
+        }
+        override suspend fun mergeNight(frames: List<CapturedImage>): CapturedImage {
+            merged += frames.size
+            return frames.first()
         }
     }
     private val settings = FakeSettingsRepository()
@@ -306,6 +314,82 @@ class CameraViewModelTest {
         assertThat(controller.focused).containsExactly(true, false).inOrder()
     }
 
+    @Test
+    fun `the chosen look is applied to the saved photo`() = runTest {
+        settings.state.update { it.copy(look = ShotLook.VIVID) }
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.onShutter()
+        assertThat(processor.applied.last().look).isEqualTo(ShotLook.VIVID)
+
+        vm.setLook(ShotLook.BLACK_AND_WHITE)
+        vm.onShutter()
+        assertThat(processor.applied.last().look).isEqualTo(ShotLook.BLACK_AND_WHITE)
+    }
+
+    @Test
+    fun `night on merges a burst when the maker has no night mode`() = runTest {
+        settings.state.update { it.copy(night = NightSetting.ON) }
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(vm.uiState.value.nightActive).isTrue()
+        vm.onShutter()
+        assertThat(controller.bursts).containsExactly(8)
+        assertThat(processor.merged).containsExactly(8)
+        assertThat(controller.capturedWithRaw).isEmpty()
+        assertThat(vm.uiState.value.nightCapturing).isFalse()
+    }
+
+    @Test
+    fun `night auto only kicks in when it is dark`() = runTest {
+        settings.state.update { it.copy(night = NightSetting.AUTO) }
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        controller.state.update {
+            (it as CameraState.Previewing).copy(liveExposure = LiveExposure(iso = 100, exposureTimeNs = 10_000_000L))
+        }
+        vm.onShutter()
+        assertThat(controller.bursts).isEmpty()
+
+        controller.state.update {
+            (it as CameraState.Previewing).copy(liveExposure = LiveExposure(iso = 3200, exposureTimeNs = 66_000_000L))
+        }
+        vm.onShutter()
+        assertThat(controller.bursts).containsExactly(8)
+    }
+
+    @Test
+    fun `night is off in pro mode and when the flash is forced on`() = runTest {
+        settings.state.update { it.copy(night = NightSetting.ON, flash = FlashMode.ON) }
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.onShutter()
+        assertThat(controller.bursts).isEmpty()
+
+        settings.state.update { it.copy(flash = FlashMode.OFF) }
+        vm.setMode(CaptureMode.PRO)
+        vm.onShutter()
+        assertThat(controller.bursts).isEmpty()
+    }
+
+    @Test
+    fun `night on uses the maker's night mode where the camera has one`() = runTest {
+        controller.all = listOf(back.copy(extensions = setOf(CameraExtension.NIGHT)), front)
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(controller.openedWithNightExtension.last()).isFalse()
+
+        settings.state.update { it.copy(night = NightSetting.ON) }
+        assertThat(controller.openedWithNightExtension.last()).isTrue()
+        assertThat(vm.uiState.value.showFlashControl).isFalse()
+        vm.onShutter()
+        assertThat(controller.bursts).isEmpty()
+        assertThat(controller.capturedWithRaw).hasSize(1)
+
+        settings.state.update { it.copy(night = NightSetting.OFF) }
+        assertThat(controller.openedWithNightExtension.last()).isFalse()
+    }
+
     private class FakeSettingsRepository : SettingsRepository {
         val state = MutableStateFlow(CameraSettings())
         override val settings = state
@@ -331,12 +415,21 @@ class CameraViewModelTest {
 
         override suspend fun cameras() = all
         override suspend fun deviceProfile() = DeviceProfile(all, mustPlayShutterSound = mustPlayShutterSound)
-        override suspend fun previewSize(cameraId: String, aspect: StillAspect): PixelSize {
+        val openedWithNightExtension = mutableListOf<Boolean>()
+        val bursts = mutableListOf<Int>()
+        override suspend fun previewSize(cameraId: String, aspect: StillAspect, nightExtension: Boolean): PixelSize {
             previewAspects += aspect
             return if (aspect == StillAspect.FOUR_THREE) PixelSize(1440, 1080) else PixelSize(1920, 1080)
         }
-        override suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean, aspect: StillAspect) {
+        override suspend fun open(
+            cameraId: String,
+            target: PreviewTarget,
+            rawEnabled: Boolean,
+            aspect: StillAspect,
+            nightExtension: Boolean,
+        ) {
             opened += cameraId
+            openedWithNightExtension += nightExtension
             openedWithRaw += rawEnabled
             openedWithAspect += aspect
             state.value = CameraState.Previewing(all.first { it.cameraId == cameraId }, ManualSettings.AUTO, null)
@@ -365,6 +458,10 @@ class CameraViewModelTest {
             val jpeg = CapturedImage(ByteArray(1), ImageFormat.JPEG, PixelSize(4000, 3000), 0L)
             val raw = CapturedImage(ByteArray(1), ImageFormat.DNG, PixelSize(4000, 3000), 0L).takeIf { includeRaw }
             return CaptureBundle(jpeg, raw)
+        }
+        override suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage> {
+            bursts += frames
+            return List(frames) { CapturedImage(ByteArray(1), ImageFormat.JPEG, PixelSize(4000, 3000), 0L) }
         }
         override suspend fun close() {
             state.value = CameraState.Closed
