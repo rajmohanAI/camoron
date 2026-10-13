@@ -51,6 +51,7 @@ import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
+import com.camoron.domain.model.FrameBurst
 import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.Histogram
@@ -60,6 +61,7 @@ import com.camoron.domain.model.LiveExposure
 import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.ShotInfo
 import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.StillAspect
 import com.camoron.domain.model.VideoMath
@@ -67,6 +69,7 @@ import com.camoron.domain.model.VideoResolution
 import com.camoron.domain.model.VideoSpec
 import com.camoron.domain.model.WhiteBalance
 import com.camoron.domain.model.WhiteBalancePreset
+import com.camoron.domain.model.YuvFrame
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.PreviewTarget
 import com.camoron.domain.usecase.SanitizeManualSettings
@@ -109,6 +112,10 @@ class Camera2Controller @Inject constructor(
     private val manager = context.getSystemService(CameraManager::class.java)
     private val thread = HandlerThread("CamoronCamera").apply { start() }
     private val handler = Handler(thread.looper)
+
+    /** Burst frames are copied out on their own thread, so preview callbacks are never held up. */
+    private val frameThread = HandlerThread("CamoronFrames").apply { start() }
+    private val frameHandler = Handler(frameThread.looper)
     private val executor = Executor { handler.post(it) }
     private val mutex = Mutex()
 
@@ -181,6 +188,8 @@ class Camera2Controller @Inject constructor(
         val rawReader: ImageReader?,
         val analysisReader: ImageReader?,
         val video: VideoSession? = null,
+        /** Full-size uncompressed frames for merged photos; present instead of [jpegReader] when used. */
+        val frameReader: ImageReader? = null,
     ) {
         var settings: ManualSettings = ManualSettings.AUTO
         @Volatile
@@ -212,7 +221,16 @@ class Camera2Controller @Inject constructor(
         val usesZoomRatio: Boolean get() = capabilities.zoomRatioRange != null
         val isFront: Boolean get() = capabilities.lensFacing == LensFacing.FRONT
 
+        /** Last auto-exposure state from the preview, to know whether the flash would fire. */
+        @Volatile
+        var lastAeState: Int? = null
+
+        val edgeModes: Set<Int> = characteristics.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES)?.toSet().orEmpty()
+        val noiseModes: Set<Int> =
+            characteristics.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)?.toSet().orEmpty()
+
         fun closeReaders() {
+            runCatching { frameReader?.close() }
             runCatching { jpegReader?.close() }
             runCatching { rawReader?.close() }
             runCatching { analysisReader?.close() }
@@ -696,22 +714,13 @@ class Camera2Controller @Inject constructor(
             val jpegSize = jpegSizes?.takeIf { it.isNotEmpty() }
                 ?.let { CameraMath.chooseStillSize(it, effectiveAspect(caps, aspect)) }
                 ?: caps.maxJpegSize
-            val jpegReader = ImageReader.newInstance(
-                jpegSize.width,
-                jpegSize.height,
-                AndroidImageFormat.JPEG,
-                MAX_IMAGES,
-            ).also(readers::add)
 
-            // Camera2 guarantees preview + max JPEG + one more stream: RAW when the user wants DNGs,
-            // otherwise a small YUV stream for the histogram.
+            // Camera2 guarantees preview + one full-size output + one more stream: RAW when the user
+            // wants DNGs, otherwise a small YUV stream for the histogram.
             val rawSize = streams?.getOutputSizes(AndroidImageFormat.RAW_SENSOR)
                 ?.maxByOrNull { it.width.toLong() * it.height }
                 ?.takeIf { rawEnabled && caps.supportsRaw }
-            val rawReader = rawSize?.let {
-                ImageReader.newInstance(it.width, it.height, AndroidImageFormat.RAW_SENSOR, MAX_IMAGES).also(readers::add)
-            }
-            val analysisSize = if (rawReader == null) {
+            val analysisSize = if (rawSize == null) {
                 streams?.getOutputSizes(AndroidImageFormat.YUV_420_888)
                     ?.map { PixelSize(it.width, it.height) }
                     ?.let(CameraMath::chooseAnalysisSize)
@@ -724,9 +733,52 @@ class Camera2Controller @Inject constructor(
                     .apply { setOnImageAvailableListener(::onAnalysisFrame, handler) }
             }
 
-            val outputs = listOfNotNull(surface, jpegReader.surface, rawReader?.surface, analysisReader?.surface)
-            val session = createSession(device, outputs)
-            val camera = ActiveCamera(caps, characteristics, device, session, surface, jpegReader, rawReader, analysisReader)
+            // Without RAW, photos are merged from uncompressed full-size frames instead of taken as
+            // the camera's own JPEG (preview + full YUV + small YUV is guaranteed on every camera).
+            // Phones that can't give full-size frames, or refuse the session, keep the JPEG way.
+            val frameSize = if (rawSize == null) {
+                streams?.getOutputSizes(AndroidImageFormat.YUV_420_888)
+                    ?.map { PixelSize(it.width, it.height) }
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { CameraMath.chooseStillSize(it, effectiveAspect(caps, aspect)) }
+                    ?.takeIf { it.width.toLong() * it.height >= jpegSize.width.toLong() * jpegSize.height * MIN_FRAME_AREA }
+            } else {
+                null
+            }
+            var frameReader: ImageReader? = null
+            var jpegReader: ImageReader? = null
+            var rawReader: ImageReader? = null
+            var session: CameraCaptureSession? = null
+            if (frameSize != null) {
+                val reader = ImageReader.newInstance(frameSize.width, frameSize.height, AndroidImageFormat.YUV_420_888, FRAME_IMAGES)
+                session = try {
+                    createSession(device, listOfNotNull(surface, reader.surface, analysisReader?.surface))
+                } catch (e: CancellationException) {
+                    reader.close()
+                    throw e
+                } catch (e: Exception) {
+                    DiagnosticLog.record(TAG, "Camera $cameraId refused full-size frames; taking single photos", e)
+                    reader.close()
+                    null
+                }
+                if (session != null) frameReader = reader.also(readers::add)
+            }
+            if (session == null) {
+                jpegReader = ImageReader.newInstance(
+                    jpegSize.width,
+                    jpegSize.height,
+                    AndroidImageFormat.JPEG,
+                    MAX_IMAGES,
+                ).also(readers::add)
+                rawReader = rawSize?.let {
+                    ImageReader.newInstance(it.width, it.height, AndroidImageFormat.RAW_SENSOR, MAX_IMAGES).also(readers::add)
+                }
+                session = createSession(device, listOfNotNull(surface, jpegReader.surface, rawReader?.surface, analysisReader?.surface))
+            }
+            val camera = ActiveCamera(
+                caps, characteristics, device, session, surface, jpegReader, rawReader, analysisReader,
+                frameReader = frameReader,
+            )
             active = camera
             startRepeating(camera)
             if (macroEnabled && caps.supportsMacro && caps.supportsMacroAf) triggerFocus(camera)
@@ -734,7 +786,8 @@ class Camera2Controller @Inject constructor(
             DiagnosticLog.info(
                 TAG,
                 "Opened camera $cameraId in ${SystemClock.elapsedRealtime() - started} ms: asked $aspect, " +
-                    "photo ${jpegSize.width}x${jpegSize.height}, analysis ${analysisSize?.let { "${it.width}x${it.height}" }}",
+                    "photos from ${frameReader?.let { "merged ${it.width}x${it.height} frames" } ?: "camera JPEG ${jpegSize.width}x${jpegSize.height}"}, " +
+                    "analysis ${analysisSize?.let { "${it.width}x${it.height}" }}",
             )
         } catch (e: Exception) {
             DiagnosticLog.record(TAG, "Failed to open camera $cameraId", e)
@@ -1098,6 +1151,125 @@ class Camera2Controller @Inject constructor(
         }
     }
 
+    override suspend fun captureFrames(deviceRotationDegrees: Int, frames: Int): FrameBurst? = locked {
+        if (activeNight != null) return@locked null
+        val camera = active ?: error("Camera is not open")
+        val reader = camera.frameReader ?: return@locked null
+        val started = SystemClock.elapsedRealtime()
+        val rotation = CameraMath.jpegOrientation(camera.sensorOrientation, deviceRotationDegrees, camera.isFront)
+
+        if (usesAutoFlash(camera)) runPrecapture(camera)
+        // The flash lights one frame only, so a flash photo is a single frame.
+        val flash = camera.capabilities.hasFlash && !isManualExposure(camera) && when (flashMode) {
+            FlashMode.ON -> true
+            FlashMode.AUTO -> camera.lastAeState == CameraMetadata.CONTROL_AE_STATE_FLASH_REQUIRED
+            FlashMode.OFF -> false
+        }
+        val frameBytes = reader.width.toLong() * reader.height * 3 / 2
+        val count = if (flash) 1 else CameraMath.framesThatFit(frames, frameBytes, availableHeap())
+
+        reader.acquireLatestImage()?.close()
+        val copies = Channel<YuvFrame?>(Channel.UNLIMITED)
+        reader.setOnImageAvailableListener({ r ->
+            val image = r.acquireNextImage() ?: return@setOnImageAvailableListener
+            // Copy out and release at once, so the camera can reuse the buffer for the next frame.
+            val copy = runCatching { image.use(YuvCopy::copy) }
+                .onFailure { DiagnosticLog.record(TAG, "Couldn't read a burst frame", it) }
+                .getOrNull()
+            copies.trySend(copy)
+        }, frameHandler)
+        val firstResult = CompletableDeferred<TotalCaptureResult>()
+        try {
+            val requests = List(count) {
+                camera.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                    addTarget(reader.surface)
+                    addTarget(camera.previewSurface)
+                    applyControls(camera, this)
+                    if (count > 1) {
+                        // Identical exposures merge cleanly; merging does the noise reduction and we
+                        // sharpen afterwards, so ask for the camera's lightest touch on both.
+                        if (!isManualExposure(camera)) set(CaptureRequest.CONTROL_AE_LOCK, true)
+                        if (camera.settings.whiteBalance !is WhiteBalance.Kelvin) set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                        if (camera.capabilities.hasFlash) set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
+                        lightestProcessing(camera, this)
+                    } else {
+                        applyStillProcessing(camera, this)
+                        if (camera.capabilities.hasFlash && flashMode == FlashMode.ON && isManualExposure(camera)) {
+                            set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_SINGLE)
+                        }
+                    }
+                }.build()
+            }
+            val callback = object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    result: TotalCaptureResult,
+                ) {
+                    firstResult.complete(result)
+                }
+
+                override fun onCaptureFailed(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    failure: android.hardware.camera2.CaptureFailure,
+                ) {
+                    DiagnosticLog.record(TAG, "Burst frame failed, reason ${failure.reason}")
+                    copies.trySend(null)
+                }
+            }
+            if (count > 1) camera.session.captureBurst(requests, callback, handler) else camera.session.capture(requests[0], callback, handler)
+
+            val timestamp = System.currentTimeMillis()
+            val collected = mutableListOf<YuvFrame>()
+            withTimeoutOrNull(BURST_TIMEOUT_MS) {
+                repeat(count) { copies.receive()?.let(collected::add) }
+            }
+            if (collected.isEmpty()) error("The camera delivered no frames")
+            val result = withTimeoutOrNull(RESULT_TIMEOUT_MS) { firstResult.await() }
+            DiagnosticLog.info(
+                TAG,
+                "Burst of ${collected.size}/$count ${reader.width}x${reader.height} frames in " +
+                    "${SystemClock.elapsedRealtime() - started} ms (asked $frames, flash $flash)",
+            )
+            FrameBurst(collected, rotation, timestamp, shotInfo(camera, result, flash))
+        } finally {
+            reader.setOnImageAvailableListener(null, null)
+            copies.close()
+            // Unlock exposure and white balance for the preview again.
+            if (count > 1) runCatching { startRepeating(camera) }
+        }
+    }
+
+    private fun shotInfo(camera: ActiveCamera, result: TotalCaptureResult?, flash: Boolean) = ShotInfo(
+        iso = result?.get(CaptureResult.SENSOR_SENSITIVITY) ?: camera.lastExposure?.iso,
+        exposureTimeNs = result?.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: camera.lastExposure?.exposureTimeNs,
+        aperture = result?.get(CaptureResult.LENS_APERTURE),
+        focalLengthMm = result?.get(CaptureResult.LENS_FOCAL_LENGTH),
+        focalLength35mm = camera.capabilities.equivalentFocalLengthMm?.toInt(),
+        flashFired = flash,
+    )
+
+    /** Free heap for burst frames: what's left of the app's limit after what is already in use. */
+    private fun availableHeap(): Long {
+        val runtime = Runtime.getRuntime()
+        return runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory())
+    }
+
+    /** Frames for merging: no camera sharpening and as little noise reduction as offered. */
+    private fun lightestProcessing(camera: ActiveCamera, builder: CaptureRequest.Builder) {
+        when {
+            CameraMetadata.EDGE_MODE_OFF in camera.edgeModes -> builder.set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_OFF)
+            CameraMetadata.EDGE_MODE_FAST in camera.edgeModes -> builder.set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_FAST)
+        }
+        when {
+            CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL in camera.noiseModes ->
+                builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL)
+            CameraMetadata.NOISE_REDUCTION_MODE_FAST in camera.noiseModes ->
+                builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_FAST)
+        }
+    }
+
     /** The camera's best noise reduction for stills, where offered. */
     private fun applyStillProcessing(camera: ActiveCamera, builder: CaptureRequest.Builder) {
         if (camera.capabilities.supportsHqNoiseReduction) {
@@ -1399,6 +1571,7 @@ class Camera2Controller @Inject constructor(
                     else -> if (waiter.sawPrecapture) waiter.done.complete(Unit)
                 }
             }
+            camera.lastAeState = result.get(CaptureResult.CONTROL_AE_STATE)
             val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
             val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
             if (iso != null && exposure != null) camera.lastExposure = LiveExposure(iso, exposure)
@@ -1442,6 +1615,12 @@ class Camera2Controller @Inject constructor(
     private companion object {
         const val TAG = "Camera2Controller"
         const val MAX_IMAGES = 2
+
+        /** Buffers for burst frames: one being copied out while the camera fills the others. */
+        const val FRAME_IMAGES = 3
+
+        /** Merged frames are used only if they keep at least this share of the JPEG's pixels. */
+        const val MIN_FRAME_AREA = 0.6
         const val JPEG_QUALITY: Byte = 95
         const val FOCUS_REGION_FRACTION = 0.15f
         const val DEFAULT_EXPOSURE_NS = 16_666_667L // 1/60 s
@@ -1451,6 +1630,7 @@ class Camera2Controller @Inject constructor(
         const val PRECAPTURE_TIMEOUT_MS = 1500L
         const val BURST_TIMEOUT_MS = 15_000L
         const val CAPTURE_TIMEOUT_MS = 10_000L
+        const val RESULT_TIMEOUT_MS = 1_000L
         const val NIGHT_CAPTURE_TIMEOUT_MS = 20_000L
         const val TRACK_INTERVAL_MS = 66L
         /** Normalised movement below which the focus region is left where it is. */

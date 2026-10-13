@@ -6,11 +6,13 @@ import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
 import android.os.Build
+import android.os.SystemClock
 import androidx.exifinterface.media.ExifInterface
 import com.camoron.core.common.DefaultDispatcher
 import com.camoron.core.common.DiagnosticLog
 import com.camoron.core.common.timed
 import com.camoron.domain.model.CapturedImage
+import com.camoron.domain.model.FrameBurst
 import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.PhotoAdjustments
@@ -23,6 +25,9 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import javax.inject.Inject
 
 /**
@@ -84,6 +89,58 @@ class BitmapPhotoProcessor @Inject constructor(
         }
     }
 
+    override suspend fun render(burst: FrameBurst, adjustments: PhotoAdjustments): CapturedImage = withContext(processing) {
+        val started = SystemClock.elapsedRealtime()
+        val merged = try {
+            BurstMerger.merge(burst.frames, processing)
+        } catch (e: OutOfMemoryError) {
+            // Keep the photo: one frame is still a photo, just a noisier one.
+            DiagnosticLog.record(TAG, "Not enough memory to merge ${burst.frames.size} frames; using one", e)
+            BurstMerger.Result(burst.frames.first(), 0f, 1, 0)
+        }
+        val frame = merged.frame
+        DiagnosticLog.info(
+            TAG,
+            "Merged ${merged.framesUsed} of ${burst.frames.size} frames (${frame.width}x${frame.height}, " +
+                "reference ${merged.reference}, noise %.1f) in ${SystemClock.elapsedRealtime() - started} ms".format(merged.noise),
+        )
+
+        val crop = adjustments.cropAspect?.let { PhotoMath.centreCrop(frame.width, frame.height, 1f / it) }
+            ?: CropRect(0, 0, frame.width, frame.height)
+        val look = LookMatrix.forLook(adjustments.look).takeUnless(LookMatrix::isIdentity)
+        val bitmap = Bitmap.createBitmap(crop.width, crop.height, Bitmap.Config.ARGB_8888)
+        val bytes = try {
+            val rows = IntArray(crop.width * CONVERT_ROWS)
+            var top = 0
+            while (top < crop.height) {
+                val count = minOf(CONVERT_ROWS, crop.height - top)
+                YuvMath.toArgb(frame, crop.left, crop.top + top, crop.width, count, rows)
+                bitmap.setPixels(rows, 0, crop.width, 0, top, crop.width, count)
+                top += count
+            }
+            try {
+                finishPixels(bitmap, look, adjustments.enhance, adjustments.zoom)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                DiagnosticLog.record(TAG, "Couldn't enhance the merged photo; saving it without", e)
+                finishPixels(bitmap, null, enhance = false, zoom = 1f)
+            } catch (e: OutOfMemoryError) {
+                DiagnosticLog.record(TAG, "Not enough memory to enhance the merged photo; saving it without", e)
+                finishPixels(bitmap, null, enhance = false, zoom = 1f)
+            }
+        } finally {
+            bitmap.recycle()
+        }
+
+        val size = PixelSize(crop.width, crop.height)
+        val orientation = PhotoMath.orientationTag(burst.orientationDegrees)
+            .let { if (adjustments.mirror) PhotoMath.mirroredOrientation(it) else it }
+        val withExif = writeShotExif(bytes, burst, orientation, size)
+        DiagnosticLog.info(TAG, "Rendered the burst in ${SystemClock.elapsedRealtime() - started} ms")
+        CapturedImage(withExif, ImageFormat.JPEG, size, burst.timestampMillis)
+    }
+
     override suspend fun mergeNight(frames: List<CapturedImage>): CapturedImage {
         val reference = frames.firstOrNull() ?: error("No frames to merge")
         if (frames.size < 2) return reference
@@ -132,12 +189,60 @@ class BitmapPhotoProcessor @Inject constructor(
                 ?: error("Could not copy the decoded photo")
         }
         try {
-            if (enhance) Enhancer.enhance(bitmap, zoom)
-            if (look != null) applyLook(bitmap, look)
-            return ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }
-                .toByteArray()
+            return finishPixels(bitmap, look, enhance, zoom)
         } finally {
             bitmap.recycle()
+        }
+    }
+
+    /** Enhancement, colour look and JPEG encoding, shared by single photos and merged bursts. */
+    private suspend fun finishPixels(bitmap: Bitmap, look: FloatArray?, enhance: Boolean, zoom: Float): ByteArray {
+        if (enhance) Enhancer.enhance(bitmap, zoom)
+        if (look != null) applyLook(bitmap, look)
+        return DiagnosticLog.timed(TAG, "Encoding ${bitmap.width}x${bitmap.height}") {
+            ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }.toByteArray()
+        }
+    }
+
+    /** EXIF for a photo we encoded ourselves from camera frames: what the camera's JPEG would carry. */
+    private fun writeShotExif(bytes: ByteArray, burst: FrameBurst, orientation: Int, size: PixelSize): ByteArray {
+        val file = File.createTempFile("render", ".jpg", context.cacheDir)
+        try {
+            file.writeBytes(bytes)
+            ExifInterface(file).apply {
+                val date = Date(burst.timestampMillis)
+                val stamp = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(date)
+                val offset = SimpleDateFormat("XXX", Locale.US).format(date)
+                val subSec = (burst.timestampMillis % 1000).toString().padStart(3, '0')
+                setAttribute(ExifInterface.TAG_DATETIME, stamp)
+                setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, stamp)
+                setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, stamp)
+                setAttribute(ExifInterface.TAG_SUBSEC_TIME, subSec)
+                setAttribute(ExifInterface.TAG_SUBSEC_TIME_ORIGINAL, subSec)
+                setAttribute(ExifInterface.TAG_SUBSEC_TIME_DIGITIZED, subSec)
+                setAttribute(ExifInterface.TAG_OFFSET_TIME, offset)
+                setAttribute(ExifInterface.TAG_OFFSET_TIME_ORIGINAL, offset)
+                setAttribute(ExifInterface.TAG_OFFSET_TIME_DIGITIZED, offset)
+                setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER)
+                setAttribute(ExifInterface.TAG_MODEL, Build.MODEL)
+                setAttribute(ExifInterface.TAG_SOFTWARE, "Camoron")
+                setAttribute(ExifInterface.TAG_PIXEL_X_DIMENSION, size.width.toString())
+                setAttribute(ExifInterface.TAG_PIXEL_Y_DIMENSION, size.height.toString())
+                setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
+                setAttribute(ExifInterface.TAG_COLOR_SPACE, ExifInterface.COLOR_SPACE_S_RGB.toString())
+                val info = burst.info
+                info.iso?.let { setAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, it.toString()) }
+                // Rationals, not decimals: ExifInterface can't parse "1.0E-4".
+                info.exposureTimeNs?.let { setAttribute(ExifInterface.TAG_EXPOSURE_TIME, "${it / 1000}/1000000") }
+                info.aperture?.let { setAttribute(ExifInterface.TAG_F_NUMBER, "${(it * 100).toInt()}/100") }
+                info.focalLengthMm?.let { setAttribute(ExifInterface.TAG_FOCAL_LENGTH, "${(it * 1000).toInt()}/1000") }
+                info.focalLength35mm?.let { setAttribute(ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM, it.toString()) }
+                setAttribute(ExifInterface.TAG_FLASH, if (info.flashFired) "1" else "0")
+                saveAttributes()
+            }
+            return file.readBytes()
+        } finally {
+            file.delete()
         }
     }
 
@@ -176,6 +281,7 @@ class BitmapPhotoProcessor @Inject constructor(
 
     private companion object {
         const val TAG = "PhotoProcessor"
+        const val CONVERT_ROWS = 64
 
         val COPIED_TAGS = listOf(
             ExifInterface.TAG_DATETIME,

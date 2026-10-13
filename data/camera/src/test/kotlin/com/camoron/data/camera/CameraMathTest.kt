@@ -138,4 +138,12 @@ class CameraMathTest {
         assertThat(CameraMath.cropForZoom(4000, 3000, 2f).toList()).containsExactly(1000, 750, 3000, 2250).inOrder()
         assertThat(CameraMath.cropForZoom(4000, 3000, 0.5f).toList()).containsExactly(0, 0, 4000, 3000).inOrder()
     }
+
+    @Test
+    fun `burst size shrinks to fit the memory left, but never below one frame`() {
+        val frame = 4080L * 3072 * 3 / 2
+        assertThat(CameraMath.framesThatFit(6, frame, 450L shl 20)).isEqualTo(6)
+        assertThat(CameraMath.framesThatFit(6, frame, 200L shl 20)).isIn(2..5)
+        assertThat(CameraMath.framesThatFit(6, frame, 50L shl 20)).isEqualTo(1)
+    }
 }

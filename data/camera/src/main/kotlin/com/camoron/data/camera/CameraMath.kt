@@ -124,6 +124,17 @@ internal object CameraMath {
         else -> EXIF_NORMAL
     }
 
+    /**
+     * How many of [requested] burst frames of [frameBytes] each fit in [availableHeap] bytes, keeping
+     * room for the merged frame, the photo being enhanced and its working memory. Never below one.
+     */
+    fun framesThatFit(requested: Int, frameBytes: Long, availableHeap: Long): Int {
+        if (frameBytes <= 0) return requested.coerceAtLeast(1)
+        val reserve = frameBytes * PROCESSING_RESERVE_FRAMES
+        val usable = ((availableHeap - reserve) * BURST_HEAP_SHARE).toLong()
+        return (usable / frameBytes).toInt().coerceIn(1, requested.coerceAtLeast(1))
+    }
+
     /** Smallest analysis stream at least [minWidth] wide; small keeps the histogram cheap. */
     fun chooseAnalysisSize(candidates: List<PixelSize>, minWidth: Int = 320): PixelSize? =
         candidates.filter { maxOf(it.width, it.height) >= minWidth }
@@ -159,6 +170,12 @@ internal object CameraMath {
     }
 
     const val HISTOGRAM_BINS = 64
+
+    /** Memory kept free for processing, in frames: merged frame, ARGB photo and enhancement buffers. */
+    private const val PROCESSING_RESERVE_FRAMES = 5
+
+    /** Share of the rest that burst frames may take, leaving slack for the rest of the app. */
+    private const val BURST_HEAP_SHARE = 0.8
     private const val FULL_FRAME_DIAGONAL_MM = 43.27f
     private const val EXIF_NORMAL = 1
     private const val EXIF_ROTATE_180 = 3
