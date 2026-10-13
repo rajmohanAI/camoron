@@ -446,7 +446,7 @@ internal fun RecordingBadge(state: CameraUiState, modifier: Modifier = Modifier)
 
 /** Last photo or video Camoron saved; tapping opens it in the phone's gallery app. */
 @Composable
-internal fun GalleryThumbnail(uri: String?, saving: Boolean = false) {
+internal fun GalleryThumbnail(uri: String?, saving: Boolean = false, instant: ImageBitmap? = null, instantUri: String? = null) {
     val context = LocalContext.current
     val bitmap by produceState<ImageBitmap?>(initialValue = null, uri) {
         value = uri?.let { withContext(Dispatchers.IO) { loadThumbnail(context, Uri.parse(it)) } }
@@ -458,9 +458,12 @@ internal fun GalleryThumbnail(uri: String?, saving: Boolean = false) {
             .clip(CircleShape)
             .border(2.dp, Color.White, CircleShape)
             .background(Color.DarkGray)
-            .clickable(enabled = uri != null, onClickLabel = description) { uri?.let { openInGallery(context, it) } },
+            // While the newest photo is still saving, wait for it rather than open the previous one.
+            .clickable(enabled = uri != null && !saving, onClickLabel = description) { uri?.let { openInGallery(context, it) } },
     ) {
-        bitmap?.let {
+        // The shot appears the moment it is taken; the saved photo's own thumbnail takes over later.
+        val shown = if (instant != null && (saving || uri == instantUri)) instant else bitmap
+        shown?.let {
             Image(it, contentDescription = description, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         }
         // The last photo is still being enhanced and saved; it appears here when ready.

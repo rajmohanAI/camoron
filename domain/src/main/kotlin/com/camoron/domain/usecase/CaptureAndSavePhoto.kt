@@ -1,6 +1,7 @@
 package com.camoron.domain.usecase
 
 import com.camoron.domain.model.CapturedImage
+import com.camoron.domain.model.FrameBurst
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.MediaRepository
@@ -29,7 +30,8 @@ class CaptureAndSavePhoto @Inject constructor(
      *
      * With [nightFrames] above 1 the photo is a merged night burst instead (no RAW).
      *
-     * [onCaptured] runs as soon as the camera has delivered the frames, before processing and saving,
+     * [onFrames] hands over a merged burst's frames as soon as they arrive, so the shot can be shown at
+     * once. [onCaptured] runs as soon as the camera has delivered the frames, before processing and saving,
      * so the shutter can be ready for the next shot straight away. A failed capture is retried once:
      * some phones reject a still request issued while the session is still settling.
      */
@@ -39,12 +41,14 @@ class CaptureAndSavePhoto @Inject constructor(
         adjustments: PhotoAdjustments = PhotoAdjustments.NONE,
         nightFrames: Int = 0,
         onCaptured: () -> Unit = {},
+        onFrames: (FrameBurst) -> Unit = {},
     ): String {
         // Every photo is a merged burst where the camera allows it: night simply uses more frames.
         if (!includeRaw) {
             val count = if (nightFrames > 1) nightFrames else BURST_FRAMES
             val burst = retryOnce { camera.captureFrames(deviceRotationDegrees, count) }
             if (burst != null) {
+                onFrames(burst)
                 onCaptured()
                 return saving.withLock { media.save(processor.render(burst, adjustments)) }
             }

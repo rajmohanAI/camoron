@@ -1,6 +1,7 @@
 package com.camoron.feature.camera
 
 import android.os.SystemClock
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.camoron.core.common.DiagnosticLog
@@ -10,6 +11,7 @@ import com.camoron.domain.model.CameraError
 import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.CameraState
+import com.camoron.domain.model.FrameBurst
 import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.EnhanceMath
 import com.camoron.domain.model.EnhanceParams
@@ -56,6 +58,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 
 /** Capture modes in carousel order. Video modes record; the rest take photos. */
@@ -80,6 +83,10 @@ data class CameraUiState(
     val isCapturing: Boolean = false,
     /** Photos taken whose enhancement and saving are still running. */
     val photosSaving: Int = 0,
+    /** The latest shot, shown in the thumbnail the moment it is taken, before the photo is saved. */
+    val instantThumbnail: ImageBitmap? = null,
+    /** The saved photo [instantThumbnail] stands for, once it is saved. */
+    val instantThumbnailUri: String? = null,
     val rawEnabled: Boolean = false,
     /** Seconds left on the self-timer, or null when no countdown is running. */
     val countdown: Int? = null,
@@ -596,7 +603,11 @@ class CameraViewModel @Inject constructor(
         }
         val adjustments = adjustmentsFor(state)
         val uri = runCatching {
-            captureAndSave(deviceRotation, state.rawActive, adjustments, nightFrames, onCaptured = ready)
+            captureAndSave(
+                deviceRotation, state.rawActive, adjustments, nightFrames,
+                onCaptured = ready,
+                onFrames = { burst -> showInstantThumbnail(burst, adjustments.mirror) },
+            )
         }.onFailure { DiagnosticLog.record(TAG, "Couldn't take the photo", it) }.getOrNull()
         if (uri != null) {
             DiagnosticLog.info(
@@ -613,8 +624,19 @@ class CameraViewModel @Inject constructor(
                 nightCapturing = false,
                 photosSaving = if (captured) (it.photosSaving - 1).coerceAtLeast(0) else it.photosSaving,
                 lastCaptureUri = uri ?: it.lastCaptureUri,
+                instantThumbnailUri = if (uri != null && it.instantThumbnail != null) uri else it.instantThumbnailUri,
                 event = if (uri != null) CameraEvent.Saved(uri) else CameraEvent.CaptureFailed,
             )
+        }
+    }
+
+    /** Shows the shot in the thumbnail straight away, upright, from the first frame of the burst. */
+    private fun showInstantThumbnail(burst: FrameBurst, mirror: Boolean) {
+        viewModelScope.launch(Dispatchers.Default) {
+            val image = runCatching { InstantThumbnail.from(burst, mirror) }
+                .onFailure { DiagnosticLog.record(TAG, "Couldn't show the instant thumbnail", it) }
+                .getOrNull() ?: return@launch
+            _uiState.update { it.copy(instantThumbnail = image, instantThumbnailUri = null) }
         }
     }
 

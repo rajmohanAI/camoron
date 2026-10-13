@@ -234,6 +234,7 @@ private fun PreviewArea(
                     previewSize = bufferSize,
                     look = if (state.mode.isVideo) ShotLook.NORMAL else state.cameraSettings.look,
                     enhance = if (state.mode.isVideo) ({ null }) else enhance,
+                    iso = { (state.cameraState as? CameraState.Previewing)?.liveExposure?.iso },
                     live = state.cameraState is CameraState.Previewing,
                     onSurfaceReady = onSurfaceReady,
                     onSurfaceDestroyed = onSurfaceDestroyed,
@@ -272,6 +273,7 @@ private fun CameraPreview(
     previewSize: PixelSize,
     look: ShotLook,
     enhance: () -> EnhanceParams?,
+    iso: () -> Int?,
     live: Boolean,
     onSurfaceReady: (SurfacePreviewTarget) -> Unit,
     onSurfaceDestroyed: () -> Unit,
@@ -286,7 +288,7 @@ private fun CameraPreview(
             view.setBufferSize(previewSize)
             view.setLive(live)
             // Read here, so new parameters only re-run this update, not the composition.
-            view.setFilter(look, enhance())
+            view.setFilter(look, enhance(), iso())
         },
         modifier = modifier,
     )
@@ -330,7 +332,7 @@ private class PreviewTextureView(
         if (!live) sawRestart = true else if (sawRestart) revealOnFrame = true
     }
 
-    fun setFilter(look: ShotLook, enhance: EnhanceParams?) = filter.update(look, enhance)
+    fun setFilter(look: ShotLook, enhance: EnhanceParams?, iso: Int?) = filter.update(look, enhance, iso)
 
     private fun report(texture: SurfaceTexture) {
         val size = bufferSize ?: return
@@ -384,7 +386,12 @@ private fun BottomBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                if (!state.recording) GalleryThumbnail(state.lastCaptureUri, saving = state.photosSaving > 0)
+                if (!state.recording) GalleryThumbnail(
+                    state.lastCaptureUri,
+                    saving = state.photosSaving > 0,
+                    instant = state.instantThumbnail,
+                    instantUri = state.instantThumbnailUri,
+                )
             }
             if (state.mode.isVideo) {
                 RecordButton(
