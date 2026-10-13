@@ -34,6 +34,7 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import android.view.Surface
 import com.camoron.core.common.DefaultDispatcher
+import com.camoron.core.common.DiagnosticLog
 import com.camoron.core.common.SurfacePreviewTarget
 import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.CameraError
@@ -194,13 +195,16 @@ class Camera2Controller @Inject constructor(
         }
     }
 
-    override suspend fun cameras(): List<CameraCapabilities> = manager.cameraIdList.mapNotNull { id ->
-        runCatching { mapper.map(id, manager.getCameraCharacteristics(id)).copy(extensions = extensionsFor(id)) }
-            .onFailure { Log.w(TAG, "Skipping camera $id", it) }
-            .getOrNull()
+    // Camera queries can take hundreds of milliseconds on some phones, so keep them off the UI thread.
+    override suspend fun cameras(): List<CameraCapabilities> = withContext(processing) {
+        manager.cameraIdList.mapNotNull { id ->
+            runCatching { mapper.map(id, manager.getCameraCharacteristics(id)).copy(extensions = extensionsFor(id)) }
+                .onFailure { Log.w(TAG, "Skipping camera $id", it) }
+                .getOrNull()
+        }
     }
 
-    override suspend fun deviceProfile(): DeviceProfile {
+    override suspend fun deviceProfile(): DeviceProfile = withContext(processing) {
         val cameras = cameras()
         val facingById = cameras.associate { it.cameraId to it.lensFacing }
         val concurrent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -215,12 +219,20 @@ class Camera2Controller @Inject constructor(
         }
         val mustPlayShutter = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             MediaActionSound.mustPlayShutterSound()
-        return DeviceProfile(cameras, supportsConcurrentFrontBack = concurrent, mustPlayShutterSound = mustPlayShutter)
+        DeviceProfile(cameras, supportsConcurrentFrontBack = concurrent, mustPlayShutterSound = mustPlayShutter)
     }
+
+    /** Extension lookups are slow and never change while the app runs. */
+    private val extensionCache = java.util.concurrent.ConcurrentHashMap<String, Set<CameraExtension>>()
 
     /** Phone-maker extensions (Night, Bokeh, ...) exposed through Camera2 on Android 12+. */
     private fun extensionsFor(cameraId: String): Set<CameraExtension> {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return emptySet()
+        return extensionCache.getOrPut(cameraId) { loadExtensions(cameraId) }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun loadExtensions(cameraId: String): Set<CameraExtension> {
         return runCatching {
             manager.getCameraExtensionCharacteristics(cameraId).supportedExtensions.mapNotNull { ext ->
                 when (ext) {
@@ -235,7 +247,10 @@ class Camera2Controller @Inject constructor(
         }.getOrDefault(emptySet())
     }
 
-    override suspend fun previewSize(cameraId: String, aspect: StillAspect, nightExtension: Boolean): PixelSize {
+    override suspend fun previewSize(cameraId: String, aspect: StillAspect, nightExtension: Boolean): PixelSize =
+        withContext(processing) { previewSizeBlocking(cameraId, aspect, nightExtension) }
+
+    private fun previewSizeBlocking(cameraId: String, aspect: StillAspect, nightExtension: Boolean): PixelSize {
         val characteristics = manager.getCameraCharacteristics(cameraId)
         val caps = mapper.map(cameraId, characteristics)
         val ratio = effectiveAspect(caps, aspect).ratio
@@ -456,7 +471,7 @@ class Camera2Controller @Inject constructor(
             if (macroEnabled && caps.supportsMacro && caps.supportsMacroAf) triggerFocus(camera)
             _state.value = CameraState.Previewing(caps, camera.settings, liveExposure = null)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to open camera $cameraId", e)
+            DiagnosticLog.record(TAG, "Failed to open camera $cameraId", e)
             readers.forEach { runCatching { it.close() } }
             device?.close()
             active = null
@@ -718,13 +733,15 @@ class Camera2Controller @Inject constructor(
                     request: CaptureRequest,
                     failure: android.hardware.camera2.CaptureFailure,
                 ) {
+                    DiagnosticLog.record(TAG, "Capture failed, reason ${failure.reason}")
                     failAll(IllegalStateException("Capture failed, reason ${failure.reason}"))
                 }
             }, handler)
 
             val timestamp = System.currentTimeMillis()
             val primary = CapturedImage(
-                bytes = jpegBytes.await(),
+                bytes = withTimeoutOrNull(CAPTURE_TIMEOUT_MS) { jpegBytes.await() }
+                    ?: error("The camera did not deliver the photo"),
                 format = ImageFormat.JPEG,
                 size = PixelSize(jpegReader.width, jpegReader.height),
                 timestampMillis = timestamp,
@@ -815,13 +832,10 @@ class Camera2Controller @Inject constructor(
         }
     }
 
-    /** The camera's best noise reduction and lens distortion correction for stills, where offered. */
+    /** The camera's best noise reduction for stills, where offered. */
     private fun applyStillProcessing(camera: ActiveCamera, builder: CaptureRequest.Builder) {
         if (camera.capabilities.supportsHqNoiseReduction) {
             builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && camera.capabilities.supportsDistortionCorrection) {
-            builder.set(CaptureRequest.DISTORTION_CORRECTION_MODE, CapabilityMapper.DISTORTION_CORRECTION_HIGH_QUALITY)
         }
     }
 
@@ -928,6 +942,7 @@ class Camera2Controller @Inject constructor(
 
     /** Called on the camera thread when an already-open device is taken away from us. */
     private fun onLostDevice(device: CameraDevice, error: CameraError) {
+        DiagnosticLog.record(TAG, "Camera ${device.id} was taken away: $error")
         activeNight?.takeIf { it.device == device }?.let { night ->
             activeNight = null
             runCatching { night.jpegReader.close() }
@@ -986,6 +1001,12 @@ class Camera2Controller @Inject constructor(
         val settings = camera.settings
         val caps = camera.capabilities
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+
+        // Lens distortion correction on every request, so preview and photo match and the HAL never
+        // has to switch modes between frames.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && caps.supportsDistortionCorrection) {
+            builder.set(CaptureRequest.DISTORTION_CORRECTION_MODE, CapabilityMapper.DISTORTION_CORRECTION_HIGH_QUALITY)
+        }
 
         // Zoom applies to every output, so preview, analysis and still all match.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && camera.usesZoomRatio) {
@@ -1130,6 +1151,7 @@ class Camera2Controller @Inject constructor(
         const val HISTOGRAM_INTERVAL_MS = 200L
         const val PRECAPTURE_TIMEOUT_MS = 1500L
         const val BURST_TIMEOUT_MS = 15_000L
+        const val CAPTURE_TIMEOUT_MS = 10_000L
         const val NIGHT_CAPTURE_TIMEOUT_MS = 20_000L
         const val TRACK_INTERVAL_MS = 66L
         /** Normalised movement below which the focus region is left where it is. */

@@ -2,6 +2,7 @@ package com.camoron.feature.camera
 
 import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.CameraCapabilities
+import com.camoron.domain.model.CameraError
 import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.DeviceProfile
@@ -389,6 +390,37 @@ class CameraViewModelTest {
 
         settings.state.update { it.copy(night = NightSetting.OFF) }
         assertThat(controller.openedWithNightExtension.last()).isFalse()
+    }
+
+    @Test
+    fun `the camera closes in the background and reopens on return`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        val opens = controller.opened.size
+        vm.onForegroundChanged(false)
+        assertThat(controller.state.value).isEqualTo(CameraState.Closed)
+        vm.onForegroundChanged(true)
+        assertThat(controller.opened).hasSize(opens + 1)
+    }
+
+    @Test
+    fun `the same surface reported twice opens the camera once`() = runTest {
+        val vm = viewModel()
+        val target = Target(1440, 1080)
+        vm.onSurfaceReady(target)
+        vm.onSurfaceReady(target)
+        assertThat(controller.opened).hasSize(1)
+    }
+
+    @Test
+    fun `a camera taken away is reopened`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        controller.state.value = CameraState.Error(CameraError.CAMERA_DISABLED)
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertThat(controller.opened).hasSize(2)
+        assertThat(vm.uiState.value.cameraState).isInstanceOf(CameraState.Previewing::class.java)
     }
 
     private class FakeSettingsRepository : SettingsRepository {

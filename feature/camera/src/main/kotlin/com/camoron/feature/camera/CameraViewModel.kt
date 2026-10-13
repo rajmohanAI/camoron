@@ -2,8 +2,10 @@ package com.camoron.feature.camera
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.camoron.core.common.DiagnosticLog
 import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.CameraCapabilities
+import com.camoron.domain.model.CameraError
 import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.CameraState
@@ -155,6 +157,25 @@ class CameraViewModel @Inject constructor(
     private var surface: PreviewTarget? = null
     private var timerJob: Job? = null
 
+    /**
+     * The app is on screen. Android takes the camera away from apps in the background (and reports
+     * it as "disabled"), so the camera is closed when the app leaves and reopened when it returns.
+     */
+    private var foreground = true
+
+    /** What the open (or opening) session was opened with, so repeated triggers don't reopen it. */
+    private var openKey: OpenKey? = null
+    private var retryJob: Job? = null
+    private var retries = 0
+
+    private data class OpenKey(
+        val cameraId: String,
+        val target: PreviewTarget,
+        val raw: Boolean,
+        val aspect: com.camoron.domain.model.StillAspect,
+        val nightExtension: Boolean,
+    )
+
     @Volatile
     private var deviceRotation = 0
 
@@ -163,7 +184,14 @@ class CameraViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            camera.state.collect { state -> _uiState.update { it.copy(cameraState = state) } }
+            camera.state.collect { state ->
+                _uiState.update { it.copy(cameraState = state) }
+                when (state) {
+                    is CameraState.Previewing -> retries = 0
+                    is CameraState.Error -> onCameraError(state.error)
+                    else -> Unit
+                }
+            }
         }
         viewModelScope.launch {
             val latest = runCatching { media.latestCapture() }.getOrNull()
@@ -193,8 +221,44 @@ class CameraViewModel @Inject constructor(
 
     fun onSurfaceDestroyed() {
         surface = null
+        closeCamera()
+    }
+
+    /** The app came to the front (true) or went to the background (false). */
+    fun onForegroundChanged(foreground: Boolean) {
+        if (this.foreground == foreground) return
+        this.foreground = foreground
+        if (foreground) openIfReady() else closeCamera()
+    }
+
+    /** The user tapped the error message: try the camera again. */
+    fun retryCamera() {
+        retries = 0
+        openKey = null
+        openIfReady()
+    }
+
+    private fun closeCamera() {
         cancelTimer()
+        retryJob?.cancel()
+        openKey = null
         viewModelScope.launch { camera.close() }
+    }
+
+    /**
+     * Losing the camera is usually temporary (another app grabbed it, or Android blocked it while the
+     * app was briefly in the background), so try again a few times before leaving the error up.
+     */
+    private fun onCameraError(error: CameraError) {
+        if (error == CameraError.PERMISSION_DENIED || error == CameraError.NO_CAMERA) return
+        openKey = null
+        if (!foreground || retries >= MAX_RETRIES) return
+        retries++
+        retryJob?.cancel()
+        retryJob = viewModelScope.launch {
+            delay(RETRY_DELAY_MS * retries)
+            openIfReady()
+        }
     }
 
     fun onDeviceRotation(degrees: Int) {
@@ -358,9 +422,11 @@ class CameraViewModel @Inject constructor(
             delay(SCREEN_FLASH_LEAD_MS)
         }
         if (state.shutterSoundOn) _effects.tryEmit(CameraEffect.SHUTTER)
+        // The shutter is free again as soon as the frames are in; processing and saving carry on.
+        val ready = { _uiState.update { it.copy(isCapturing = false, screenFlash = false, nightCapturing = false) } }
         val uri = runCatching {
-            captureAndSave(deviceRotation, state.rawActive, adjustmentsFor(state), nightFrames)
-        }.getOrNull()
+            captureAndSave(deviceRotation, state.rawActive, adjustmentsFor(state), nightFrames, onCaptured = ready)
+        }.onFailure { DiagnosticLog.record(TAG, "Couldn't take the photo", it) }.getOrNull()
         _uiState.update {
             it.copy(
                 isCapturing = false,
@@ -460,17 +526,28 @@ class CameraViewModel @Inject constructor(
 
     private fun openIfReady() {
         val state = _uiState.value
+        if (!foreground) return
         val target = surface ?: return
         val selected = state.selectedCamera ?: return
         val size = state.previewSize ?: return
         if (target.width != size.width || target.height != size.height) return
+        val key = OpenKey(
+            selected.cameraId,
+            target,
+            raw = state.rawActive,
+            aspect = state.cameraSettings.aspectRatio.stillAspect,
+            nightExtension = state.nightExtensionActive,
+        )
+        // Several events (surface sized, camera selected, app resumed) can ask for the same session.
+        if (key == openKey) return
+        openKey = key
         viewModelScope.launch {
             camera.open(
-                selected.cameraId,
+                key.cameraId,
                 target,
-                rawEnabled = state.rawActive,
-                aspect = state.cameraSettings.aspectRatio.stillAspect,
-                nightExtension = state.nightExtensionActive,
+                rawEnabled = key.raw,
+                aspect = key.aspect,
+                nightExtension = key.nightExtension,
             )
             if (state.mode == CaptureMode.PRO) camera.applySettings(_uiState.value.settings)
             val zoom = _uiState.value.zoomRatio
@@ -505,6 +582,9 @@ class CameraViewModel @Inject constructor(
         const val SCREEN_FLASH_LEAD_MS = 600L
         const val LOW_LIGHT_ISO = 800
         const val NIGHT_FRAMES = 8
+        const val MAX_RETRIES = 3
+        const val RETRY_DELAY_MS = 800L
+        const val TAG = "Camera"
     }
 }
 
