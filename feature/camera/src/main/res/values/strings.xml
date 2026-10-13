@@ -19,7 +19,6 @@
     <string name="raw_label">RAW</string>
     <string name="raw_unsupported">No RAW</string>
     <string name="histogram_off_with_raw">Histogram is off while RAW is on</string>
-    <string name="saved_to_gallery">Saved to Pictures/Camoron</string>
     <string name="capture_failed">Couldn\'t take the photo. Please try again.</string>
     <string name="cd_shutter">Take photo</string>
     <string name="cd_switch_camera">Switch camera</string>
@@ -54,5 +53,6 @@
     <string name="error_disabled">The camera is disabled by a device policy.</string>
     <string name="error_permission">Camera permission is required.</string>
     <string name="error_device">The camera stopped responding. Try reopening Camoron.</string>
+    <string name="error_tap_to_retry">Tap to try again</string>
     <string name="error_no_camera">No usable camera was found.</string>
 </resources>

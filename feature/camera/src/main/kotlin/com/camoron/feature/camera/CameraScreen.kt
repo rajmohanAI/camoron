@@ -23,6 +23,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -31,6 +34,7 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material3.CircularProgressIndicator
@@ -46,11 +50,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -75,14 +87,16 @@ fun CameraScreen(
     val focusTarget by viewModel.focusTarget.collectAsStateWithLifecycle()
     val context = LocalContext.current
     TrackDeviceRotation(viewModel::onDeviceRotation)
+    TrackForeground(viewModel::onForegroundChanged)
+    HideStatusBar()
     ShutterSounds(viewModel)
     ScreenFlashBrightness(state.screenFlash)
 
-    val savedText = stringResource(R.string.saved_to_gallery)
     val failedText = stringResource(R.string.capture_failed)
     LaunchedEffect(state.event) {
         when (state.event) {
-            is CameraEvent.Saved -> Toast.makeText(context, savedText, Toast.LENGTH_SHORT).show()
+            // Like the phone's own camera, a saved photo just shows up in the thumbnail.
+            is CameraEvent.Saved -> Unit
             CameraEvent.CaptureFailed -> Toast.makeText(context, failedText, Toast.LENGTH_LONG).show()
             null -> return@LaunchedEffect
         }
@@ -93,14 +107,16 @@ fun CameraScreen(
         Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .safeDrawingPadding()
             .onSizeChanged { if (it.height > 0) viewModel.onDisplayAspect(it.width.toFloat() / it.height) },
     ) {
         val aspect = state.cameraSettings.aspectRatio
+        // Full screen really is the whole screen, under the (hidden) status bar and the camera cutout.
         val previewArea = when (aspect) {
             AspectRatioSetting.FULL_SCREEN -> Modifier.fillMaxSize()
-            AspectRatioSetting.RATIO_9_16 -> Modifier.padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(9f / 16)
-            AspectRatioSetting.RATIO_3_4 -> Modifier.padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(3f / 4)
+            AspectRatioSetting.RATIO_9_16 ->
+                Modifier.safeDrawingPadding().padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(9f / 16)
+            AspectRatioSetting.RATIO_3_4 ->
+                Modifier.safeDrawingPadding().padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(3f / 4)
         }
         PreviewArea(
             state = state,
@@ -109,48 +125,52 @@ fun CameraScreen(
             onSurfaceDestroyed = viewModel::onSurfaceDestroyed,
             onTap = viewModel::focusAt,
             onPinch = viewModel::onPinch,
-            modifier = previewArea.align(Alignment.TopCenter),
+            modifier = Modifier.align(Alignment.TopCenter).then(previewArea),
         )
 
-        (state.cameraState as? CameraState.Error)?.let { ErrorMessage(it.error, Modifier.align(Alignment.Center)) }
+        Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+            (state.cameraState as? CameraState.Error)?.let {
+                ErrorMessage(it.error, onRetry = viewModel::retryCamera, modifier = Modifier.align(Alignment.Center))
+            }
 
-        TopMenu(
-            state = state,
-            onFlash = viewModel::cycleFlash,
-            onTimer = viewModel::cycleTimer,
-            onAspectRatio = viewModel::cycleAspectRatio,
-            onNight = viewModel::cycleNight,
-            onSettings = onOpenSettings,
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
+            TopMenu(
+                state = state,
+                onFlash = viewModel::cycleFlash,
+                onTimer = viewModel::cycleTimer,
+                onAspectRatio = viewModel::cycleAspectRatio,
+                onNight = viewModel::cycleNight,
+                onSettings = onOpenSettings,
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
 
-        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
-            val previewing = state.cameraState as? CameraState.Previewing
-            if (state.mode == CaptureMode.PRO && previewing != null) {
-                ProControls(
-                    capabilities = previewing.capabilities,
-                    settings = state.settings,
-                    liveExposure = previewing.liveExposure,
-                    rawEnabled = state.rawEnabled,
-                    histogram = histogram,
-                    viewModel = viewModel,
-                    modifier = Modifier.background(Color.Black.copy(alpha = 0.6f)),
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+                val previewing = state.cameraState as? CameraState.Previewing
+                if (state.mode == CaptureMode.PRO && previewing != null) {
+                    ProControls(
+                        capabilities = previewing.capabilities,
+                        settings = state.settings,
+                        liveExposure = previewing.liveExposure,
+                        rawEnabled = state.rawEnabled,
+                        histogram = histogram,
+                        viewModel = viewModel,
+                        modifier = Modifier.background(Color.Black.copy(alpha = 0.6f)),
+                    )
+                }
+                LensRow(
+                    state = state,
+                    onMacro = viewModel::toggleMacro,
+                    onPreset = viewModel::selectZoomPreset,
+                    onLook = viewModel::setLook,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+                BottomBar(
+                    state = state,
+                    onModeChange = viewModel::setMode,
+                    onCapture = viewModel::onShutter,
+                    onSwitch = viewModel::switchCamera,
+                    translucent = aspect == AspectRatioSetting.FULL_SCREEN,
                 )
             }
-            LensRow(
-                state = state,
-                onMacro = viewModel::toggleMacro,
-                onPreset = viewModel::selectZoomPreset,
-                onLook = viewModel::setLook,
-                modifier = Modifier.padding(vertical = 8.dp),
-            )
-            BottomBar(
-                state = state,
-                onModeChange = viewModel::setMode,
-                onCapture = viewModel::onShutter,
-                onSwitch = viewModel::switchCamera,
-                translucent = aspect == AspectRatioSetting.FULL_SCREEN,
-            )
         }
 
         if (state.screenFlash) Box(Modifier.fillMaxSize().background(Color.White))
@@ -205,7 +225,11 @@ private fun PreviewArea(
         if (state.cameraSettings.grid) GridOverlay(Modifier.fillMaxSize())
         if (state.cameraSettings.leveller) LevellerOverlay(Modifier.fillMaxSize())
         // In full screen the preview runs under the top menu, so keep the badges below it.
-        val badgeTop = if (state.cameraSettings.aspectRatio == AspectRatioSetting.FULL_SCREEN) TOP_BAR_HEIGHT + 8.dp else 12.dp
+        val badgeTop = if (state.cameraSettings.aspectRatio == AspectRatioSetting.FULL_SCREEN) {
+            WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding() + TOP_BAR_HEIGHT + 8.dp
+        } else {
+            12.dp
+        }
         Row(
             Modifier.align(Alignment.TopCenter).padding(top = badgeTop),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -360,7 +384,7 @@ private fun ShutterButton(busy: Boolean, counting: Boolean, enabled: Boolean, on
 }
 
 @Composable
-private fun ErrorMessage(error: CameraError, modifier: Modifier = Modifier) {
+private fun ErrorMessage(error: CameraError, onRetry: () -> Unit, modifier: Modifier = Modifier) {
     val text = when (error) {
         CameraError.CAMERA_IN_USE -> R.string.error_in_use
         CameraError.CAMERA_DISABLED -> R.string.error_disabled
@@ -368,12 +392,49 @@ private fun ErrorMessage(error: CameraError, modifier: Modifier = Modifier) {
         CameraError.NO_CAMERA -> R.string.error_no_camera
         CameraError.DEVICE_ERROR -> R.string.error_device
     }
-    Text(
-        stringResource(text),
-        color = Color.White,
-        style = MaterialTheme.typography.bodyLarge,
-        modifier = modifier.padding(32.dp),
-    )
+    Column(
+        modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.Black.copy(alpha = 0.7f))
+            .clickable(onClick = onRetry)
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(stringResource(text), color = Color.White, style = MaterialTheme.typography.bodyLarge)
+        Text(stringResource(R.string.error_tap_to_retry), color = Color.White.copy(alpha = 0.7f))
+    }
+}
+
+/** Tells the view model when the app comes to the front or goes to the background. */
+@Composable
+private fun TrackForeground(onForegroundChanged: (Boolean) -> Unit) {
+    val owner = LocalLifecycleOwner.current
+    val callback by rememberUpdatedState(onForegroundChanged)
+    DisposableEffect(owner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> callback(true)
+                Lifecycle.Event.ON_STOP -> callback(false)
+                else -> Unit
+            }
+        }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
+    }
+}
+
+/** Camera apps own the whole screen: the status bar hides, and a swipe from the top shows it briefly. */
+@Composable
+private fun HideStatusBar() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val window = view.context.findActivity()?.window ?: return@DisposableEffect onDispose { }
+        val controller = WindowCompat.getInsetsController(window, view)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.statusBars())
+        onDispose { controller.show(WindowInsetsCompat.Type.statusBars()) }
+    }
 }
 
 /** Reports the phone's physical rotation (0..359) for photo orientation while the UI stays portrait. */

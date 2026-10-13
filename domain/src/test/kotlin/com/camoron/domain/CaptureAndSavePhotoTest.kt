@@ -51,7 +51,27 @@ class CaptureAndSavePhotoTest {
     }
     private val merged = mutableListOf<Int>()
 
+    /** Captures that fail before one succeeds, as some phones do right after the session opens. */
+    private var failuresLeft = 0
+
     private fun useCase(includeDng: Boolean) = CaptureAndSavePhoto(camera(includeDng), media, processor)
+
+    @Test
+    fun `a failed capture is retried once`() = runTest {
+        failuresLeft = 1
+        var captured = false
+        val uri = useCase(includeDng = false)(0, onCaptured = { captured = true })
+        assertThat(uri).isEqualTo("content://1")
+        assertThat(captured).isTrue()
+    }
+
+    @Test
+    fun `a second failure is reported`() = runTest {
+        failuresLeft = 2
+        val result = runCatching { useCase(includeDng = false)(0) }
+        assertThat(result.isFailure).isTrue()
+        assertThat(saved).isEmpty()
+    }
 
     @Test
     fun `no adjustments saves the camera's jpeg untouched`() = runTest {
@@ -99,8 +119,13 @@ class CaptureAndSavePhotoTest {
         override val focusTarget = MutableStateFlow<FocusTarget?>(null)
         override suspend fun setZoom(ratio: Float) = Unit
         override suspend fun setMacro(enabled: Boolean) = Unit
-        override suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean) =
-            CaptureBundle(jpeg, dng.takeIf { includeDng && includeRaw })
+        override suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean): CaptureBundle {
+            if (failuresLeft > 0) {
+                failuresLeft--
+                error("Capture failed")
+            }
+            return CaptureBundle(jpeg, dng.takeIf { includeDng && includeRaw })
+        }
         override suspend fun close() = Unit
     }
 }

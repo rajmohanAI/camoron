@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -23,6 +24,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.camoron.core.common.DiagnosticLog
 import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.LensFacing
@@ -46,24 +48,36 @@ fun CameraInfoScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltView
             )
         },
     ) { padding ->
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            val profile = state.profile
-            if (profile == null) {
-                Text(stringResource(R.string.camera_info_loading))
-            } else {
-                Text(describeDevice(profile), style = MaterialTheme.typography.bodyMedium)
-                profile.cameras.forEach { camera ->
+        // Selectable, so a tester can copy the details (and any recent problems) into a message.
+        SelectionContainer(Modifier.padding(padding)) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                val profile = state.profile
+                if (profile == null) {
+                    Text(stringResource(R.string.camera_info_loading))
+                } else {
+                    Text(describeDevice(profile), style = MaterialTheme.typography.bodyMedium)
+                    profile.cameras.forEach { camera ->
+                        Card {
+                            Text(
+                                describeCamera(camera),
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(16.dp),
+                            )
+                        }
+                    }
+                }
+                val problems = DiagnosticLog.entries()
+                if (problems.isNotEmpty()) {
                     Card {
                         Text(
-                            describeCamera(camera),
-                            style = MaterialTheme.typography.bodyMedium,
+                            "Recent camera problems\n" + problems.joinToString("\n"),
+                            style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.padding(16.dp),
                         )
                     }
