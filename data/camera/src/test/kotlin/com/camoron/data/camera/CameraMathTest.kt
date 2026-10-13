@@ -146,4 +146,17 @@ class CameraMathTest {
         assertThat(CameraMath.framesThatFit(6, frame, 200L shl 20)).isIn(2..5)
         assertThat(CameraMath.framesThatFit(6, frame, 50L shl 20)).isEqualTo(1)
     }
+
+    @Test
+    fun `digital zoom is what the lens in use doesn't cover`() {
+        // One lens: 3x is all digital.
+        assertThat(CameraMath.digitalZoom(3f, 6f, 6f)).isEqualTo(3f)
+        // A 3x telephoto took over: nothing digital left.
+        assertThat(CameraMath.digitalZoom(3f, 6f, 18f)).isEqualTo(1f)
+        // 5x on that telephoto: the last 5/3 is digital.
+        assertThat(CameraMath.digitalZoom(5f, 6f, 18f)).isWithin(0.01f).of(5f / 3)
+        // No focal lengths: assume digital. Ultra-wide is never digital.
+        assertThat(CameraMath.digitalZoom(2f, null, null)).isEqualTo(2f)
+        assertThat(CameraMath.digitalZoom(0.6f, 6f, 2f)).isEqualTo(1f)
+    }
 }

@@ -183,4 +183,15 @@ internal object CameraMath {
     private const val EXIF_ROTATE_270 = 8
     private const val ASPECT_TOLERANCE = 0.02
     private const val MAX_GAIN = 8f
+
+    /**
+     * The part of [zoom] the camera makes up by enlarging the picture. On a multi-lens camera zooming
+     * past a longer lens's reach switches to it, and the capture reports that lens's [activeFocalMm];
+     * only what goes beyond it is digital. Without focal lengths, all of the zoom is assumed digital.
+     */
+    fun digitalZoom(zoom: Float, baseFocalMm: Float?, activeFocalMm: Float?): Float {
+        val ceiling = maxOf(1f, zoom)
+        if (baseFocalMm == null || activeFocalMm == null || baseFocalMm <= 0f || activeFocalMm <= 0f) return ceiling
+        return (zoom * baseFocalMm / activeFocalMm).coerceIn(1f, ceiling)
+    }
 }

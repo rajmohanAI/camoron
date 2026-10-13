@@ -1242,12 +1242,19 @@ class Camera2Controller @Inject constructor(
             }
             if (collected.isEmpty()) error("The camera delivered no frames")
             val result = withTimeoutOrNull(RESULT_TIMEOUT_MS) { firstResult.await() }
+            val info = shotInfo(camera, result, flash)
+            val lens = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                result?.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)?.let { ", lens $it" }.orEmpty()
+            } else {
+                ""
+            }
             DiagnosticLog.info(
                 TAG,
                 "Burst of ${collected.size}/$count ${reader.width}x${reader.height} frames in " +
-                    "${SystemClock.elapsedRealtime() - started} ms (asked $frames, flash $flash)",
+                    "${SystemClock.elapsedRealtime() - started} ms (asked $frames, flash $flash, zoom %.1f, digital %.1f, focal ${info.focalLengthMm}$lens)"
+                        .format(camera.zoomRatio, info.digitalZoom),
             )
-            FrameBurst(collected, rotation, timestamp, shotInfo(camera, result, flash))
+            FrameBurst(collected, rotation, timestamp, info)
         } finally {
             reader.setOnImageAvailableListener(null, null)
             copies.close()
@@ -1263,6 +1270,12 @@ class Camera2Controller @Inject constructor(
         focalLengthMm = result?.get(CaptureResult.LENS_FOCAL_LENGTH),
         focalLength35mm = camera.capabilities.equivalentFocalLengthMm?.toInt(),
         flashFired = flash,
+        digitalZoom = CameraMath.digitalZoom(
+            zoom = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) result?.get(CaptureResult.CONTROL_ZOOM_RATIO) else null)
+                ?: camera.zoomRatio,
+            baseFocalMm = camera.characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull(),
+            activeFocalMm = result?.get(CaptureResult.LENS_FOCAL_LENGTH),
+        ),
     )
 
     /** Free heap for burst frames: what's left of the app's limit after what is already in use. */

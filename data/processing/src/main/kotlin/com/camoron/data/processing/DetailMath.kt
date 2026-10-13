@@ -13,6 +13,12 @@ internal class DetailTuning(
     /** Digital zoom the photo was taken at (1 = none). */
     val zoom: Float = 1f,
 ) {
+    /**
+     * Whether the picture needs cleaning at all. A merged burst in good light is already clean, and
+     * skipping the smoothing there saves most of the work.
+     */
+    val denoise: Boolean = noise >= CLEAN
+
     /** Window radius of the edge-preserving smoothing. */
     val radius: Int = if (noise > NOISY) 3 else 2
 
@@ -35,6 +41,7 @@ internal class DetailTuning(
     val halo: Int get() = maxOf(3 * radius, 2 * chromaRadius)
 
     private companion object {
+        const val CLEAN = 1.2f / 255
         const val NOISY = 0.02f
         const val SOMEWHAT_NOISY = 0.012f
         const val MIN_NOISE = 1.5f / 255
@@ -181,10 +188,14 @@ internal object DetailMath {
 
         // Guided chroma reuses work.e, so keep the cleaned brightness in its own array.
         val luma = work.clean
-        smoothLuma(w, h, tuning, work).copyInto(luma, 0, 0, n)
-        // Colour follows the original brightness edges (guided by y), into work.cb / work.cr.
-        guidedChroma(cb, w, h, tuning, work)
-        guidedChroma(cr, w, h, tuning, work)
+        if (tuning.denoise) {
+            smoothLuma(w, h, tuning, work).copyInto(luma, 0, 0, n)
+            // Colour follows the original brightness edges (guided by y), into work.cb / work.cr.
+            guidedChroma(cb, w, h, tuning, work)
+            guidedChroma(cr, w, h, tuning, work)
+        } else {
+            y.copyInto(luma, 0, 0, n)
+        }
 
         // Unsharp mask on the cleaned brightness: luma - mean(luma).
         val base = work.b

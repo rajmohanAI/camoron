@@ -48,6 +48,15 @@ class BurstMergerTest {
     }
 
     @Test
+    fun `a clean burst merges only a few frames`() = runBlocking {
+        val frames = (0 until 6).map { frame(0, 0, noise = 0.3, seed = it.toLong()) }
+        val result = BurstMerger.merge(frames, Dispatchers.Default)
+        assertThat(result.framesUsed).isEqualTo(3)
+        assertThat(BurstMerger.framesFor(1.5f)).isEqualTo(4)
+        assertThat(BurstMerger.framesFor(5f)).isEqualTo(Int.MAX_VALUE)
+    }
+
+    @Test
     fun `merging a shaky burst cuts noise and keeps the picture in place`() = runBlocking {
         val shifts = listOf(0 to 0, 3 to -2, -4 to 1, 2 to 5, -1 to -3, 5 to 2)
         val frames = shifts.mapIndexed { i, (dx, dy) -> frame(dx, dy, noise = 10.0, seed = i.toLong()) }

@@ -42,17 +42,26 @@ internal object BurstMerger {
         val usable = frames.filter { it.width == first.width && it.height == first.height }
         if (usable.size < 2) return@coroutineScope Result(first, noiseOf(first), 1, 0)
 
-        val quarter = usable.map { async(dispatcher) { downsample(Plane(it.y, it.width, it.height), 4) } }.awaitAll()
-        val referenceIndex = (0 until minOf(3, usable.size)).maxBy { sharpness(quarter[it]) }
+        // Quarter-size copies, made only for the frames that are actually looked at.
+        val quarter = arrayOfNulls<Plane>(usable.size)
+        suspend fun quarters(indices: List<Int>) = indices.filter { quarter[it] == null }
+            .map { i -> async(dispatcher) { quarter[i] = downsample(Plane(usable[i].y, usable[i].width, usable[i].height), 4) } }
+            .awaitAll()
+        quarters((0 until minOf(3, usable.size)).toList())
+        val referenceIndex = (0 until minOf(3, usable.size)).maxBy { sharpness(quarter[it]!!) }
         val reference = usable[referenceIndex]
         val noise = noiseOf(reference)
         val refFull = Plane(reference.y, reference.width, reference.height)
-        val refQuarter = quarter[referenceIndex]
+        val refQuarter = quarter[referenceIndex]!!
         val refSixteenth = downsample(refQuarter, 4)
         val reject = REJECT_BASE + REJECT_PER_NOISE * noise
+        // A clean picture gains little from more frames, and each one costs time: merge just enough.
+        val wanted = framesFor(noise).coerceAtMost(usable.size)
+        val others = usable.indices.filter { it != referenceIndex }.take(wanted - 1)
 
-        val alignments = usable.indices.filter { it != referenceIndex }.map { index ->
-            async(dispatcher) { align(refFull, refQuarter, refSixteenth, usable[index], quarter[index], reject) }
+        quarters(others)
+        val alignments = others.map { index ->
+            async(dispatcher) { align(refFull, refQuarter, refSixteenth, usable[index], quarter[index]!!, reject) }
         }.awaitAll()
 
         val outY = ByteArray(reference.y.size)
@@ -70,7 +79,14 @@ internal object BurstMerger {
                 }
             }
         }.awaitAll()
-        Result(YuvFrame(reference.width, reference.height, outY, outU, outV), noise, usable.size, referenceIndex)
+        Result(YuvFrame(reference.width, reference.height, outY, outU, outV), noise, others.size + 1, referenceIndex)
+    }
+
+    /** Frames worth merging at a measured [noise] (0..255 deviation). */
+    fun framesFor(noise: Float): Int = when {
+        noise < CLEAN_NOISE -> 3
+        noise < FAIR_NOISE -> 4
+        else -> Int.MAX_VALUE
     }
 
     /** Noise of a frame's brightness as a 0..255 deviation. */
@@ -286,6 +302,8 @@ internal object BurstMerger {
 
     const val REJECTED = Int.MIN_VALUE
 
+    private const val CLEAN_NOISE = 1.2f
+    private const val FAIR_NOISE = 2f
     private const val WEIGHT_BASE = 3f
     private const val WEIGHT_PER_NOISE = 3.5f
     private const val REJECT_BASE = 8f
