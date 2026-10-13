@@ -360,6 +360,7 @@ class CameraViewModelTest {
 
     @Test
     fun `night is off in pro mode and when the flash is forced on`() = runTest {
+        controller.all = listOf(back.copy(hasFlash = true), front)
         settings.state.update { it.copy(night = NightSetting.ON, flash = FlashMode.ON) }
         val vm = viewModel()
         vm.onSurfaceReady(Target(1440, 1080))
