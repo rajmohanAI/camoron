@@ -25,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
@@ -67,7 +68,7 @@ import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Flash, timer, aspect ratio, Night and settings. Each button cycles through its options. */
+/** Flash, timer, aspect ratio, Night, Enhance and settings. Each button cycles through its options. */
 @Composable
 internal fun TopMenu(
     state: CameraUiState,
@@ -75,6 +76,7 @@ internal fun TopMenu(
     onTimer: () -> Unit,
     onAspectRatio: () -> Unit,
     onNight: () -> Unit,
+    onEnhance: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -131,6 +133,13 @@ internal fun TopMenu(
                 tint = if (state.nightActive) MODE_SELECTED else Color.White,
             )
         }
+        TopMenuButton(
+            Icons.Filled.AutoAwesome,
+            stringResource(if (settings.enhance) R.string.option_on else R.string.option_off),
+            stringResource(R.string.cd_enhance),
+            onEnhance,
+            tint = if (settings.enhance) MODE_SELECTED else Color.White,
+        )
         TopMenuButton(Icons.Filled.Settings, null, stringResource(R.string.cd_settings), onSettings)
     }
 }

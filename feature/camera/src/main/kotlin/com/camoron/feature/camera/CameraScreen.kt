@@ -3,9 +3,6 @@ package com.camoron.feature.camera
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
-import android.graphics.Paint
 import android.graphics.SurfaceTexture
 import android.media.MediaActionSound
 import android.view.OrientationEventListener
@@ -72,8 +69,8 @@ import com.camoron.core.common.SurfacePreviewTarget
 import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.CameraError
 import com.camoron.domain.model.CameraState
+import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.FocusTarget
-import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.PixelSize
 
@@ -85,6 +82,7 @@ fun CameraScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val histogram by viewModel.histogram.collectAsStateWithLifecycle()
     val focusTarget by viewModel.focusTarget.collectAsStateWithLifecycle()
+    val enhance by viewModel.enhanceParams.collectAsStateWithLifecycle()
     val context = LocalContext.current
     TrackDeviceRotation(viewModel::onDeviceRotation)
     TrackForeground(viewModel::onForegroundChanged)
@@ -120,6 +118,7 @@ fun CameraScreen(
         }
         PreviewArea(
             state = state,
+            enhance = enhance,
             focusTarget = focusTarget,
             onSurfaceReady = viewModel::onSurfaceReady,
             onSurfaceDestroyed = viewModel::onSurfaceDestroyed,
@@ -139,6 +138,7 @@ fun CameraScreen(
                 onTimer = viewModel::cycleTimer,
                 onAspectRatio = viewModel::cycleAspectRatio,
                 onNight = viewModel::cycleNight,
+            onEnhance = viewModel::toggleEnhance,
                 onSettings = onOpenSettings,
                 modifier = Modifier.align(Alignment.TopCenter),
             )
@@ -184,6 +184,7 @@ fun CameraScreen(
 @Composable
 private fun PreviewArea(
     state: CameraUiState,
+    enhance: EnhanceParams?,
     focusTarget: FocusTarget?,
     onSurfaceReady: (SurfacePreviewTarget) -> Unit,
     onSurfaceDestroyed: () -> Unit,
@@ -215,6 +216,7 @@ private fun PreviewArea(
                 CameraPreview(
                     previewSize = bufferSize,
                     look = state.cameraSettings.look,
+                    enhance = enhance,
                     onSurfaceReady = onSurfaceReady,
                     onSurfaceDestroyed = onSurfaceDestroyed,
                     modifier = Modifier.fillMaxSize(),
@@ -250,6 +252,7 @@ private fun PreviewArea(
 private fun CameraPreview(
     previewSize: PixelSize,
     look: ShotLook,
+    enhance: EnhanceParams?,
     onSurfaceReady: (SurfacePreviewTarget) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     modifier: Modifier = Modifier,
@@ -261,7 +264,7 @@ private fun CameraPreview(
         factory = { ctx -> PreviewTextureView(ctx, onReady = { ready(it) }, onDestroyed = { destroyed() }) },
         update = { view ->
             view.setBufferSize(previewSize)
-            view.setLook(look)
+            view.setFilter(look, enhance)
         },
         modifier = modifier,
     )
@@ -275,7 +278,7 @@ private class PreviewTextureView(
 
     private var bufferSize: PixelSize? = null
     private var surface: Surface? = null
-    private var look: ShotLook = ShotLook.NORMAL
+    private val filter = PreviewFilter(this)
 
     init {
         surfaceTextureListener = this
@@ -287,12 +290,7 @@ private class PreviewTextureView(
         surfaceTexture?.let(::report)
     }
 
-    fun setLook(next: ShotLook) {
-        if (next == look) return
-        look = next
-        val matrix = LookMatrix.forLook(next).takeUnless(LookMatrix::isIdentity)
-        setLayerPaint(matrix?.let { Paint().apply { colorFilter = ColorMatrixColorFilter(ColorMatrix(it)) } })
-    }
+    fun setFilter(look: ShotLook, enhance: EnhanceParams?) = filter.update(look, enhance)
 
     private fun report(texture: SurfaceTexture) {
         val size = bufferSize ?: return

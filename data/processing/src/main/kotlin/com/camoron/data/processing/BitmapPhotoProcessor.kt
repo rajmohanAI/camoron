@@ -24,8 +24,8 @@ import java.io.File
 import javax.inject.Inject
 
 /**
- * Makes the saved JPEG match the preview: centre crop for the taller aspect ratios, the chosen
- * colour look, and a mirror flag for selfies. Mirroring only rewrites the EXIF orientation, so it
+ * Makes the saved JPEG match the preview: centre crop for the taller aspect ratios, on-device
+ * enhancement ([Enhancer]), the chosen colour look, and a mirror flag for selfies. Mirroring only rewrites the EXIF orientation, so it
  * costs no quality. Cropping or a look re-encodes the pixels and carries the camera's EXIF across.
  * Also merges night bursts.
  */
@@ -47,15 +47,17 @@ class BitmapPhotoProcessor @Inject constructor(
             }
             val look = LookMatrix.forLook(adjustments.look).takeUnless(LookMatrix::isIdentity)
 
+            val enhance = adjustments.enhance
+
             // A crop request for a shape the sensor already delivers needs no work at all.
-            if (crop == null && look == null && !adjustments.mirror) return@withContext image
+            if (crop == null && look == null && !enhance && !adjustments.mirror) return@withContext image
 
             var bytes = image.bytes
             var size = bounds
-            val reencode = crop != null || look != null
+            val reencode = crop != null || look != null || enhance
             if (reencode) {
                 val transformed = try {
-                    transformJpeg(image.bytes, crop, look)
+                    transformJpeg(image.bytes, crop, look, enhance)
                 } catch (e: OutOfMemoryError) {
                     // Very large sensors can exceed the heap; keep the photo rather than lose it.
                     Log.w(TAG, "Not enough memory to adjust a ${bounds.width}x${bounds.height} photo", e)
@@ -89,8 +91,8 @@ class BitmapPhotoProcessor @Inject constructor(
         }
     }
 
-    /** Decodes (the cropped part of) a JPEG, applies the colour matrix and re-encodes it. */
-    private fun transformJpeg(bytes: ByteArray, crop: CropRect?, look: FloatArray?): ByteArray {
+    /** Decodes (the cropped part of) a JPEG, enhances it, applies the colour matrix and re-encodes it. */
+    private suspend fun transformJpeg(bytes: ByteArray, crop: CropRect?, look: FloatArray?, enhance: Boolean): ByteArray {
         val options = BitmapFactory.Options().apply { inMutable = true }
         val bitmap = if (crop != null) {
             val decoder = regionDecoder(bytes)
@@ -103,6 +105,7 @@ class BitmapPhotoProcessor @Inject constructor(
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
         } ?: error("Could not decode the captured JPEG")
         try {
+            if (enhance) Enhancer.enhance(bitmap)
             if (look != null) applyLook(bitmap, look)
             return ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }
                 .toByteArray()

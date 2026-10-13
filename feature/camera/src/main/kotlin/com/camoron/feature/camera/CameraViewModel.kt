@@ -10,6 +10,8 @@ import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.DeviceProfile
+import com.camoron.domain.model.EnhanceMath
+import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.Histogram
@@ -36,7 +38,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.scan
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -152,6 +160,19 @@ class CameraViewModel @Inject constructor(
     val histogram: StateFlow<Histogram?> = camera.histogram
 
     val focusTarget: StateFlow<FocusTarget?> = camera.focusTarget
+
+    /**
+     * Live enhancement for the preview, worked out from the camera's brightness histogram and eased
+     * so it doesn't flicker; null when Enhance is off.
+     */
+    val enhanceParams: StateFlow<EnhanceParams?> = combine(
+        camera.histogram,
+        _uiState.map { it.cameraSettings.enhance }.distinctUntilChanged(),
+    ) { histogram, on ->
+        if (!on) null else histogram?.let { EnhanceMath.fromHistogram(it.bins) } ?: EnhanceParams.DEFAULT
+    }.scan(null as EnhanceParams?) { previous, next ->
+        if (previous == null || next == null) next else EnhanceMath.blend(previous, next, ENHANCE_EASING)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     private var profile = DeviceProfile(emptyList())
     private var surface: PreviewTarget? = null
@@ -349,6 +370,8 @@ class CameraViewModel @Inject constructor(
 
     fun setLook(look: ShotLook) = updateCameraSettings { it.copy(look = look) }
 
+    fun toggleEnhance() = updateCameraSettings { it.copy(enhance = !it.enhance) }
+
     fun cycleAspectRatio() = updateCameraSettings {
         it.copy(aspectRatio = AspectRatioSetting.entries[(it.aspectRatio.ordinal + 1) % AspectRatioSetting.entries.size])
     }
@@ -461,6 +484,7 @@ class CameraViewModel @Inject constructor(
         },
         mirror = state.selectedCamera?.lensFacing == LensFacing.FRONT && state.cameraSettings.selfieMirror,
         look = state.cameraSettings.look,
+        enhance = state.cameraSettings.enhance,
     )
 
     private fun updateCameraSettings(transform: (CameraSettings) -> CameraSettings) {
@@ -582,6 +606,7 @@ class CameraViewModel @Inject constructor(
         const val SCREEN_FLASH_LEAD_MS = 600L
         const val LOW_LIGHT_ISO = 800
         const val NIGHT_FRAMES = 8
+        const val ENHANCE_EASING = 0.35f
         const val MAX_RETRIES = 3
         const val RETRY_DELAY_MS = 800L
         const val TAG = "Camera"
