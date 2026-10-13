@@ -217,7 +217,7 @@ class CameraViewModelTest {
         settings.state.update { it.copy(aspectRatio = AspectRatioSetting.FULL_SCREEN) }
         val vm = viewModel()
         vm.onDisplayAspect(0.45f)
-        vm.onSurfaceReady(Target(1920, 1080))
+        vm.onSurfaceReady(Target(1440, 1080))
         vm.onShutter()
         assertThat(processor.applied.single()).isEqualTo(PhotoAdjustments(cropAspect = 0.45f, mirror = false, enhance = true))
     }
