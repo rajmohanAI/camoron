@@ -62,6 +62,11 @@ data class CameraCapabilities(
     val supportsHqNoiseReduction: Boolean = false,
     /** The camera can correct lens distortion itself (Android 9+). */
     val supportsDistortionCorrection: Boolean = false,
+    /**
+     * Video sizes this camera can record at. The camera may still record at a smaller 16:9 size
+     * when 1080p is missing; 4K is only listed when the phone's video encoder handles it too.
+     */
+    val videoResolutions: Set<VideoResolution> = emptySet(),
 ) {
     /** Zoom the camera can reach on its own, through its zoom ratio or by cropping. */
     val zoomRange: ClosedFloatingPointRange<Float>

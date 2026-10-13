@@ -7,10 +7,13 @@ import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.CapturedImage
+import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.model.StillAspect
+import com.camoron.domain.model.VideoSpec
+import java.io.FileDescriptor
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -94,6 +97,34 @@ interface CameraController {
      * without flash, for merging.
      */
     suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage>
+
+    /**
+     * Preview buffer size for a video session on [cameraId]. Video frames are drawn upright by the
+     * app (so the enhancement and look can be applied), so this is portrait on most phones.
+     */
+    suspend fun videoPreviewSize(cameraId: String, spec: VideoSpec): PixelSize
+
+    /**
+     * Opens [cameraId] for video: the camera streams into the app's renderer, which draws the
+     * enhanced picture to [target] and, while recording, to the video encoder. Replaces any open session.
+     */
+    suspend fun openVideo(cameraId: String, target: PreviewTarget, spec: VideoSpec)
+
+    /**
+     * Colour processing for video frames, live on the preview and in the recording: [look] is a 4x5
+     * colour matrix ([com.camoron.domain.model.LookMatrix]) and [enhance] null when Enhance is off.
+     * Kept for later video sessions too.
+     */
+    fun setVideoFilter(look: FloatArray, enhance: EnhanceParams?)
+
+    /**
+     * Starts recording the open video session into [output], an MP4 file. Sound is recorded when
+     * the video kind has sound and the microphone permission is granted.
+     */
+    suspend fun startRecording(output: FileDescriptor, deviceRotationDegrees: Int)
+
+    /** Stops recording. Returns false when nothing usable was recorded (for example, stopped at once). */
+    suspend fun stopRecording(): Boolean
 
     suspend fun close()
 }

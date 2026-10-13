@@ -23,4 +23,10 @@ enum class Feature {
     ALL_LOOKS,
     /** Scene-adaptive tone, colour and detail enhancement. */
     AUTO_ENHANCE,
+    /** Video at 1080p. */
+    VIDEO,
+    /** 4K video. */
+    VIDEO_4K,
+    CINEMATIC_VIDEO,
+    TIMELAPSE,
 }

@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.util.Size
@@ -29,10 +30,14 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.FlashlightOff
+import androidx.compose.material.icons.filled.FlashlightOn
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.LocalFlorist
 import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.TimerOff
 import androidx.compose.material3.Icon
@@ -63,12 +68,17 @@ import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.NightSetting
 import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.TimerSetting
+import com.camoron.domain.model.VideoMath
+import com.camoron.domain.model.VideoResolution
 import com.camoron.domain.model.ZoomPreset
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Flash, timer, aspect ratio, Night, Enhance and settings. Each button cycles through its options. */
+/**
+ * Flash, timer, aspect ratio, Night, Enhance and settings; in video, the light, resolution or
+ * timelapse speed, and Enhance. Each button cycles through its options.
+ */
 @Composable
 internal fun TopMenu(
     state: CameraUiState,
@@ -77,6 +87,8 @@ internal fun TopMenu(
     onAspectRatio: () -> Unit,
     onNight: () -> Unit,
     onEnhance: () -> Unit,
+    onResolution: () -> Unit,
+    onTimelapseSpeed: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -89,7 +101,16 @@ internal fun TopMenu(
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (state.showFlashControl) {
+        if (state.showFlashControl && state.mode.isVideo) {
+            val on = settings.flash == FlashMode.ON
+            TopMenuButton(
+                if (on) Icons.Filled.FlashlightOn else Icons.Filled.FlashlightOff,
+                stringResource(if (on) R.string.option_on else R.string.option_off),
+                stringResource(R.string.cd_light),
+                onFlash,
+                tint = if (on) MODE_SELECTED else Color.White,
+            )
+        } else if (state.showFlashControl) {
             val (icon, label) = when (settings.flash) {
                 FlashMode.OFF -> Icons.Filled.FlashOff to R.string.option_off
                 FlashMode.AUTO -> Icons.Filled.FlashAuto to R.string.option_auto
@@ -97,28 +118,50 @@ internal fun TopMenu(
             }
             TopMenuButton(icon, stringResource(label), stringResource(R.string.cd_flash), onFlash)
         }
-        val timerLabel = when (settings.timer) {
-            TimerSetting.OFF -> R.string.option_off
-            TimerSetting.THREE -> R.string.timer_3s
-            TimerSetting.FIVE -> R.string.timer_5s
+        if (state.showPhotoControls) {
+            val timerLabel = when (settings.timer) {
+                TimerSetting.OFF -> R.string.option_off
+                TimerSetting.THREE -> R.string.timer_3s
+                TimerSetting.FIVE -> R.string.timer_5s
+            }
+            TopMenuButton(
+                if (settings.timer == TimerSetting.OFF) Icons.Filled.TimerOff else Icons.Filled.Timer,
+                stringResource(timerLabel),
+                stringResource(R.string.cd_timer),
+                onTimer,
+            )
+            val ratioLabel = when (settings.aspectRatio) {
+                AspectRatioSetting.RATIO_3_4 -> R.string.ratio_3_4
+                AspectRatioSetting.RATIO_9_16 -> R.string.ratio_9_16
+                AspectRatioSetting.FULL_SCREEN -> R.string.ratio_full
+            }
+            TopMenuButton(
+                Icons.Filled.AspectRatio,
+                stringResource(ratioLabel),
+                stringResource(R.string.cd_aspect_ratio),
+                onAspectRatio,
+            )
         }
-        TopMenuButton(
-            if (settings.timer == TimerSetting.OFF) Icons.Filled.TimerOff else Icons.Filled.Timer,
-            stringResource(timerLabel),
-            stringResource(R.string.cd_timer),
-            onTimer,
-        )
-        val ratioLabel = when (settings.aspectRatio) {
-            AspectRatioSetting.RATIO_3_4 -> R.string.ratio_3_4
-            AspectRatioSetting.RATIO_9_16 -> R.string.ratio_9_16
-            AspectRatioSetting.FULL_SCREEN -> R.string.ratio_full
+        // Changing these reopens the camera, so they wait until a recording ends.
+        if (state.showResolutionControl && state.mode != CaptureMode.TIMELAPSE && !state.recording) {
+            TopMenuButton(
+                Icons.Filled.HighQuality,
+                stringResource(
+                    if (settings.videoResolution == VideoResolution.UHD) R.string.resolution_uhd else R.string.resolution_fhd,
+                ),
+                stringResource(R.string.cd_resolution),
+                onResolution,
+                tint = if (settings.videoResolution == VideoResolution.UHD) MODE_SELECTED else Color.White,
+            )
         }
-        TopMenuButton(
-            Icons.Filled.AspectRatio,
-            stringResource(ratioLabel),
-            stringResource(R.string.cd_aspect_ratio),
-            onAspectRatio,
-        )
+        if (state.mode == CaptureMode.TIMELAPSE && !state.recording) {
+            TopMenuButton(
+                Icons.Filled.Speed,
+                stringResource(R.string.timelapse_speed, settings.timelapseSpeed.factor),
+                stringResource(R.string.cd_timelapse_speed),
+                onTimelapseSpeed,
+            )
+        }
         if (state.showNightControl) {
             val nightLabel = when (settings.night) {
                 NightSetting.OFF -> R.string.option_off
@@ -140,7 +183,9 @@ internal fun TopMenu(
             onEnhance,
             tint = if (settings.enhance) MODE_SELECTED else Color.White,
         )
-        TopMenuButton(Icons.Filled.Settings, null, stringResource(R.string.cd_settings), onSettings)
+        if (!state.recording) {
+            TopMenuButton(Icons.Filled.Settings, null, stringResource(R.string.cd_settings), onSettings)
+        }
     }
 }
 
@@ -315,17 +360,17 @@ internal fun MacroBadge(modifier: Modifier = Modifier) {
     }
 }
 
-/** Layer 2: capture modes. Only modes this phone supports are listed; Phase A ships Photo and Pro. */
+/** Layer 2: capture modes, in the order camera apps use: video modes, then Photo, then Pro. */
 @Composable
 internal fun ModeCarousel(selected: CaptureMode, onSelect: (CaptureMode) -> Unit) {
     Row(
         Modifier.horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         CaptureMode.entries.forEach { mode ->
             val isSelected = mode == selected
             Text(
-                text = stringResource(if (mode == CaptureMode.PHOTO) R.string.mode_photo else R.string.mode_pro),
+                text = stringResource(modeLabel(mode)),
                 color = if (isSelected) MODE_SELECTED else Color.White,
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                 style = MaterialTheme.typography.labelLarge,
@@ -338,7 +383,44 @@ internal fun ModeCarousel(selected: CaptureMode, onSelect: (CaptureMode) -> Unit
     }
 }
 
-/** Last photo Camoron saved; tapping opens it in the phone's gallery app. */
+private fun modeLabel(mode: CaptureMode): Int = when (mode) {
+    CaptureMode.TIMELAPSE -> R.string.mode_timelapse
+    CaptureMode.CINEMATIC -> R.string.mode_cinematic
+    CaptureMode.VIDEO -> R.string.mode_video
+    CaptureMode.PHOTO -> R.string.mode_photo
+    CaptureMode.PRO -> R.string.mode_pro
+}
+
+/** Red dot and running time while recording; timelapse also shows its speed, Cinematic its frame rate. */
+@Composable
+internal fun RecordingBadge(state: CameraUiState, modifier: Modifier = Modifier) {
+    val started = state.recordingStartedNanos ?: return
+    val elapsed by produceState(0L, started) {
+        while (true) {
+            value = (System.nanoTime() - started) / 1_000_000
+            kotlinx.coroutines.delay(250)
+        }
+    }
+    val extra = when (state.mode) {
+        CaptureMode.TIMELAPSE -> stringResource(R.string.timelapse_speed, state.cameraSettings.timelapseSpeed.factor)
+        CaptureMode.CINEMATIC -> stringResource(R.string.cinematic_fps)
+        else -> null
+    }
+    Row(
+        modifier
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.55f))
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(RECORDING_RED))
+        Text(VideoMath.formatDuration(elapsed), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        if (extra != null) Text(extra, color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+    }
+}
+
+/** Last photo or video Camoron saved; tapping opens it in the phone's gallery app. */
 @Composable
 internal fun GalleryThumbnail(uri: String?) {
     val context = LocalContext.current
@@ -363,6 +445,15 @@ internal fun GalleryThumbnail(uri: String?) {
 private fun loadThumbnail(context: Context, uri: Uri): ImageBitmap? = runCatching {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         context.contentResolver.loadThumbnail(uri, Size(THUMBNAIL_PX, THUMBNAIL_PX), null)
+    } else if (context.contentResolver.getType(uri)?.startsWith("video/") == true) {
+        MediaMetadataRetriever().run {
+            try {
+                setDataSource(context, uri)
+                getFrameAtTime(0)
+            } finally {
+                release()
+            }
+        }
     } else {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
@@ -374,8 +465,9 @@ private fun loadThumbnail(context: Context, uri: Uri): ImageBitmap? = runCatchin
 }.getOrNull()?.asImageBitmap()
 
 private fun openInGallery(context: Context, uri: String) {
+    val parsed = Uri.parse(uri)
     val intent = Intent(Intent.ACTION_VIEW)
-        .setDataAndType(Uri.parse(uri), "image/*")
+        .setDataAndType(parsed, context.contentResolver.getType(parsed) ?: "image/*")
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     try {
         context.startActivity(intent)
@@ -386,3 +478,4 @@ private fun openInGallery(context: Context, uri: String) {
 
 private const val THUMBNAIL_PX = 160
 private val MODE_SELECTED = Color(0xFFFFD54F)
+internal val RECORDING_RED = Color(0xFFE53935)

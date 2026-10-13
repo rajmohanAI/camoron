@@ -1,6 +1,7 @@
 package com.camoron.data.camera
 
 import android.graphics.ImageFormat
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraMetadata
 import android.os.Build
@@ -8,6 +9,7 @@ import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.HardwareLevel
 import com.camoron.domain.model.LensFacing
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.VideoResolution
 import com.camoron.domain.model.WhiteBalancePreset
 import javax.inject.Inject
 
@@ -40,6 +42,8 @@ internal data class RawCharacteristics(
     val afModes: Set<Int> = emptySet(),
     val noiseReductionModes: Set<Int> = emptySet(),
     val distortionCorrectionModes: Set<Int> = emptySet(),
+    /** Sizes the camera can stream to a GPU texture, which is where video frames go. */
+    val textureSizes: List<PixelSize> = emptyList(),
 )
 
 class CapabilityMapper @Inject constructor() {
@@ -95,6 +99,7 @@ class CapabilityMapper @Inject constructor() {
                 CameraMetadata.CONTROL_AF_MODE_OFF in raw.afModes,
             supportsHqNoiseReduction = CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY in raw.noiseReductionModes,
             supportsDistortionCorrection = DISTORTION_CORRECTION_HIGH_QUALITY in raw.distortionCorrectionModes,
+            videoResolutions = VideoResolution.entries.filter { it.size in raw.textureSizes }.toSet(),
         )
     }
 
@@ -160,6 +165,7 @@ class CapabilityMapper @Inject constructor() {
             afModes = c.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.toSet().orEmpty(),
             noiseReductionModes = c.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)
                 ?.toSet().orEmpty(),
+            textureSizes = map?.getOutputSizes(SurfaceTexture::class.java)?.map { PixelSize(it.width, it.height) }.orEmpty(),
             distortionCorrectionModes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 c.get(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES)?.toSet().orEmpty()
             } else {

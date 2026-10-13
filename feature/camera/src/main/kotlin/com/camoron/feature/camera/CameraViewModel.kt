@@ -16,21 +16,28 @@ import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.LensFacing
+import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.NightSetting
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.model.ShotLook
+import com.camoron.domain.model.TimelapseSpeed
 import com.camoron.domain.model.TimerSetting
+import com.camoron.domain.model.VideoKind
+import com.camoron.domain.model.VideoResolution
+import com.camoron.domain.model.VideoSpec
 import com.camoron.domain.model.WhiteBalance
 import com.camoron.domain.model.ZoomPreset
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.MediaRepository
+import com.camoron.domain.repository.PendingVideo
 import com.camoron.domain.repository.PreviewTarget
 import com.camoron.domain.repository.SettingsRepository
 import com.camoron.domain.usecase.CaptureAndSavePhoto
 import com.camoron.domain.usecase.PlanZoomPresets
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -50,7 +57,16 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-enum class CaptureMode { PHOTO, PRO }
+/** Capture modes in carousel order. Video modes record; the rest take photos. */
+enum class CaptureMode(val video: VideoKind? = null) {
+    TIMELAPSE(VideoKind.TIMELAPSE),
+    CINEMATIC(VideoKind.CINEMATIC),
+    VIDEO(VideoKind.STANDARD),
+    PHOTO,
+    PRO;
+
+    val isVideo: Boolean get() = video != null
+}
 
 data class CameraUiState(
     val cameraState: CameraState = CameraState.Closed,
@@ -81,8 +97,23 @@ data class CameraUiState(
     val nightExtensionActive: Boolean = false,
     /** A night photo is being taken: the user should hold still. */
     val nightCapturing: Boolean = false,
+    /** System.nanoTime() when the current recording started, or null when not recording. */
+    val recordingStartedNanos: Long? = null,
     val event: CameraEvent? = null,
 ) {
+    val recording: Boolean get() = recordingStartedNanos != null
+
+    /** How the camera is set up for the current video mode, or null in a photo mode. */
+    val videoSpec: VideoSpec?
+        get() = mode.video?.let { VideoSpec(it, cameraSettings.videoResolution, cameraSettings.timelapseSpeed) }
+
+    /** 4K is offered where this camera and the phone's encoder can do it. */
+    val showResolutionControl: Boolean
+        get() = mode.isVideo && selectedCamera?.videoResolutions?.contains(VideoResolution.UHD) == true
+
+    /** Timer, aspect ratio and Night belong to photos. */
+    val showPhotoControls: Boolean get() = !mode.isVideo
+
     /** Zoom as the user thinks of it, relative to the main camera. */
     val displayZoom: Float get() = lensBase * zoomRatio
 
@@ -100,8 +131,16 @@ data class CameraUiState(
 
     val shutterSoundOn: Boolean get() = cameraSettings.shutterSound || shutterSoundForced
 
-    /** The maker's Night mode runs its own exposure, so there is no flash choice while it is open. */
-    val showFlashControl: Boolean get() = selectedCamera?.supportsFlashControl == true && !nightExtensionActive
+    /**
+     * The maker's Night mode runs its own exposure, so there is no flash choice while it is open.
+     * In video the flash is a steady light, which needs a real flash unit.
+     */
+    val showFlashControl: Boolean
+        get() = if (mode.isVideo) {
+            selectedCamera?.hasFlash == true
+        } else {
+            selectedCamera?.supportsFlashControl == true && !nightExtensionActive
+        }
 
     /** Night is a Photo mode option; Pro mode is for exposures the user sets by hand. */
     val showNightControl: Boolean get() = mode == CaptureMode.PHOTO
@@ -137,10 +176,11 @@ data class CameraUiState(
 sealed interface CameraEvent {
     data class Saved(val uri: String) : CameraEvent
     data object CaptureFailed : CameraEvent
+    data object RecordingFailed : CameraEvent
 }
 
 /** One-off cues for the UI, such as sounds. */
-enum class CameraEffect { SHUTTER, TIMER_TICK }
+enum class CameraEffect { SHUTTER, TIMER_TICK, RECORDING_STARTED, RECORDING_STOPPED }
 
 @HiltViewModel
 class CameraViewModel @Inject constructor(
@@ -174,6 +214,9 @@ class CameraViewModel @Inject constructor(
         if (previous == null || next == null) next else EnhanceMath.blend(previous, next, ENHANCE_EASING)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /** The file the current recording goes into. */
+    private var pendingVideo: PendingVideo? = null
+
     private var profile = DeviceProfile(emptyList())
     private var surface: PreviewTarget? = null
     private var timerJob: Job? = null
@@ -195,6 +238,7 @@ class CameraViewModel @Inject constructor(
         val raw: Boolean,
         val aspect: com.camoron.domain.model.StillAspect,
         val nightExtension: Boolean,
+        val video: VideoSpec?,
     )
 
     @Volatile
@@ -209,10 +253,20 @@ class CameraViewModel @Inject constructor(
                 _uiState.update { it.copy(cameraState = state) }
                 when (state) {
                     is CameraState.Previewing -> retries = 0
-                    is CameraState.Error -> onCameraError(state.error)
+                    is CameraState.Error -> {
+                        // Keep what was filmed before the camera went away.
+                        if (pendingVideo != null) viewModelScope.launch { finishRecording() }
+                        onCameraError(state.error)
+                    }
                     else -> Unit
                 }
             }
+        }
+        viewModelScope.launch {
+            // Video frames get the same look and enhancement as the preview, drawn by the camera's renderer.
+            combine(enhanceParams, _uiState.map { it.cameraSettings.look }.distinctUntilChanged()) { enhance, look ->
+                LookMatrix.forLook(look) to enhance
+            }.collect { (look, enhance) -> camera.setVideoFilter(look, enhance) }
         }
         viewModelScope.launch {
             val latest = runCatching { media.latestCapture() }.getOrNull()
@@ -263,7 +317,11 @@ class CameraViewModel @Inject constructor(
         cancelTimer()
         retryJob?.cancel()
         openKey = null
-        viewModelScope.launch { camera.close() }
+        viewModelScope.launch {
+            // A recording in progress is saved before the camera goes.
+            finishRecording()
+            camera.close()
+        }
     }
 
     /**
@@ -291,6 +349,7 @@ class CameraViewModel @Inject constructor(
     }
 
     fun switchCamera() {
+        if (_uiState.value.recording) return
         val current = _uiState.value.selectedCamera ?: return
         val facing = if (current.lensFacing == LensFacing.FRONT) LensFacing.BACK else LensFacing.FRONT
         val target = profile.bestCamera(facing) ?: return
@@ -310,6 +369,8 @@ class CameraViewModel @Inject constructor(
             setZoom(preset.zoomRatio)
             return
         }
+        // Changing lens reopens the camera, which would end a recording.
+        if (state.recording) return
         val target = profile.cameras.firstOrNull { it.cameraId == preset.cameraId } ?: return
         viewModelScope.launch { select(target, zoom = preset.zoomRatio) }
     }
@@ -328,6 +389,7 @@ class CameraViewModel @Inject constructor(
     fun toggleMacro() {
         val state = _uiState.value
         val selected = state.selectedCamera ?: return
+        if (state.recording) return
         viewModelScope.launch {
             if (state.macro) {
                 _uiState.update { it.copy(macro = false) }
@@ -344,8 +406,15 @@ class CameraViewModel @Inject constructor(
     }
 
     fun setMode(mode: CaptureMode) {
-        val rawBefore = _uiState.value.rawActive
+        val before = _uiState.value
+        if (before.recording || mode == before.mode) return
+        val rawBefore = before.rawActive
         _uiState.update { it.copy(mode = mode) }
+        if (_uiState.value.videoSpec != before.videoSpec) {
+            // Photo and video sessions are set up differently (and each video kind has its own frame rate).
+            before.selectedCamera?.let { selected -> viewModelScope.launch { select(selected, zoom = before.zoomRatio) } }
+            return
+        }
         if (syncNightSession()) return
         if (_uiState.value.rawActive != rawBefore) {
             // Leaving or entering Pro with RAW on changes the session's streams.
@@ -356,8 +425,21 @@ class CameraViewModel @Inject constructor(
         applySettings(if (mode == CaptureMode.PHOTO) ManualSettings.AUTO else _uiState.value.settings)
     }
 
-    fun cycleFlash() = updateCameraSettings {
-        it.copy(flash = FlashMode.entries[(it.flash.ordinal + 1) % FlashMode.entries.size])
+    /** In video the flash is a light that is on or off. */
+    fun cycleFlash() {
+        if (_uiState.value.mode.isVideo) {
+            updateCameraSettings { it.copy(flash = if (it.flash == FlashMode.ON) FlashMode.OFF else FlashMode.ON) }
+            return
+        }
+        updateCameraSettings { it.copy(flash = FlashMode.entries[(it.flash.ordinal + 1) % FlashMode.entries.size]) }
+    }
+
+    fun toggleVideoResolution() = updateCameraSettings {
+        it.copy(videoResolution = if (it.videoResolution == VideoResolution.UHD) VideoResolution.FHD else VideoResolution.UHD)
+    }
+
+    fun cycleTimelapseSpeed() = updateCameraSettings {
+        it.copy(timelapseSpeed = TimelapseSpeed.entries[(it.timelapseSpeed.ordinal + 1) % TimelapseSpeed.entries.size])
     }
 
     fun cycleTimer() = updateCameraSettings {
@@ -398,8 +480,12 @@ class CameraViewModel @Inject constructor(
         viewModelScope.launch { camera.focusAt(x, y, track) }
     }
 
-    /** Shutter button: takes the photo, starts the self-timer, or cancels a running countdown. */
+    /** Shutter button: takes the photo, starts the self-timer, or cancels a running countdown. In video, starts or stops recording. */
     fun onShutter() {
+        if (_uiState.value.mode.isVideo) {
+            toggleRecording()
+            return
+        }
         if (cancelTimer()) return
         val state = _uiState.value
         if (state.isCapturing || state.cameraState !is CameraState.Previewing) return
@@ -421,6 +507,56 @@ class CameraViewModel @Inject constructor(
     }
 
     fun eventConsumed() = _uiState.update { it.copy(event = null) }
+
+    private fun toggleRecording() {
+        val state = _uiState.value
+        if (state.recording) {
+            viewModelScope.launch { finishRecording() }
+            return
+        }
+        if (state.isCapturing || state.cameraState !is CameraState.Previewing) return
+        viewModelScope.launch { startRecording() }
+    }
+
+    private suspend fun startRecording() {
+        _uiState.update { it.copy(isCapturing = true) }
+        var video: PendingVideo? = null
+        try {
+            video = media.createVideo(System.currentTimeMillis())
+            camera.startRecording(video.fileDescriptor, deviceRotation)
+            pendingVideo = video
+            if (_uiState.value.shutterSoundOn) _effects.tryEmit(CameraEffect.RECORDING_STARTED)
+            _uiState.update { it.copy(isCapturing = false, recordingStartedNanos = System.nanoTime()) }
+        } catch (e: CancellationException) {
+            video?.finish(keep = false)
+            throw e
+        } catch (e: Exception) {
+            DiagnosticLog.record(TAG, "Couldn't start recording", e)
+            runCatching { video?.finish(keep = false) }
+            _uiState.update { it.copy(isCapturing = false, event = CameraEvent.RecordingFailed) }
+        }
+    }
+
+    /** Stops the recording in progress, if any, and saves it to the gallery. */
+    private suspend fun finishRecording() {
+        val video = pendingVideo ?: return
+        pendingVideo = null
+        _uiState.update { it.copy(recordingStartedNanos = null, isCapturing = true) }
+        val recorded = runCatching { camera.stopRecording() }
+            .onFailure { DiagnosticLog.record(TAG, "Couldn't stop recording", it) }
+            .getOrDefault(false)
+        val uri = runCatching { video.finish(keep = recorded) }
+            .onFailure { DiagnosticLog.record(TAG, "Couldn't save the video", it) }
+            .getOrNull()
+        if (_uiState.value.shutterSoundOn) _effects.tryEmit(CameraEffect.RECORDING_STOPPED)
+        _uiState.update {
+            it.copy(
+                isCapturing = false,
+                lastCaptureUri = uri ?: it.lastCaptureUri,
+                event = if (uri != null) CameraEvent.Saved(uri) else CameraEvent.RecordingFailed,
+            )
+        }
+    }
 
     /** Returns true if a countdown was running. */
     private fun cancelTimer(): Boolean {
@@ -496,7 +632,10 @@ class CameraViewModel @Inject constructor(
         if (!initial && next == previous) return
         _uiState.update { it.copy(cameraSettings = next) }
         if (initial || next.flash != previous.flash) camera.setFlashMode(next.flash)
-        if (!initial && next.aspectRatio.stillAspect != previous.aspectRatio.stillAspect) {
+        val videoChanged = next.videoResolution != previous.videoResolution || next.timelapseSpeed != previous.timelapseSpeed
+        if (!initial && _uiState.value.mode.isVideo && videoChanged) {
+            _uiState.value.selectedCamera?.let { select(it, zoom = _uiState.value.zoomRatio) }
+        } else if (!initial && !_uiState.value.mode.isVideo && next.aspectRatio.stillAspect != previous.aspectRatio.stillAspect) {
             // A different sensor output shape needs a new preview size and session.
             _uiState.value.selectedCamera?.let { select(it) }
         } else if (!initial) {
@@ -521,7 +660,14 @@ class CameraViewModel @Inject constructor(
         cancelTimer()
         val aspect = _uiState.value.cameraSettings.aspectRatio.stillAspect
         val nightExtension = _uiState.value.copy(selectedCamera = capabilities).wantsNightExtension
-        val size = runCatching { camera.previewSize(capabilities.cameraId, aspect, nightExtension) }.getOrNull()
+        val video = _uiState.value.videoSpec
+        val size = runCatching {
+            if (video != null) {
+                camera.videoPreviewSize(capabilities.cameraId, video)
+            } else {
+                camera.previewSize(capabilities.cameraId, aspect, nightExtension)
+            }
+        }.getOrNull()
         val main = profile.bestCamera(capabilities.lensFacing) ?: capabilities
         val sameSide = profile.cameras.filter { it.lensFacing == capabilities.lensFacing }
         val presets = planZoomPresets(main, sameSide)
@@ -561,18 +707,24 @@ class CameraViewModel @Inject constructor(
             raw = state.rawActive,
             aspect = state.cameraSettings.aspectRatio.stillAspect,
             nightExtension = state.nightExtensionActive,
+            video = state.videoSpec,
         )
         // Several events (surface sized, camera selected, app resumed) can ask for the same session.
         if (key == openKey) return
         openKey = key
         viewModelScope.launch {
-            camera.open(
-                key.cameraId,
-                target,
-                rawEnabled = key.raw,
-                aspect = key.aspect,
-                nightExtension = key.nightExtension,
-            )
+            val video = key.video
+            if (video != null) {
+                camera.openVideo(key.cameraId, target, video)
+            } else {
+                camera.open(
+                    key.cameraId,
+                    target,
+                    rawEnabled = key.raw,
+                    aspect = key.aspect,
+                    nightExtension = key.nightExtension,
+                )
+            }
             if (state.mode == CaptureMode.PRO) camera.applySettings(_uiState.value.settings)
             val zoom = _uiState.value.zoomRatio
             if (zoom != 1f) camera.setZoom(zoom)
