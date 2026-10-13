@@ -10,13 +10,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import com.camoron.domain.model.FocusTarget
+import kotlinx.coroutines.delay
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
@@ -63,6 +69,32 @@ internal fun LevellerOverlay(modifier: Modifier = Modifier) {
                 strokeWidth = 2.dp.toPx(),
             )
         }
+    }
+}
+
+/**
+ * Square on the focus point. A plain tap shows it briefly; while tracking it follows the subject
+ * in yellow until the subject is lost.
+ */
+@Composable
+internal fun FocusIndicator(target: FocusTarget?, modifier: Modifier = Modifier) {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(target) {
+        visible = target != null
+        if (target != null && !target.tracking) {
+            delay(TAP_FOCUS_VISIBLE_MS)
+            visible = false
+        }
+    }
+    val shown = target?.takeIf { visible } ?: return
+    Canvas(modifier) {
+        val side = 64.dp.toPx()
+        drawRect(
+            color = if (shown.tracking) LEVEL_COLOR else Color.White,
+            topLeft = Offset(shown.x * size.width - side / 2, shown.y * size.height - side / 2),
+            size = Size(side, side),
+            style = Stroke(width = 2.dp.toPx()),
+        )
     }
 }
 
@@ -113,4 +145,5 @@ internal object LevelMath {
 }
 
 private const val LEVEL_TOLERANCE_DEGREES = 1.5f
+private const val TAP_FOCUS_VISIBLE_MS = 1_500L
 private val LEVEL_COLOR = Color(0xFFFFD54F)

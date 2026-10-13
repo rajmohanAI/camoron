@@ -120,4 +120,22 @@ class CameraMathTest {
         // 6.9 mm lens on a 1/1.3" sensor (about 12.3 mm diagonal) is roughly a 24 mm equivalent.
         assertThat(CameraMath.equivalentFocalLength(6.9f, 12.3f)).isWithin(1f).of(24.3f)
     }
+
+    @Test
+    fun `sensor to view undoes view to sensor`() {
+        listOf(0, 90, 180, 270).forEach { orientation ->
+            listOf(false, true).forEach { front ->
+                val (sx, sy) = CameraMath.viewToSensor(0.2f, 0.7f, orientation, front)
+                val (vx, vy) = CameraMath.sensorToView(sx, sy, orientation, front)
+                assertThat(vx).isWithin(1e-5f).of(0.2f)
+                assertThat(vy).isWithin(1e-5f).of(0.7f)
+            }
+        }
+    }
+
+    @Test
+    fun `zoom crop is centred`() {
+        assertThat(CameraMath.cropForZoom(4000, 3000, 2f).toList()).containsExactly(1000, 750, 3000, 2250).inOrder()
+        assertThat(CameraMath.cropForZoom(4000, 3000, 0.5f).toList()).containsExactly(0, 0, 4000, 3000).inOrder()
+    }
 }

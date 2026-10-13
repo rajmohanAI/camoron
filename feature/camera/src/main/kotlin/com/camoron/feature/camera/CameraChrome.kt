@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.LocalFlorist
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.TimerOff
@@ -54,6 +55,8 @@ import androidx.compose.ui.unit.sp
 import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.TimerSetting
+import com.camoron.domain.model.ZoomPreset
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -122,6 +125,87 @@ private fun TopMenuButton(icon: ImageVector, label: String?, description: String
         // The label is read with the description, e.g. "Flash, Auto".
         Icon(icon, contentDescription = description, tint = Color.White, modifier = Modifier.size(24.dp))
         if (label != null) Text(label, color = Color.White, fontSize = 11.sp)
+    }
+}
+
+/**
+ * Layer 1: Macro and the zoom buttons. Each appears only when this side's hardware supports it;
+ * the active zoom button shows the exact current zoom, e.g. 1.4× while pinching.
+ */
+@Composable
+internal fun LensRow(
+    state: CameraUiState,
+    onMacro: () -> Unit,
+    onPreset: (ZoomPreset) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val presets = state.zoomPresets.takeIf { it.size > 1 }.orEmpty()
+    if (!state.macroAvailable && presets.isEmpty()) return
+    val active = state.activePreset
+    Row(
+        modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (state.macroAvailable) {
+            val description = stringResource(R.string.cd_macro)
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable(role = Role.Switch, onClickLabel = description, onClick = onMacro),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.LocalFlorist,
+                    contentDescription = description,
+                    tint = if (state.macro) MODE_SELECTED else Color.White,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+        presets.forEach { preset ->
+            val isActive = preset == active && !state.macro
+            val text = if (isActive) formatZoom(state.displayZoom) + "×" else formatZoom(preset.label)
+            val description = stringResource(R.string.cd_zoom, formatZoom(preset.label))
+            Box(
+                Modifier
+                    .size(if (isActive) 44.dp else 36.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable(role = Role.Button, onClickLabel = description) { onPreset(preset) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text,
+                    color = if (isActive) MODE_SELECTED else Color.White,
+                    fontSize = if (isActive) 13.sp else 12.sp,
+                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                )
+            }
+        }
+    }
+}
+
+/** "2" for whole numbers, "0.6" or "1.4" otherwise. */
+internal fun formatZoom(value: Float): String {
+    val tenths = Math.round(value * 10)
+    return if (tenths % 10 == 0) (tenths / 10).toString() else String.format(Locale.getDefault(), "%.1f", tenths / 10f)
+}
+
+@Composable
+internal fun MacroBadge(modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.55f))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Icon(Icons.Filled.LocalFlorist, contentDescription = null, tint = MODE_SELECTED, modifier = Modifier.size(14.dp))
+        Text(stringResource(R.string.macro_label), color = Color.White, fontSize = 12.sp)
     }
 }
 

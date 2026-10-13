@@ -94,14 +94,16 @@ internal fun describeCamera(c: CameraCapabilities): String = buildString {
     appendLine("Hardware level: ${c.hardwareLevel}")
     c.equivalentFocalLengthMm?.let { appendLine("Focal length: ${it.toInt()} mm equivalent") }
     if (c.physicalCameraCount > 1) appendLine("Lenses behind this camera: ${c.physicalCameraCount}")
-    c.zoomRatioRange?.let {
-        appendLine("Zoom: ${String.format(Locale.US, "%.1f×–%.1f×", it.start, it.endInclusive)}")
+    c.zoomRange.let {
+        val kind = if (c.zoomRatioRange != null) "zoom ratio" else "digital crop"
+        appendLine("Zoom: ${String.format(Locale.US, "%.1f×–%.1f×", it.start, it.endInclusive)} ($kind)")
     }
     if (c.minFocusDistanceDiopters > 0f) {
         appendLine("Closest focus: ${(100f / c.minFocusDistanceDiopters).toInt()} cm")
     } else {
         appendLine("Focus: fixed")
     }
+    appendLine("Macro: ${yesNo(c.supportsMacro)}")
     appendLine("Flash: ${yesNo(c.hasFlash)}")
     appendLine(
         "Photo shapes: " + c.stillAspects.joinToString {

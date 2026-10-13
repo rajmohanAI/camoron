@@ -22,7 +22,7 @@ Camera UI plan v2 (phases A to F):
 | Phase | State |
 |---|---|
 | A. Device scan, new layout, flash, timer, aspect ratio, settings | Done |
-| B. Lenses and focus | Not started |
+| B. Lenses and focus | Done |
 | C. Looks and night | Not started |
 | D. Video family | Not started |
 | E. Portrait, Scan, Google Lens | Not started |

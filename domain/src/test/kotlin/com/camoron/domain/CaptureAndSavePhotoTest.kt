@@ -6,6 +6,7 @@ import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.FlashMode
+import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.ManualSettings
@@ -72,7 +73,10 @@ class CaptureAndSavePhotoTest {
         override suspend fun open(cameraId: String, target: PreviewTarget, rawEnabled: Boolean, aspect: StillAspect) = Unit
         override suspend fun setFlashMode(mode: FlashMode) = Unit
         override suspend fun applySettings(settings: ManualSettings) = Unit
-        override suspend fun focusAt(x: Float, y: Float) = Unit
+        override suspend fun focusAt(x: Float, y: Float, track: Boolean) = Unit
+        override val focusTarget = MutableStateFlow<FocusTarget?>(null)
+        override suspend fun setZoom(ratio: Float) = Unit
+        override suspend fun setMacro(enabled: Boolean) = Unit
         override suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean) =
             CaptureBundle(jpeg, dng.takeIf { includeDng && includeRaw })
         override suspend fun close() = Unit

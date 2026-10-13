@@ -5,6 +5,8 @@ import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.FlashMode
+import com.camoron.domain.model.FocusTarget
+import com.camoron.domain.model.ZoomPreset
 import com.camoron.domain.model.LiveExposure
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.StillAspect
@@ -24,6 +26,7 @@ import com.camoron.domain.repository.PhotoProcessor
 import com.camoron.domain.repository.SettingsRepository
 import com.camoron.domain.repository.PreviewTarget
 import com.camoron.domain.usecase.CaptureAndSavePhoto
+import com.camoron.domain.usecase.PlanZoomPresets
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -67,7 +70,7 @@ class CameraViewModelTest {
     fun tearDown() = Dispatchers.resetMain()
 
     private fun viewModel() =
-        CameraViewModel(controller, CaptureAndSavePhoto(controller, media, processor), settings, media)
+        CameraViewModel(controller, CaptureAndSavePhoto(controller, media, processor), settings, media, PlanZoomPresets())
 
     @Test
     fun `starts on the highest resolution back camera`() = runTest {
@@ -237,6 +240,72 @@ class CameraViewModelTest {
         assertThat(vm.uiState.value.shutterSoundOn).isTrue()
     }
 
+    @Test
+    fun `ultra-wide button switches to the separate wide camera and back`() = runTest {
+        controller.all = listOf(
+            back.copy(equivalentFocalLengthMm = 26f, maxDigitalZoom = 4f),
+            backWide.copy(equivalentFocalLengthMm = 13f),
+            front,
+        )
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        val presets = vm.uiState.value.zoomPresets
+        assertThat(presets.map { it.label }).containsExactly(0.5f, 1f, 2f, 3f).inOrder()
+
+        vm.selectZoomPreset(presets.first())
+        assertThat(controller.opened.last()).isEqualTo("2")
+        assertThat(vm.uiState.value.displayZoom).isEqualTo(0.5f)
+        assertThat(vm.uiState.value.activePreset).isEqualTo(presets.first())
+
+        vm.selectZoomPreset(presets[2])
+        assertThat(controller.opened.last()).isEqualTo("0")
+        assertThat(controller.zooms.last()).isEqualTo(2f)
+        assertThat(vm.uiState.value.displayZoom).isEqualTo(2f)
+    }
+
+    @Test
+    fun `pinch zoom stays inside the camera's range`() = runTest {
+        controller.all = listOf(back.copy(maxDigitalZoom = 4f), front)
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.onPinch(1.5f)
+        assertThat(controller.zooms.last()).isEqualTo(1.5f)
+        vm.onPinch(10f)
+        assertThat(controller.zooms.last()).isEqualTo(4f)
+        vm.onPinch(0.01f)
+        assertThat(controller.zooms.last()).isEqualTo(1f)
+    }
+
+    @Test
+    fun `macro uses the closest focusing camera and returns to the main one`() = runTest {
+        controller.all = listOf(
+            back,
+            backWide.copy(minFocusDistanceDiopters = 33f, supportsMacroAf = true),
+            front,
+        )
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(vm.uiState.value.macroAvailable).isTrue()
+
+        vm.toggleMacro()
+        assertThat(controller.macros).containsExactly(true)
+        assertThat(controller.opened.last()).isEqualTo("2")
+
+        vm.toggleMacro()
+        assertThat(controller.macros).containsExactly(true, false).inOrder()
+        assertThat(controller.opened.last()).isEqualTo("0")
+    }
+
+    @Test
+    fun `tap tracks the subject only when the setting is on`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.focusAt(0.5f, 0.5f)
+        settings.state.update { it.copy(autoFocusTracking = false) }
+        vm.focusAt(0.5f, 0.5f)
+        assertThat(controller.focused).containsExactly(true, false).inOrder()
+    }
+
     private class FakeSettingsRepository : SettingsRepository {
         val state = MutableStateFlow(CameraSettings())
         override val settings = state
@@ -248,7 +317,7 @@ class CameraViewModelTest {
 
     private data class Target(override val width: Int, override val height: Int) : PreviewTarget
 
-    private class FakeCameraController(private val all: List<CameraCapabilities>) : CameraController {
+    private class FakeCameraController(var all: List<CameraCapabilities>) : CameraController {
         override val state = MutableStateFlow<CameraState>(CameraState.Closed)
         override val histogram = MutableStateFlow<Histogram?>(null)
         val opened = mutableListOf<String>()
@@ -278,7 +347,19 @@ class CameraViewModelTest {
         override suspend fun applySettings(settings: ManualSettings) {
             applied += settings
         }
-        override suspend fun focusAt(x: Float, y: Float) = Unit
+        val focused = mutableListOf<Boolean>()
+        val zooms = mutableListOf<Float>()
+        val macros = mutableListOf<Boolean>()
+        override val focusTarget = MutableStateFlow<FocusTarget?>(null)
+        override suspend fun focusAt(x: Float, y: Float, track: Boolean) {
+            focused += track
+        }
+        override suspend fun setZoom(ratio: Float) {
+            zooms += ratio
+        }
+        override suspend fun setMacro(enabled: Boolean) {
+            macros += enabled
+        }
         override suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean): CaptureBundle {
             capturedWithRaw += includeRaw
             val jpeg = CapturedImage(ByteArray(1), ImageFormat.JPEG, PixelSize(4000, 3000), 0L)

@@ -38,6 +38,7 @@ import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.FlashMode
+import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.Histogram
@@ -72,6 +73,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.abs
 
 /**
  * Camera2 implementation of [CameraController]. All Camera2 callbacks run on one dedicated
@@ -101,6 +103,13 @@ class Camera2Controller @Inject constructor(
     @Volatile
     private var active: ActiveCamera? = null
 
+    private val _focusTarget = MutableStateFlow<FocusTarget?>(null)
+    override val focusTarget: StateFlow<FocusTarget?> = _focusTarget.asStateFlow()
+
+    /** Survives reopening, like [flashMode]; only honoured on cameras that support macro. */
+    @Volatile
+    private var macroEnabled = false
+
     /** Survives reopening, so switching camera or aspect keeps the user's flash choice. */
     @Volatile
     private var flashMode: FlashMode = FlashMode.OFF
@@ -126,7 +135,22 @@ class Camera2Controller @Inject constructor(
         val analysisReader: ImageReader?,
     ) {
         var settings: ManualSettings = ManualSettings.AUTO
+        @Volatile
         var focusRegion: MeteringRectangle? = null
+
+        /** Zoom ratio, or the digital crop factor before Android 11. */
+        @Volatile
+        var zoomRatio: Float = 1f
+
+        /** The user asked to follow the tapped subject; continuous AF on a moving region. */
+        @Volatile
+        var trackingWanted = false
+
+        // Touched only on the camera thread.
+        val tracker = SubjectTracker()
+        var pendingTrack: Pair<Float, Float>? = null
+        var lastTrackAt = 0L
+        var lastTrackCenter: Pair<Float, Float>? = null
         var lastExposure: LiveExposure? = null
         var lastColorTransform: ColorSpaceTransform? = null
         var lastPublishedAt: Long = 0L
@@ -135,6 +159,9 @@ class Camera2Controller @Inject constructor(
         val activeArray: Rect? = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
         val afModes: Set<Int> = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.toSet().orEmpty()
         val maxAeRegions: Int = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
+
+        /** Zoom through CONTROL_ZOOM_RATIO (Android 11+), which also switches lenses on multi-camera phones. */
+        val usesZoomRatio: Boolean get() = capabilities.zoomRatioRange != null
         val isFront: Boolean get() = capabilities.lensFacing == LensFacing.FRONT
 
         fun closeReaders() {
@@ -263,6 +290,7 @@ class Camera2Controller @Inject constructor(
             val camera = ActiveCamera(caps, characteristics, device, session, surface, jpegReader, rawReader, analysisReader)
             active = camera
             startRepeating(camera)
+            if (macroEnabled && caps.supportsMacro && caps.supportsMacroAf) triggerFocus(camera)
             _state.value = CameraState.Previewing(caps, camera.settings, liveExposure = null)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to open camera $cameraId", e)
@@ -282,6 +310,7 @@ class Camera2Controller @Inject constructor(
         val image = reader.acquireLatestImage() ?: return
         image.use {
             val now = SystemClock.elapsedRealtime()
+            active?.takeIf { camera -> camera.analysisReader === reader }?.let { camera -> track(camera, it, now) }
             if (now - lastHistogramAt < HISTOGRAM_INTERVAL_MS) return
             lastHistogramAt = now
             val plane = it.planes[0]
@@ -302,36 +331,163 @@ class Camera2Controller @Inject constructor(
         }
     }
 
-    override suspend fun focusAt(x: Float, y: Float) {
+    /** Camera thread: follows the tracked subject and moves the focus region with it. */
+    private fun track(camera: ActiveCamera, image: Image, now: Long) {
+        val pending = camera.pendingTrack
+        if (pending == null && !camera.tracker.isTracking) return
+        if (now - camera.lastTrackAt < TRACK_INTERVAL_MS) return
+        camera.lastTrackAt = now
+        val frame = lumaFrame(image)
+
+        if (pending != null) {
+            camera.pendingTrack = null
+            if (camera.tracker.start(frame, pending.first, pending.second)) {
+                camera.lastTrackCenter = pending
+            } else {
+                // Nothing to follow (a blank wall, the sky): behave like a plain tap instead.
+                camera.trackingWanted = false
+                _focusTarget.update { it?.copy(tracking = false) }
+                runCatching {
+                    startRepeating(camera)
+                    triggerFocus(camera)
+                }
+            }
+            return
+        }
+
+        val position = camera.tracker.update(frame)
+        if (position == null) {
+            // Subject lost: go back to focusing on the whole scene.
+            camera.trackingWanted = false
+            camera.focusRegion = null
+            _focusTarget.value = null
+            runCatching { startRepeating(camera) }
+            return
+        }
+        val (sx, sy) = position
+        val (vx, vy) = CameraMath.sensorToView(sx, sy, camera.sensorOrientation, camera.isFront)
+        _focusTarget.value = FocusTarget(vx, vy, tracking = true)
+        val last = camera.lastTrackCenter
+        if (last != null && abs(last.first - sx) < TRACK_MIN_MOVE && abs(last.second - sy) < TRACK_MIN_MOVE) return
+        camera.lastTrackCenter = position
+        camera.focusRegion = regionAt(camera, sx, sy) ?: return
+        runCatching { startRepeating(camera) }
+    }
+
+    /** Copies the Y plane into a tightly packed frame for the tracker. */
+    private fun lumaFrame(image: Image): LumaFrame {
+        val plane = image.planes[0]
+        val buffer = plane.buffer.duplicate()
+        val width = image.width
+        val height = image.height
+        val out = ByteArray(width * height)
+        if (plane.pixelStride == 1) {
+            for (y in 0 until height) {
+                buffer.position(y * plane.rowStride)
+                buffer.get(out, y * width, width)
+            }
+        } else {
+            for (y in 0 until height) {
+                val row = y * plane.rowStride
+                for (x in 0 until width) out[y * width + x] = buffer.get(row + x * plane.pixelStride)
+            }
+        }
+        return LumaFrame(out, width, height)
+    }
+
+    override suspend fun focusAt(x: Float, y: Float, track: Boolean) {
         mutex.withLock {
             val camera = active ?: return@withLock
-            val array = camera.activeArray ?: return@withLock
             if (!camera.capabilities.supportsTapToFocus) return@withLock
 
             val (sx, sy) = CameraMath.viewToSensor(x, y, camera.sensorOrientation, camera.isFront)
-            val half = (minOf(array.width(), array.height()) * FOCUS_REGION_FRACTION / 2).toInt()
-            val cx = array.left + (sx * array.width()).toInt()
-            val cy = array.top + (sy * array.height()).toInt()
-            val region = MeteringRectangle(
-                Rect(
-                    (cx - half).coerceAtLeast(array.left),
-                    (cy - half).coerceAtLeast(array.top),
-                    (cx + half).coerceAtMost(array.right),
-                    (cy + half).coerceAtMost(array.bottom),
-                ),
-                MeteringRectangle.METERING_WEIGHT_MAX,
-            )
+            val region = regionAt(camera, sx, sy) ?: return@withLock
+            // Tracking needs the analysis stream (absent while RAW is on), and macro holds focus close.
+            val canTrack = track && camera.analysisReader != null && !macroActive(camera)
             camera.focusRegion = region
-
-            // Cancel any running scan, then trigger a fresh one on the new region.
-            val trigger = previewRequest(camera).apply {
-                set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
+            camera.trackingWanted = canTrack
+            handler.post {
+                camera.tracker.stop()
+                camera.pendingTrack = if (canTrack) sx to sy else null
             }
-            camera.session.capture(trigger.build(), null, handler)
-            trigger.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
-            camera.session.capture(trigger.build(), null, handler)
+            _focusTarget.value = FocusTarget(x, y, tracking = canTrack)
+
+            startRepeating(camera)
+            if (!canTrack) triggerFocus(camera)
+        }
+    }
+
+    override suspend fun setZoom(ratio: Float) {
+        mutex.withLock {
+            val camera = active ?: return@withLock
+            val range = camera.capabilities.zoomRange
+            val next = ratio.coerceIn(range.start, range.endInclusive)
+            if (next == camera.zoomRatio) return@withLock
+            camera.zoomRatio = next
+            // The field of view changed, so a tapped point or tracked subject no longer lines up.
+            clearFocus(camera)
             startRepeating(camera)
         }
+    }
+
+    override suspend fun setMacro(enabled: Boolean) {
+        mutex.withLock {
+            macroEnabled = enabled
+            val camera = active ?: return@withLock
+            clearFocus(camera)
+            startRepeating(camera)
+            if (macroActive(camera) && camera.capabilities.supportsMacroAf) triggerFocus(camera)
+        }
+    }
+
+    private fun macroActive(camera: ActiveCamera): Boolean = macroEnabled && camera.capabilities.supportsMacro
+
+    private fun clearFocus(camera: ActiveCamera) {
+        camera.trackingWanted = false
+        camera.focusRegion = null
+        handler.post {
+            camera.tracker.stop()
+            camera.pendingTrack = null
+        }
+        _focusTarget.value = null
+    }
+
+    /** Starts a one-shot focus scan (AUTO and MACRO modes only scan when triggered). */
+    private fun triggerFocus(camera: ActiveCamera) {
+        val trigger = previewRequest(camera).apply {
+            set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
+        }
+        camera.session.capture(trigger.build(), null, handler)
+        trigger.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+        camera.session.capture(trigger.build(), null, handler)
+    }
+
+    /**
+     * Metering rectangle around normalised sensor point ([sx], [sy]) of what the preview shows.
+     * Regions use active-array coordinates; with crop-based zoom the visible area is the crop.
+     */
+    private fun regionAt(camera: ActiveCamera, sx: Float, sy: Float): MeteringRectangle? {
+        val array = camera.activeArray ?: return null
+        val bounds = if (!camera.usesZoomRatio && camera.zoomRatio > 1f) {
+            CameraMath.cropForZoom(array.width(), array.height(), camera.zoomRatio)
+        } else {
+            intArrayOf(0, 0, array.width(), array.height())
+        }
+        val (left, top, right, bottom) = bounds
+        val width = right - left
+        val height = bottom - top
+        val half = (minOf(width, height) * FOCUS_REGION_FRACTION / 2).toInt()
+        val cx = left + (sx.coerceIn(0f, 1f) * width).toInt()
+        val cy = top + (sy.coerceIn(0f, 1f) * height).toInt()
+        return MeteringRectangle(
+            Rect(
+                (cx - half).coerceAtLeast(left),
+                (cy - half).coerceAtLeast(top),
+                (cx + half).coerceAtMost(right - 1),
+                (cy + half).coerceAtMost(bottom - 1),
+            ),
+            MeteringRectangle.METERING_WEIGHT_MAX,
+        )
     }
 
     @OptIn(ExperimentalCoroutinesApi::class) // getCompleted() to release an unconsumed RAW frame
@@ -488,6 +644,7 @@ class Camera2Controller @Inject constructor(
         runCatching { camera.device.close() }
         camera.closeReaders()
         _histogram.value = null
+        _focusTarget.value = null
         _state.value = CameraState.Closed
     }
 
@@ -532,6 +689,7 @@ class Camera2Controller @Inject constructor(
             active = null
             camera.closeReaders()
             _histogram.value = null
+            _focusTarget.value = null
             _state.value = CameraState.Error(error)
         }
     }
@@ -579,9 +737,33 @@ class Camera2Controller @Inject constructor(
         val caps = camera.capabilities
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
 
-        // Focus: continuous by default, single-shot on the tapped region after a tap.
+        // Zoom applies to every output, so preview, analysis and still all match.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && camera.usesZoomRatio) {
+            builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, camera.zoomRatio)
+        } else if (camera.zoomRatio > 1f) {
+            camera.activeArray?.let { array ->
+                val (l, t, r, b) = CameraMath.cropForZoom(array.width(), array.height(), camera.zoomRatio)
+                builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(l, t, r, b))
+            }
+        }
+
+        // Focus: continuous by default; after a tap, either a one-shot scan on that spot or, when
+        // tracking, continuous focus on a region that follows the subject. Macro overrides both.
         val region = camera.focusRegion
         when {
+            macroActive(camera) && caps.supportsMacroAf -> {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_MACRO)
+                if (region != null) builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
+            }
+            macroActive(camera) -> {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, caps.minFocusDistanceDiopters)
+            }
+            region != null && camera.trackingWanted &&
+                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE in camera.afModes -> {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
+            }
             region != null && CameraMetadata.CONTROL_AF_MODE_AUTO in camera.afModes -> {
                 builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
                 builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
@@ -697,6 +879,9 @@ class Camera2Controller @Inject constructor(
         const val ANALYSIS_IMAGES = 2
         const val HISTOGRAM_INTERVAL_MS = 200L
         const val PRECAPTURE_TIMEOUT_MS = 1500L
+        const val TRACK_INTERVAL_MS = 66L
+        /** Normalised movement below which the focus region is left where it is. */
+        const val TRACK_MIN_MOVE = 0.015f
 
         /** EXTENSION_FACE_RETOUCH (named EXTENSION_BEAUTY before Android 14). */
         const val EXTENSION_FACE_RETOUCH = 1
