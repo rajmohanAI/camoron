@@ -51,5 +51,13 @@ internal object PhotoMath {
         else -> 2
     }
 
+    /** EXIF orientation tag for a clockwise rotation in degrees (rounded to a quarter turn). */
+    fun orientationTag(degrees: Int): Int = when (((degrees % 360) + 360 + 45) / 90 % 4) {
+        1 -> 6
+        2 -> 3
+        3 -> 8
+        else -> 1
+    }
+
     private const val TOLERANCE = 0.01f
 }

@@ -12,8 +12,8 @@ import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 
 /**
- * Capture path: take the photo (or a night burst and merge it), match it to the preview, save it.
- * AI enhancement (milestone 4) slots in before saving.
+ * Capture path: take a burst of frames and merge them (or a single photo where the session can't),
+ * match it to the preview, enhance it and save it.
  */
 class CaptureAndSavePhoto @Inject constructor(
     private val camera: CameraController,
@@ -40,6 +40,15 @@ class CaptureAndSavePhoto @Inject constructor(
         nightFrames: Int = 0,
         onCaptured: () -> Unit = {},
     ): String {
+        // Every photo is a merged burst where the camera allows it: night simply uses more frames.
+        if (!includeRaw) {
+            val count = if (nightFrames > 1) nightFrames else BURST_FRAMES
+            val burst = retryOnce { camera.captureFrames(deviceRotationDegrees, count) }
+            if (burst != null) {
+                onCaptured()
+                return saving.withLock { media.save(processor.render(burst, adjustments)) }
+            }
+        }
         if (nightFrames > 1) {
             val frames = retryOnce { camera.captureBurst(deviceRotationDegrees, nightFrames) }
             onCaptured()
@@ -68,5 +77,8 @@ class CaptureAndSavePhoto @Inject constructor(
 
     private companion object {
         const val RETRY_DELAY_MS = 300L
+
+        /** Frames merged for an ordinary photo: noise drops by about the square root of this. */
+        const val BURST_FRAMES = 6
     }
 }

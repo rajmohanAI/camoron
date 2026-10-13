@@ -4,6 +4,7 @@ import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.FlashMode
+import com.camoron.domain.model.FrameBurst
 import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.CapturedImage
@@ -97,6 +98,14 @@ interface CameraController {
      * without flash, for merging.
      */
     suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage>
+
+    /**
+     * Up to [frames] uncompressed frames back to back at one locked exposure, for merging into one
+     * cleaner, more detailed photo; fewer when memory is short, and a single frame when the flash
+     * fires. Returns null when the open session can't deliver them (RAW, the maker's Night mode or
+     * filming), in which case [capture] is the way to take the photo.
+     */
+    suspend fun captureFrames(deviceRotationDegrees: Int, frames: Int): FrameBurst? = null
 
     /**
      * Preview buffer size for a video session on [cameraId]. Video frames are drawn upright by the

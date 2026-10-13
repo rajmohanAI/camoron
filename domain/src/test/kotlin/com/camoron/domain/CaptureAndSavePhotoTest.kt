@@ -8,6 +8,7 @@ import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
+import com.camoron.domain.model.FrameBurst
 import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.ManualSettings
@@ -15,6 +16,7 @@ import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.model.StillAspect
 import com.camoron.domain.model.VideoSpec
+import com.camoron.domain.model.YuvFrame
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.MediaRepository
 import com.camoron.domain.repository.PendingVideo
@@ -53,7 +55,18 @@ class CaptureAndSavePhotoTest {
             merged += frames.size
             return frames.first().withBytes(byteArrayOf(7))
         }
+
+        override suspend fun render(burst: FrameBurst, adjustments: PhotoAdjustments): CapturedImage {
+            rendered += burst.frames.size
+            processed += adjustments
+            return jpeg.withBytes(byteArrayOf(5))
+        }
     }
+    private val rendered = mutableListOf<Int>()
+
+    /** When true the camera delivers uncompressed bursts, as a normal (non-RAW) session does. */
+    private var burstsAvailable = false
+    private val requestedFrames = mutableListOf<Int>()
     private val merged = mutableListOf<Int>()
 
     /** Captures that fail before one succeeds, as some phones do right after the session opens. */
@@ -103,6 +116,36 @@ class CaptureAndSavePhotoTest {
         assertThat(saved.single().bytes.single()).isEqualTo(7.toByte())
     }
 
+    @Test
+    fun `an ordinary photo is a merged burst`() = runTest {
+        burstsAvailable = true
+        var captured = false
+        val adjustments = PhotoAdjustments(cropAspect = 3f / 4, enhance = true)
+        val uri = useCase(includeDng = false)(0, adjustments = adjustments, onCaptured = { captured = true })
+        assertThat(uri).isEqualTo("content://1")
+        assertThat(captured).isTrue()
+        assertThat(requestedFrames).containsExactly(6)
+        assertThat(processed).containsExactly(adjustments)
+        assertThat(saved.single().bytes.single()).isEqualTo(5.toByte())
+    }
+
+    @Test
+    fun `night asks the burst for more frames`() = runTest {
+        burstsAvailable = true
+        useCase(includeDng = false)(0, nightFrames = 8)
+        assertThat(requestedFrames).containsExactly(8)
+        assertThat(merged).isEmpty()
+        assertThat(rendered).containsExactly(8)
+    }
+
+    @Test
+    fun `raw photos keep the single-shot path`() = runTest {
+        burstsAvailable = true
+        useCase(includeDng = true)(0, includeRaw = true)
+        assertThat(requestedFrames).isEmpty()
+        assertThat(saved.map { it.format }).containsExactly(ImageFormat.JPEG, ImageFormat.DNG).inOrder()
+    }
+
     private fun camera(includeDng: Boolean) = object : CameraController {
         override val state = MutableStateFlow<CameraState>(CameraState.Closed)
         override val histogram = MutableStateFlow<Histogram?>(null)
@@ -130,6 +173,12 @@ class CaptureAndSavePhotoTest {
                 error("Capture failed")
             }
             return CaptureBundle(jpeg, dng.takeIf { includeDng && includeRaw })
+        }
+        override suspend fun captureFrames(deviceRotationDegrees: Int, frames: Int): FrameBurst? {
+            if (!burstsAvailable) return null
+            requestedFrames += frames
+            val frame = YuvFrame(4, 2, ByteArray(8), ByteArray(2), ByteArray(2))
+            return FrameBurst(List(frames) { frame }, orientationDegrees = 90, timestampMillis = 0L)
         }
         override suspend fun videoPreviewSize(cameraId: String, spec: VideoSpec) = PixelSize(1080, 1920)
         override suspend fun openVideo(cameraId: String, target: PreviewTarget, spec: VideoSpec) = Unit
