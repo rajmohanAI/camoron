@@ -202,18 +202,14 @@ class CameraViewModelTest {
     }
 
     @Test
-    fun `changing to a 16 by 9 based ratio reopens with the new sensor shape`() = runTest {
+    fun `changing the photo shape keeps the camera running`() = runTest {
         val vm = viewModel()
         vm.onSurfaceReady(Target(1440, 1080))
         assertThat(controller.openedWithAspect).containsExactly(StillAspect.FOUR_THREE)
 
-        vm.cycleAspectRatio() // 9:16
-        assertThat(controller.previewAspects.last()).isEqualTo(StillAspect.SIXTEEN_NINE)
-        vm.onSurfaceReady(Target(1920, 1080))
-        assertThat(controller.openedWithAspect.last()).isEqualTo(StillAspect.SIXTEEN_NINE)
-
-        vm.cycleAspectRatio() // full screen: same sensor shape, no new session
-        assertThat(controller.openedWithAspect).hasSize(2)
+        vm.cycleAspectRatio() // 9:16: a crop of the same 4:3 frame
+        vm.cycleAspectRatio() // full screen
+        assertThat(controller.openedWithAspect).containsExactly(StillAspect.FOUR_THREE)
     }
 
     @Test
@@ -221,7 +217,7 @@ class CameraViewModelTest {
         settings.state.update { it.copy(aspectRatio = AspectRatioSetting.FULL_SCREEN) }
         val vm = viewModel()
         vm.onDisplayAspect(0.45f)
-        vm.onSurfaceReady(Target(1920, 1080))
+        vm.onSurfaceReady(Target(1440, 1080))
         vm.onShutter()
         assertThat(processor.applied.single()).isEqualTo(PhotoAdjustments(cropAspect = 0.45f, mirror = false, enhance = true))
     }

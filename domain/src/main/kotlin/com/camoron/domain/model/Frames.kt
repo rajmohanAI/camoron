@@ -22,7 +22,36 @@ class YuvFrame(
 
     /** Bytes held, for deciding how many frames fit in memory. */
     val byteCount: Long get() = y.size.toLong() + u.size + v.size
+
+    /**
+     * A small opaque ARGB copy, no more than [maxSide] pixels on its long side, for showing the shot
+     * straight away while the full photo is still being processed. Sensor orientation.
+     */
+    fun thumbnail(maxSide: Int): Thumbnail {
+        val step = maxOf(1, (maxOf(width, height) + maxSide - 1) / maxSide)
+        val w = maxOf(1, width / step)
+        val h = maxOf(1, height / step)
+        val pixels = IntArray(w * h)
+        for (ty in 0 until h) {
+            val sy = ty * step
+            for (tx in 0 until w) {
+                val sx = tx * step
+                val l = y[sy * width + sx].toInt() and 0xFF
+                val ci = (sy / 2) * chromaWidth + sx / 2
+                val cu = (u[ci].toInt() and 0xFF) - 128
+                val cv = (v[ci].toInt() and 0xFF) - 128
+                val r = (l + ((1436 * cv + 512) shr 10)).coerceIn(0, 255)
+                val g = (l - ((352 * cu + 731 * cv + 512) shr 10)).coerceIn(0, 255)
+                val b = (l + ((1815 * cu + 512) shr 10)).coerceIn(0, 255)
+                pixels[ty * w + tx] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+        return Thumbnail(w, h, pixels)
+    }
 }
+
+/** Small ARGB image, row by row. */
+class Thumbnail(val width: Int, val height: Int, val pixels: IntArray)
 
 /** Camera details of a shot, written into the saved photo's EXIF. */
 data class ShotInfo(

@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.media.MediaActionSound
 import android.view.OrientationEventListener
@@ -14,6 +15,7 @@ import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -55,9 +57,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -234,6 +240,7 @@ private fun PreviewArea(
                     previewSize = bufferSize,
                     look = if (state.mode.isVideo) ShotLook.NORMAL else state.cameraSettings.look,
                     enhance = if (state.mode.isVideo) ({ null }) else enhance,
+                    iso = { (state.cameraState as? CameraState.Previewing)?.liveExposure?.iso },
                     live = state.cameraState is CameraState.Previewing,
                     onSurfaceReady = onSurfaceReady,
                     onSurfaceDestroyed = onSurfaceDestroyed,
@@ -266,12 +273,16 @@ private fun PreviewArea(
 /**
  * TextureView-backed preview, so the shot look can be drawn live as a colour filter. The buffer is
  * fixed to the camera's preview size so it is never stretched.
+ *
+ * While the camera switches (mode, lens, shape) the last frame stays on screen, softly blurred,
+ * until the first new frame arrives, so a switch never flashes black or shows a squeezed picture.
  */
 @Composable
 private fun CameraPreview(
     previewSize: PixelSize,
     look: ShotLook,
     enhance: () -> EnhanceParams?,
+    iso: () -> Int?,
     live: Boolean,
     onSurfaceReady: (SurfacePreviewTarget) -> Unit,
     onSurfaceDestroyed: () -> Unit,
@@ -279,23 +290,44 @@ private fun CameraPreview(
 ) {
     val ready by rememberUpdatedState(onSurfaceReady)
     val destroyed by rememberUpdatedState(onSurfaceDestroyed)
+    var freeze by remember { mutableStateOf<ImageBitmap?>(null) }
 
-    AndroidView(
-        factory = { ctx -> PreviewTextureView(ctx, onReady = { ready(it) }, onDestroyed = { destroyed() }) },
-        update = { view ->
-            view.setBufferSize(previewSize)
-            view.setLive(live)
-            // Read here, so new parameters only re-run this update, not the composition.
-            view.setFilter(look, enhance())
-        },
-        modifier = modifier,
-    )
+    Box(modifier) {
+        AndroidView(
+            factory = { ctx ->
+                PreviewTextureView(
+                    ctx,
+                    onReady = { ready(it) },
+                    onDestroyed = { destroyed() },
+                    onFreeze = { freeze = it?.asImageBitmap() },
+                )
+            },
+            update = { view ->
+                view.setBufferSize(previewSize)
+                view.setLive(live)
+                // Read here, so new parameters only re-run this update, not the composition.
+                view.setFilter(look, enhance(), iso())
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+        freeze?.let {
+            Image(
+                bitmap = it,
+                contentDescription = null,
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier.fillMaxSize().blur(FREEZE_BLUR),
+            )
+        }
+    }
 }
+
+private val FREEZE_BLUR = 12.dp
 
 private class PreviewTextureView(
     context: Context,
     private val onReady: (SurfacePreviewTarget) -> Unit,
     private val onDestroyed: () -> Unit,
+    private val onFreeze: (Bitmap?) -> Unit,
 ) : TextureView(context), TextureView.SurfaceTextureListener {
 
     private var bufferSize: PixelSize? = null
@@ -306,31 +338,57 @@ private class PreviewTextureView(
         surfaceTextureListener = this
     }
 
-    /** Hidden after a shape change until the camera has reopened at the new shape and sent a frame. */
-    private var hidden = false
+    /** Showing the last frame (or, if it couldn't be copied, nothing) until the restarted camera sends one. */
+    private var frozen = false
     private var sawRestart = false
-    private var revealOnFrame = false
+    private var awaitingFrame = false
+    private val unfreezeFallback = Runnable { unfreeze() }
 
     fun setBufferSize(size: PixelSize) {
         if (size == bufferSize) return
-        // Until the camera reopens, the old shape's frames would show squeezed into the new frame,
-        // which looks like the picture stretching. Show black instead, as the phone camera does.
-        if (bufferSize != null) {
-            hidden = true
-            sawRestart = false
-            revealOnFrame = false
-            alpha = 0f
-        }
+        // Until the camera reopens, the old size's frames would show squeezed into the new buffer,
+        // which looks like the picture stretching. Hold the last frame instead.
+        if (bufferSize != null) freeze()
         bufferSize = size
         surfaceTexture?.let(::report)
     }
 
     fun setLive(live: Boolean) {
-        if (!hidden) return
-        if (!live) sawRestart = true else if (sawRestart) revealOnFrame = true
+        if (!live) {
+            freeze()
+            sawRestart = true
+        } else if (frozen && sawRestart && !awaitingFrame) {
+            awaitingFrame = true
+            // Never leave the picture frozen if the first frame is somehow missed.
+            removeCallbacks(unfreezeFallback)
+            postDelayed(unfreezeFallback, UNFREEZE_FALLBACK_MS)
+        }
     }
 
-    fun setFilter(look: ShotLook, enhance: EnhanceParams?) = filter.update(look, enhance)
+    fun setFilter(look: ShotLook, enhance: EnhanceParams?, iso: Int?) = filter.update(look, enhance, iso)
+
+    private fun freeze() {
+        if (frozen || !isAvailable || width == 0 || height == 0) return
+        frozen = true
+        sawRestart = false
+        awaitingFrame = false
+        removeCallbacks(unfreezeFallback)
+        // A small copy is plenty under the blur, and quick to take.
+        val snapshot = runCatching {
+            getBitmap((width / FREEZE_SCALE).coerceAtLeast(1), (height / FREEZE_SCALE).coerceAtLeast(1))
+        }.getOrNull()
+        if (snapshot != null) onFreeze(snapshot) else alpha = 0f
+    }
+
+    private fun unfreeze() {
+        if (!frozen) return
+        frozen = false
+        sawRestart = false
+        awaitingFrame = false
+        removeCallbacks(unfreezeFallback)
+        alpha = 1f
+        onFreeze(null)
+    }
 
     private fun report(texture: SurfaceTexture) {
         val size = bufferSize ?: return
@@ -351,11 +409,17 @@ private class PreviewTextureView(
     }
 
     override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {
-        if (revealOnFrame) {
-            hidden = false
-            revealOnFrame = false
-            alpha = 1f
-        }
+        if (awaitingFrame) unfreeze()
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(unfreezeFallback)
+        super.onDetachedFromWindow()
+    }
+
+    private companion object {
+        const val FREEZE_SCALE = 4
+        const val UNFREEZE_FALLBACK_MS = 1500L
     }
 }
 
@@ -384,7 +448,12 @@ private fun BottomBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                if (!state.recording) GalleryThumbnail(state.lastCaptureUri, saving = state.photosSaving > 0)
+                if (!state.recording) GalleryThumbnail(
+                    state.lastCaptureUri,
+                    saving = state.photosSaving > 0,
+                    instant = state.instantThumbnail,
+                    instantUri = state.instantThumbnailUri,
+                )
             }
             if (state.mode.isVideo) {
                 RecordButton(

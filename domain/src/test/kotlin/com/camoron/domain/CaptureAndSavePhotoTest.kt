@@ -120,8 +120,15 @@ class CaptureAndSavePhotoTest {
     fun `an ordinary photo is a merged burst`() = runTest {
         burstsAvailable = true
         var captured = false
+        var shownFrames = 0
         val adjustments = PhotoAdjustments(cropAspect = 3f / 4, enhance = true)
-        val uri = useCase(includeDng = false)(0, adjustments = adjustments, onCaptured = { captured = true })
+        val uri = useCase(includeDng = false)(
+            0,
+            adjustments = adjustments,
+            onCaptured = { captured = true },
+            onFrames = { shownFrames = it.frames.size },
+        )
+        assertThat(shownFrames).isEqualTo(6)
         assertThat(uri).isEqualTo("content://1")
         assertThat(captured).isTrue()
         assertThat(requestedFrames).containsExactly(6)
