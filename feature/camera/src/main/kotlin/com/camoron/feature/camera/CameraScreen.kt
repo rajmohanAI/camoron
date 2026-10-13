@@ -234,6 +234,7 @@ private fun PreviewArea(
                     previewSize = bufferSize,
                     look = if (state.mode.isVideo) ShotLook.NORMAL else state.cameraSettings.look,
                     enhance = if (state.mode.isVideo) ({ null }) else enhance,
+                    live = state.cameraState is CameraState.Previewing,
                     onSurfaceReady = onSurfaceReady,
                     onSurfaceDestroyed = onSurfaceDestroyed,
                     modifier = Modifier.fillMaxSize(),
@@ -271,6 +272,7 @@ private fun CameraPreview(
     previewSize: PixelSize,
     look: ShotLook,
     enhance: () -> EnhanceParams?,
+    live: Boolean,
     onSurfaceReady: (SurfacePreviewTarget) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     modifier: Modifier = Modifier,
@@ -282,6 +284,7 @@ private fun CameraPreview(
         factory = { ctx -> PreviewTextureView(ctx, onReady = { ready(it) }, onDestroyed = { destroyed() }) },
         update = { view ->
             view.setBufferSize(previewSize)
+            view.setLive(live)
             // Read here, so new parameters only re-run this update, not the composition.
             view.setFilter(look, enhance())
         },
@@ -303,10 +306,28 @@ private class PreviewTextureView(
         surfaceTextureListener = this
     }
 
+    /** Hidden after a shape change until the camera has reopened at the new shape and sent a frame. */
+    private var hidden = false
+    private var sawRestart = false
+    private var revealOnFrame = false
+
     fun setBufferSize(size: PixelSize) {
         if (size == bufferSize) return
+        // Until the camera reopens, the old shape's frames would show squeezed into the new frame,
+        // which looks like the picture stretching. Show black instead, as the phone camera does.
+        if (bufferSize != null) {
+            hidden = true
+            sawRestart = false
+            revealOnFrame = false
+            alpha = 0f
+        }
         bufferSize = size
         surfaceTexture?.let(::report)
+    }
+
+    fun setLive(live: Boolean) {
+        if (!hidden) return
+        if (!live) sawRestart = true else if (sawRestart) revealOnFrame = true
     }
 
     fun setFilter(look: ShotLook, enhance: EnhanceParams?) = filter.update(look, enhance)
@@ -329,7 +350,13 @@ private class PreviewTextureView(
         return true
     }
 
-    override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+    override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {
+        if (revealOnFrame) {
+            hidden = false
+            revealOnFrame = false
+            alpha = 1f
+        }
+    }
 }
 
 @Composable

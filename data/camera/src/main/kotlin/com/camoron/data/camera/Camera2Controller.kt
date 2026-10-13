@@ -685,6 +685,7 @@ class Camera2Controller @Inject constructor(
 
         var device: CameraDevice? = null
         val readers = mutableListOf<ImageReader>()
+        val started = SystemClock.elapsedRealtime()
         try {
             val characteristics = manager.getCameraCharacteristics(cameraId)
             val caps = mapper.map(cameraId, characteristics)
@@ -730,6 +731,11 @@ class Camera2Controller @Inject constructor(
             startRepeating(camera)
             if (macroEnabled && caps.supportsMacro && caps.supportsMacroAf) triggerFocus(camera)
             _state.value = CameraState.Previewing(caps, camera.settings, liveExposure = null)
+            DiagnosticLog.info(
+                TAG,
+                "Opened camera $cameraId in ${SystemClock.elapsedRealtime() - started} ms: asked $aspect, " +
+                    "photo ${jpegSize.width}x${jpegSize.height}, analysis ${analysisSize?.let { "${it.width}x${it.height}" }}",
+            )
         } catch (e: Exception) {
             DiagnosticLog.record(TAG, "Failed to open camera $cameraId", e)
             readers.forEach { runCatching { it.close() } }

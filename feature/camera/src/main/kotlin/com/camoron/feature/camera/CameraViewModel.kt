@@ -602,7 +602,8 @@ class CameraViewModel @Inject constructor(
             DiagnosticLog.info(
                 TAG,
                 "Photo saved ${SystemClock.elapsedRealtime() - started} ms after the shutter " +
-                    "(${state.cameraSettings.aspectRatio}, enhance ${adjustments.enhance}, zoom ${adjustments.zoom})",
+                    "(${state.cameraSettings.aspectRatio}, preview ${state.previewSize}, screen %.3f, crop ${adjustments.cropAspect}, ".format(displayAspect) +
+                    "enhance ${adjustments.enhance}, zoom ${adjustments.zoom})",
             )
         }
         _uiState.update {
