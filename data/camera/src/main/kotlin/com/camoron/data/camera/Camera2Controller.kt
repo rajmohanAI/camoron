@@ -112,6 +112,13 @@ class Camera2Controller @Inject constructor(
     private val executor = Executor { handler.post(it) }
     private val mutex = Mutex()
 
+    /**
+     * Runs a camera operation one at a time and off the main thread: opening, reconfiguring and
+     * closing the camera can each take a noticeable moment, which froze the screen when done there.
+     */
+    private suspend fun <T> locked(block: suspend () -> T): T =
+        withContext(processing) { mutex.withLock { block() } }
+
     private val _state = MutableStateFlow<CameraState>(CameraState.Closed)
     override val state: StateFlow<CameraState> = _state.asStateFlow()
 
@@ -330,13 +337,13 @@ class Camera2Controller @Inject constructor(
         aspect: StillAspect,
         nightExtension: Boolean,
     ) {
-        mutex.withLock {
+        locked {
             val surface = (target as? SurfacePreviewTarget)?.surface
                 ?: error("Camera2Controller needs a SurfacePreviewTarget")
             if (nightExtension && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                 openNightLocked(cameraId, surface, aspect)
             ) {
-                return@withLock
+                return@locked
             }
             openLocked(cameraId, surface, rawEnabled, aspect)
         }
@@ -466,7 +473,7 @@ class Camera2Controller @Inject constructor(
     }
 
     override suspend fun openVideo(cameraId: String, target: PreviewTarget, spec: VideoSpec) {
-        mutex.withLock {
+        locked {
             val surface = (target as? SurfacePreviewTarget)?.surface
                 ?: error("Camera2Controller needs a SurfacePreviewTarget")
             openVideoLocked(cameraId, surface, PixelSize(target.width, target.height), spec)
@@ -579,7 +586,7 @@ class Camera2Controller @Inject constructor(
     }
 
     override suspend fun startRecording(output: FileDescriptor, deviceRotationDegrees: Int) {
-        mutex.withLock {
+        locked {
             check(recording == null) { "Already recording" }
             val camera = active ?: error("Camera is not open")
             val video = camera.video ?: error("The camera is not open for video")
@@ -645,7 +652,7 @@ class Camera2Controller @Inject constructor(
     private fun newRecorder(): MediaRecorder =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else MediaRecorder()
 
-    override suspend fun stopRecording(): Boolean = mutex.withLock { stopRecordingLocked() }
+    override suspend fun stopRecording(): Boolean = locked { stopRecordingLocked() }
 
     private suspend fun stopRecordingLocked(): Boolean {
         val current = recording ?: return false
@@ -666,7 +673,7 @@ class Camera2Controller @Inject constructor(
     private val nonCancellableProcessing get() = processing + kotlinx.coroutines.NonCancellable
 
     override suspend fun setFlashMode(mode: FlashMode) {
-        mutex.withLock {
+        locked {
             flashMode = mode
             active?.let(::startRepeating)
         }
@@ -678,6 +685,7 @@ class Camera2Controller @Inject constructor(
 
         var device: CameraDevice? = null
         val readers = mutableListOf<ImageReader>()
+        val started = SystemClock.elapsedRealtime()
         try {
             val characteristics = manager.getCameraCharacteristics(cameraId)
             val caps = mapper.map(cameraId, characteristics)
@@ -723,6 +731,11 @@ class Camera2Controller @Inject constructor(
             startRepeating(camera)
             if (macroEnabled && caps.supportsMacro && caps.supportsMacroAf) triggerFocus(camera)
             _state.value = CameraState.Previewing(caps, camera.settings, liveExposure = null)
+            DiagnosticLog.info(
+                TAG,
+                "Opened camera $cameraId in ${SystemClock.elapsedRealtime() - started} ms: asked $aspect, " +
+                    "photo ${jpegSize.width}x${jpegSize.height}, analysis ${analysisSize?.let { "${it.width}x${it.height}" }}",
+            )
         } catch (e: Exception) {
             DiagnosticLog.record(TAG, "Failed to open camera $cameraId", e)
             readers.forEach { runCatching { it.close() } }
@@ -752,8 +765,8 @@ class Camera2Controller @Inject constructor(
     }
 
     override suspend fun applySettings(settings: ManualSettings) {
-        mutex.withLock {
-            val camera = active ?: return@withLock
+        locked {
+            val camera = active ?: return@locked
             camera.settings = sanitize(settings, camera.capabilities)
             startRepeating(camera)
             _state.update { current ->
@@ -827,12 +840,12 @@ class Camera2Controller @Inject constructor(
     }
 
     override suspend fun focusAt(x: Float, y: Float, track: Boolean) {
-        mutex.withLock {
-            val camera = active ?: return@withLock
-            if (!camera.capabilities.supportsTapToFocus) return@withLock
+        locked {
+            val camera = active ?: return@locked
+            if (!camera.capabilities.supportsTapToFocus) return@locked
 
             val (sx, sy) = CameraMath.viewToSensor(x, y, camera.sensorOrientation, camera.isFront)
-            val region = regionAt(camera, sx, sy) ?: return@withLock
+            val region = regionAt(camera, sx, sy) ?: return@locked
             // Tracking needs the analysis stream (absent while RAW is on), and macro holds focus close.
             val canTrack = track && camera.analysisReader != null && !macroActive(camera)
             camera.focusRegion = region
@@ -849,11 +862,11 @@ class Camera2Controller @Inject constructor(
     }
 
     override suspend fun setZoom(ratio: Float) {
-        mutex.withLock {
-            val camera = active ?: return@withLock
+        locked {
+            val camera = active ?: return@locked
             val range = camera.capabilities.zoomRange
             val next = ratio.coerceIn(range.start, range.endInclusive)
-            if (next == camera.zoomRatio) return@withLock
+            if (next == camera.zoomRatio) return@locked
             camera.zoomRatio = next
             // The field of view changed, so a tapped point or tracked subject no longer lines up.
             clearFocus(camera)
@@ -862,9 +875,9 @@ class Camera2Controller @Inject constructor(
     }
 
     override suspend fun setMacro(enabled: Boolean) {
-        mutex.withLock {
+        locked {
             macroEnabled = enabled
-            val camera = active ?: return@withLock
+            val camera = active ?: return@locked
             clearFocus(camera)
             startRepeating(camera)
             if (macroActive(camera) && camera.capabilities.supportsMacroAf) triggerFocus(camera)
@@ -922,9 +935,9 @@ class Camera2Controller @Inject constructor(
     }
 
     @OptIn(ExperimentalCoroutinesApi::class) // getCompleted() to release an unconsumed RAW frame
-    override suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean): CaptureBundle = mutex.withLock {
+    override suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean): CaptureBundle = locked {
         activeNight?.let { night ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return@withLock captureNight(night, deviceRotationDegrees)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return@locked captureNight(night, deviceRotationDegrees)
         }
         val camera = active ?: error("Camera is not open")
         val jpegReader = camera.jpegReader ?: error("Photos can't be taken while filming")
@@ -1025,7 +1038,7 @@ class Camera2Controller @Inject constructor(
         }
     }
 
-    override suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage> = mutex.withLock {
+    override suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage> = locked {
         val camera = active ?: error("Camera is not open")
         val reader = camera.jpegReader ?: error("Photos can't be taken while filming")
         val rotation = CameraMath.jpegOrientation(camera.sensorOrientation, deviceRotationDegrees, camera.isFront)
@@ -1137,7 +1150,7 @@ class Camera2Controller @Inject constructor(
     }
 
     override suspend fun close() {
-        mutex.withLock { closeLocked() }
+        locked { closeLocked() }
     }
 
     private suspend fun closeLocked() {

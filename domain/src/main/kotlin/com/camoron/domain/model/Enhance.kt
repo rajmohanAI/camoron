@@ -24,7 +24,7 @@ data class EnhanceParams(
 ) {
     companion object {
         /** A gentle default used until the camera has reported a histogram. */
-        val DEFAULT = EnhanceParams(black = 0.01f, white = 0.99f, gamma = 1f, contrast = 0.2f, shadowLift = 0.04f, vibrance = 0.25f)
+        val DEFAULT = EnhanceParams(black = 0.01f, white = 0.99f, gamma = 1f, contrast = 0.2f, shadowLift = 0.04f, vibrance = 0.18f)
     }
 }
 
@@ -63,7 +63,7 @@ object EnhanceMath {
         }
         val spread = percentile(bins, total, 0.9) - percentile(bins, total, 0.1)
         val contrast = if (spread < 0.45f) 0.3f else 0.18f
-        return EnhanceParams(black, white, gamma, contrast, shadowLift, vibrance = 0.28f)
+        return EnhanceParams(black, white, gamma, contrast, shadowLift, vibrance = 0.18f)
     }
 
     /** Eases from [from] to [to] so the live preview doesn't flicker as the scene changes. */

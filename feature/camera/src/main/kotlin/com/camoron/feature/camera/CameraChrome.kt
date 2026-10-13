@@ -7,14 +7,18 @@ import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
+import android.provider.MediaStore
 import android.util.Size
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,6 +26,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -40,10 +47,12 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.TimerOff
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -363,22 +372,37 @@ internal fun MacroBadge(modifier: Modifier = Modifier) {
 /** Layer 2: capture modes, in the order camera apps use: video modes, then Photo, then Pro. */
 @Composable
 internal fun ModeCarousel(selected: CaptureMode, onSelect: (CaptureMode) -> Unit) {
-    Row(
-        Modifier.horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        CaptureMode.entries.forEach { mode ->
-            val isSelected = mode == selected
-            Text(
-                text = stringResource(modeLabel(mode)),
-                color = if (isSelected) MODE_SELECTED else Color.White,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .clickable(role = Role.Tab) { onSelect(mode) }
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
-            )
+    val listState = rememberLazyListState()
+    val index = CaptureMode.entries.indexOf(selected)
+    // Keep the selected mode in the middle, like the phone's own camera, so modes at either end
+    // (Pro, Timelapse) are always reachable and visible once chosen.
+    LaunchedEffect(index) {
+        if (listState.layoutInfo.visibleItemsInfo.none { it.index == index }) listState.scrollToItem(index)
+        val layout = listState.layoutInfo
+        val item = layout.visibleItemsInfo.firstOrNull { it.index == index } ?: return@LaunchedEffect
+        val centre = (layout.viewportStartOffset + layout.viewportEndOffset) / 2
+        listState.animateScrollBy((item.offset + item.size / 2 - centre).toFloat())
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        LazyRow(
+            state = listState,
+            contentPadding = PaddingValues(horizontal = maxWidth / 2),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            items(CaptureMode.entries, key = { it.name }) { mode ->
+                val isSelected = mode == selected
+                Text(
+                    text = stringResource(modeLabel(mode)),
+                    color = if (isSelected) MODE_SELECTED else Color.White,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(role = Role.Tab) { onSelect(mode) }
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                )
+            }
         }
     }
 }
@@ -422,7 +446,7 @@ internal fun RecordingBadge(state: CameraUiState, modifier: Modifier = Modifier)
 
 /** Last photo or video Camoron saved; tapping opens it in the phone's gallery app. */
 @Composable
-internal fun GalleryThumbnail(uri: String?) {
+internal fun GalleryThumbnail(uri: String?, saving: Boolean = false) {
     val context = LocalContext.current
     val bitmap by produceState<ImageBitmap?>(initialValue = null, uri) {
         value = uri?.let { withContext(Dispatchers.IO) { loadThumbnail(context, Uri.parse(it)) } }
@@ -439,6 +463,8 @@ internal fun GalleryThumbnail(uri: String?) {
         bitmap?.let {
             Image(it, contentDescription = description, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         }
+        // The last photo is still being enhanced and saved; it appears here when ready.
+        if (saving) CircularProgressIndicator(Modifier.fillMaxSize(), color = MODE_SELECTED, strokeWidth = 2.dp)
     }
 }
 
@@ -466,13 +492,19 @@ private fun loadThumbnail(context: Context, uri: Uri): ImageBitmap? = runCatchin
 
 private fun openInGallery(context: Context, uri: String) {
     val parsed = Uri.parse(uri)
-    val intent = Intent(Intent.ACTION_VIEW)
-        .setDataAndType(parsed, context.contentResolver.getType(parsed) ?: "image/*")
-        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    try {
-        context.startActivity(intent)
-    } catch (e: ActivityNotFoundException) {
-        // No gallery app installed; nothing sensible to open.
+    val type = context.contentResolver.getType(parsed) ?: "image/*"
+    // Review is what the phone's own camera uses: the gallery opens the shot within the camera roll,
+    // so you can swipe to your other photos, rather than in a lone viewer.
+    val intents = listOf(MediaStore.ACTION_REVIEW, Intent.ACTION_VIEW).map { action ->
+        Intent(action).setDataAndType(parsed, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    for (intent in intents) {
+        try {
+            context.startActivity(intent)
+            return
+        } catch (e: ActivityNotFoundException) {
+            // Try the next way of opening it; with no gallery app at all there is nothing to open.
+        }
     }
 }
 

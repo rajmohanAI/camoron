@@ -1,5 +1,7 @@
 package com.camoron.feature.settings
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -9,6 +11,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -20,6 +23,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -36,6 +40,7 @@ import java.util.Locale
 @Composable
 fun CameraInfoScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     Scaffold(
         topBar = {
             TopAppBar(
@@ -43,6 +48,11 @@ fun CameraInfoScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltView
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.cd_back))
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { shareLog(context, state.profile) }) {
+                        Icon(Icons.Filled.Share, contentDescription = stringResource(R.string.share_log))
                     }
                 },
             )
@@ -72,11 +82,11 @@ fun CameraInfoScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltView
                         }
                     }
                 }
-                val problems = DiagnosticLog.entries()
-                if (problems.isNotEmpty()) {
+                val log = DiagnosticLog.entries()
+                if (log.isNotEmpty()) {
                     Card {
                         Text(
-                            "Recent camera problems\n" + problems.joinToString("\n"),
+                            "Camera log (newest first; problems marked !)\n" + log.joinToString("\n"),
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.padding(16.dp),
                         )
@@ -85,6 +95,26 @@ fun CameraInfoScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltView
             }
         }
     }
+}
+
+/** Sends the detailed log and the camera details to any app the tester picks (mail, chat, notes). */
+private fun shareLog(context: Context, profile: DeviceProfile?) {
+    val text = buildString {
+        append(DiagnosticLog.report())
+        if (profile != null) {
+            appendLine()
+            appendLine(describeDevice(profile))
+            profile.cameras.forEach { appendLine(); appendLine(describeCamera(it)) }
+        }
+    }
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, "Camoron log")
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(
+        Intent.createChooser(send, context.getString(R.string.share_log_title)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+    )
 }
 
 /**

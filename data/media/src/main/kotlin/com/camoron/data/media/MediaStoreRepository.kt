@@ -43,7 +43,7 @@ class MediaStoreRepository @Inject constructor(
             ImageFormat.JPEG -> "image/jpeg" to "jpg"
             ImageFormat.DNG -> "image/x-adobe-dng" to "dng"
         }
-        val name = FILE_PREFIX + SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date(image.timestampMillis))
+        val name = PHOTO_PREFIX + SimpleDateFormat(NAME_TIME, Locale.US).format(Date(image.timestampMillis))
 
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, "$name.$extension")
@@ -92,7 +92,7 @@ class MediaStoreRepository @Inject constructor(
 
     override suspend fun createVideo(timestampMillis: Long): PendingVideo = withContext(io) {
         val resolver = context.contentResolver
-        val name = FILE_PREFIX + SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date(timestampMillis)) + ".mp4"
+        val name = VIDEO_PREFIX + SimpleDateFormat(NAME_TIME, Locale.US).format(Date(timestampMillis)) + ".mp4"
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, name)
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
@@ -137,19 +137,34 @@ class MediaStoreRepository @Inject constructor(
 
     override suspend fun latestCapture(): String? = withContext(io) {
         // Camoron's own photos and videos, wherever they were saved (older builds used Pictures/Camoron).
-        val photo = latestIn(imageCollection(), "image/jpeg")
-        val video = latestIn(videoCollection(), "video/mp4")
+        val photo = latestIn(imageCollection(), "image/jpeg", PHOTO_PREFIX, "jpg")
+        val video = latestIn(videoCollection(), "video/mp4", VIDEO_PREFIX, "mp4")
         listOfNotNull(photo, video).maxByOrNull { it.second }?.first?.toString()
     }
 
-    /** Newest Camoron item of [mime] in [collection], with the time it was taken. */
-    private fun latestIn(collection: Uri, mime: String): Pair<Uri, Long>? = runCatching {
-        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ? AND ${MediaStore.MediaColumns.MIME_TYPE} = ?"
+    /**
+     * Newest Camoron item of [mime] in [collection], with the time it was taken. Files are named like
+     * the phone camera's (IMG_..., VID_...), so on Android 10+ ours are told apart by owner; older
+     * builds named them CAMORON_....
+     */
+    private fun latestIn(collection: Uri, mime: String, prefix: String, extension: String): Pair<Uri, Long>? = runCatching {
+        val name = MediaStore.MediaColumns.DISPLAY_NAME
+        val ours = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?"
+        } else {
+            "$name GLOB ?"
+        }
+        val oursArg = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            context.packageName
+        } else {
+            "${prefix}[0-9]*_[0-9]*_[0-9][0-9][0-9].$extension"
+        }
+        val selection = "($ours OR $name LIKE ?) AND ${MediaStore.MediaColumns.MIME_TYPE} = ?"
         context.contentResolver.query(
             collection,
             arrayOf(MediaStore.MediaColumns._ID, MediaStore.Images.ImageColumns.DATE_TAKEN),
             selection,
-            arrayOf("$FILE_PREFIX%", mime),
+            arrayOf(oursArg, "$LEGACY_PREFIX%", mime),
             "${MediaStore.Images.ImageColumns.DATE_TAKEN} DESC",
         )?.use { cursor ->
             if (cursor.moveToFirst()) ContentUris.withAppendedId(collection, cursor.getLong(0)) to cursor.getLong(1) else null
@@ -170,7 +185,13 @@ class MediaStoreRepository @Inject constructor(
 
     private companion object {
         const val FOLDER = "Camera"
-        const val FILE_PREFIX = "CAMORON_"
+        /** Same naming as the phone's own camera, so Camoron's shots sort and group with its. */
+        const val PHOTO_PREFIX = "IMG_"
+        const val VIDEO_PREFIX = "VID_"
+        const val NAME_TIME = "yyyyMMdd_HHmmss_SSS"
+
+        /** What earlier builds named their files. */
+        const val LEGACY_PREFIX = "CAMORON_"
         const val SOFTWARE = "Camoron"
     }
 }

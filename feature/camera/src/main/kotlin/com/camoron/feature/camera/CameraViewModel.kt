@@ -1,5 +1,6 @@
 package com.camoron.feature.camera
 
+import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.camoron.core.common.DiagnosticLog
@@ -77,6 +78,8 @@ data class CameraUiState(
     val settings: ManualSettings = ManualSettings.AUTO,
     val cameraSettings: CameraSettings = CameraSettings(),
     val isCapturing: Boolean = false,
+    /** Photos taken whose enhancement and saving are still running. */
+    val photosSaving: Int = 0,
     val rawEnabled: Boolean = false,
     /** Seconds left on the self-timer, or null when no countdown is running. */
     val countdown: Int? = null,
@@ -582,15 +585,33 @@ class CameraViewModel @Inject constructor(
         }
         if (state.shutterSoundOn) _effects.tryEmit(CameraEffect.SHUTTER)
         // The shutter is free again as soon as the frames are in; processing and saving carry on.
-        val ready = { _uiState.update { it.copy(isCapturing = false, screenFlash = false, nightCapturing = false) } }
+        val started = SystemClock.elapsedRealtime()
+        var captured = false
+        val ready = {
+            captured = true
+            DiagnosticLog.info(TAG, "Photo frames in after ${SystemClock.elapsedRealtime() - started} ms")
+            _uiState.update {
+                it.copy(isCapturing = false, screenFlash = false, nightCapturing = false, photosSaving = it.photosSaving + 1)
+            }
+        }
+        val adjustments = adjustmentsFor(state)
         val uri = runCatching {
-            captureAndSave(deviceRotation, state.rawActive, adjustmentsFor(state), nightFrames, onCaptured = ready)
+            captureAndSave(deviceRotation, state.rawActive, adjustments, nightFrames, onCaptured = ready)
         }.onFailure { DiagnosticLog.record(TAG, "Couldn't take the photo", it) }.getOrNull()
+        if (uri != null) {
+            DiagnosticLog.info(
+                TAG,
+                "Photo saved ${SystemClock.elapsedRealtime() - started} ms after the shutter " +
+                    "(${state.cameraSettings.aspectRatio}, preview ${state.previewSize}, screen %.3f, crop ${adjustments.cropAspect}, ".format(displayAspect) +
+                    "enhance ${adjustments.enhance}, zoom ${adjustments.zoom})",
+            )
+        }
         _uiState.update {
             it.copy(
                 isCapturing = false,
                 screenFlash = false,
                 nightCapturing = false,
+                photosSaving = if (captured) (it.photosSaving - 1).coerceAtLeast(0) else it.photosSaving,
                 lastCaptureUri = uri ?: it.lastCaptureUri,
                 event = if (uri != null) CameraEvent.Saved(uri) else CameraEvent.CaptureFailed,
             )
@@ -621,6 +642,7 @@ class CameraViewModel @Inject constructor(
         mirror = state.selectedCamera?.lensFacing == LensFacing.FRONT && state.cameraSettings.selfieMirror,
         look = state.cameraSettings.look,
         enhance = state.cameraSettings.enhance,
+        zoom = state.zoomRatio,
     )
 
     private fun updateCameraSettings(transform: (CameraSettings) -> CameraSettings) {

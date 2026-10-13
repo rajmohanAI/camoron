@@ -41,7 +41,8 @@ internal fun ProControls(
     settings: ManualSettings,
     liveExposure: LiveExposure?,
     rawEnabled: Boolean,
-    histogram: Histogram?,
+    /** Read lazily, so a new histogram only redraws the histogram, not the whole screen. */
+    histogram: () -> Histogram?,
     viewModel: CameraViewModel,
     modifier: Modifier = Modifier,
 ) {
@@ -62,7 +63,7 @@ internal fun ProControls(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.CenterStart),
                     )
-                    histogram != null -> HistogramView(histogram, Modifier.fillMaxSize())
+                    else -> HistogramView(histogram, Modifier.fillMaxSize())
                 }
             }
             FilterChip(
@@ -194,9 +195,11 @@ private fun WhiteBalanceControls(
 
 /** Luminance histogram drawn as bars, scaled to the tallest bucket. */
 @Composable
-private fun HistogramView(histogram: Histogram, modifier: Modifier = Modifier) {
+private fun HistogramView(histogramOf: () -> Histogram?, modifier: Modifier = Modifier) {
     val barColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+    // Read while drawing, so each new histogram only redraws this canvas.
     Canvas(modifier) {
+        val histogram = histogramOf() ?: return@Canvas
         val bins = histogram.bins
         if (histogram.max == 0 || bins.isEmpty()) return@Canvas
         val barWidth = size.width / bins.size
