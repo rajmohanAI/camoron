@@ -110,6 +110,17 @@ class Camera2Controller @Inject constructor(
 ) : CameraController {
 
     private val manager = context.getSystemService(CameraManager::class.java)
+
+    // Reading a camera's characteristics goes through the camera service; they never change, so
+    // read each camera's once instead of on every switch.
+    private val characteristicsCache = java.util.concurrent.ConcurrentHashMap<String, CameraCharacteristics>()
+    private val capabilitiesCache = java.util.concurrent.ConcurrentHashMap<String, CameraCapabilities>()
+
+    private fun characteristicsOf(cameraId: String): CameraCharacteristics =
+        characteristicsCache.getOrPut(cameraId) { manager.getCameraCharacteristics(cameraId) }
+
+    private fun capabilitiesOf(cameraId: String): CameraCapabilities =
+        capabilitiesCache.getOrPut(cameraId) { mapper.map(cameraId, characteristicsOf(cameraId)) }
     private val thread = HandlerThread("CamoronCamera").apply { start() }
     private val handler = Handler(thread.looper)
 
@@ -221,6 +232,10 @@ class Camera2Controller @Inject constructor(
         val usesZoomRatio: Boolean get() = capabilities.zoomRatioRange != null
         val isFront: Boolean get() = capabilities.lensFacing == LensFacing.FRONT
 
+        /** False once the device reported an error or disconnect, so it is never reused. */
+        @Volatile
+        var healthy = true
+
         /** Last auto-exposure state from the preview, to know whether the flash would fire. */
         @Volatile
         var lastAeState: Int? = null
@@ -323,8 +338,8 @@ class Camera2Controller @Inject constructor(
         withContext(processing) { previewSizeBlocking(cameraId, aspect, nightExtension) }
 
     private fun previewSizeBlocking(cameraId: String, aspect: StillAspect, nightExtension: Boolean): PixelSize {
-        val characteristics = manager.getCameraCharacteristics(cameraId)
-        val caps = mapper.map(cameraId, characteristics)
+        val characteristics = characteristicsOf(cameraId)
+        val caps = capabilitiesOf(cameraId)
         val ratio = effectiveAspect(caps, aspect).ratio
         if (nightExtension && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             nightPreviewSizes(cameraId).takeIf { it.isNotEmpty() }?.let { return CameraMath.choosePreviewSize(it, ratio) }
@@ -499,13 +514,13 @@ class Camera2Controller @Inject constructor(
     }
 
     private suspend fun openVideoLocked(cameraId: String, surface: Surface, previewSize: PixelSize, spec: VideoSpec) {
-        closeLocked()
+        val reused = closeLocked(reuseFor = cameraId)
         _state.value = CameraState.Opening(cameraId)
         var device: CameraDevice? = null
         var analysisReader: ImageReader? = null
         try {
-            val characteristics = manager.getCameraCharacteristics(cameraId)
-            val caps = withVideoEncoderLimits(mapper.map(cameraId, characteristics))
+            val characteristics = characteristicsOf(cameraId)
+            val caps = withVideoEncoderLimits(capabilitiesOf(cameraId))
             val resolution = spec.resolution.takeIf { it in caps.videoResolutions } ?: VideoResolution.FHD
             val size = videoSize(characteristics, resolution)
             val turned = isTurned(characteristics)
@@ -523,7 +538,7 @@ class Camera2Controller @Inject constructor(
                 VideoRenderer(surface, previewSize, size, turned, realtime).also { renderer = it }.let { it to it.start() }
             }
             videoRenderer.first.setFilter(videoLook, videoEnhance)
-            device = openDevice(cameraId)
+            device = reused ?: openDevice(cameraId)
 
             // The analysis stream feeds the histogram (for Enhance) and subject tracking. If the
             // camera can't add it next to a large video stream, film without it.
@@ -553,7 +568,7 @@ class Camera2Controller @Inject constructor(
         } catch (e: Exception) {
             DiagnosticLog.record(TAG, "Failed to open camera $cameraId for video", e)
             runCatching { analysisReader?.close() }
-            device?.close()
+            (device ?: reused)?.close()
             active = null
             renderer?.let { withContext(nonCancellableProcessing) { it.release() } }
             renderer = null
@@ -698,17 +713,17 @@ class Camera2Controller @Inject constructor(
     }
 
     private suspend fun openLocked(cameraId: String, surface: Surface, rawEnabled: Boolean, aspect: StillAspect) {
-        closeLocked()
+        val reused = closeLocked(reuseFor = cameraId)
         _state.value = CameraState.Opening(cameraId)
 
         var device: CameraDevice? = null
         val readers = mutableListOf<ImageReader>()
         val started = SystemClock.elapsedRealtime()
         try {
-            val characteristics = manager.getCameraCharacteristics(cameraId)
-            val caps = mapper.map(cameraId, characteristics)
+            val characteristics = characteristicsOf(cameraId)
+            val caps = capabilitiesOf(cameraId)
             val streams = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            device = openDevice(cameraId)
+            device = reused ?: openDevice(cameraId)
 
             val jpegSizes = streams?.getOutputSizes(AndroidImageFormat.JPEG)?.map { PixelSize(it.width, it.height) }
             val jpegSize = jpegSizes?.takeIf { it.isNotEmpty() }
@@ -792,7 +807,7 @@ class Camera2Controller @Inject constructor(
         } catch (e: Exception) {
             DiagnosticLog.record(TAG, "Failed to open camera $cameraId", e)
             readers.forEach { runCatching { it.close() } }
-            device?.close()
+            (device ?: reused)?.close()
             active = null
             if (e is CancellationException) {
                 _state.value = CameraState.Closed
@@ -1325,7 +1340,13 @@ class Camera2Controller @Inject constructor(
         locked { closeLocked() }
     }
 
-    private suspend fun closeLocked() {
+    /**
+     * Closes the open session. When the next session is for [reuseFor], the same camera, its device
+     * is kept open and returned: switching between photo, Pro and video then skips reopening the
+     * camera hardware, the slowest part of a switch.
+     */
+    private suspend fun closeLocked(reuseFor: String? = null): CameraDevice? {
+        var kept: CameraDevice? = null
         if (recording != null) stopRecordingLocked()
         activeNight?.let { night ->
             activeNight = null
@@ -1339,7 +1360,11 @@ class Camera2Controller @Inject constructor(
         if (camera != null) {
             runCatching { camera.session.stopRepeating() }
             runCatching { camera.session.close() }
-            runCatching { camera.device.close() }
+            if (reuseFor != null && camera.device.id == reuseFor && camera.healthy) {
+                kept = camera.device
+            } else {
+                runCatching { camera.device.close() }
+            }
             camera.closeReaders()
             _histogram.value = null
             _focusTarget.value = null
@@ -1348,6 +1373,7 @@ class Camera2Controller @Inject constructor(
         // After the camera, so it has stopped streaming into the renderer's texture.
         renderer?.let { withContext(nonCancellableProcessing) { it.release() } }
         renderer = null
+        return kept
     }
 
     @SuppressLint("MissingPermission") // Onboarding guarantees CAMERA is granted before the camera opens.
@@ -1387,6 +1413,7 @@ class Camera2Controller @Inject constructor(
     /** Called on the camera thread when an already-open device is taken away from us. */
     private fun onLostDevice(device: CameraDevice, error: CameraError) {
         DiagnosticLog.record(TAG, "Camera ${device.id} was taken away: $error")
+        active?.takeIf { it.device == device }?.healthy = false
         activeNight?.takeIf { it.device == device }?.let { night ->
             activeNight = null
             runCatching { night.jpegReader.close() }

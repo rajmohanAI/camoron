@@ -10,9 +10,13 @@ enum class AspectRatioSetting {
     RATIO_9_16,
     FULL_SCREEN;
 
-    /** Sensor output to configure: 3:4 uses native 4:3, the taller shapes start from 16:9. */
+    /**
+     * Sensor output to configure: always the full 4:3 frame. The taller shapes are centre crops of
+     * it (a phone's native 16:9 output is the same crop), so switching shape never restarts the
+     * camera.
+     */
     val stillAspect: StillAspect
-        get() = if (this == RATIO_3_4) StillAspect.FOUR_THREE else StillAspect.SIXTEEN_NINE
+        get() = StillAspect.FOUR_THREE
 }
 
 /** User preferences for the camera screen, persisted on the device. */
