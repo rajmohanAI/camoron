@@ -5,7 +5,9 @@ import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.NightSetting
 import com.camoron.domain.model.ShotLook
+import com.camoron.domain.model.TimelapseSpeed
 import com.camoron.domain.model.TimerSetting
+import com.camoron.domain.model.VideoResolution
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
@@ -25,6 +27,8 @@ class StoredCameraSettingsTest {
             night = NightSetting.AUTO,
             look = ShotLook.STUDIO,
             enhance = false,
+            videoResolution = VideoResolution.UHD,
+            timelapseSpeed = TimelapseSpeed.X60,
         )
         val out = ByteArrayOutputStream()
         StoredCameraSettingsSerializer.writeTo(StoredCameraSettings.from(settings), out)

@@ -6,6 +6,7 @@ import com.camoron.domain.model.CameraError
 import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.DeviceProfile
+import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.ZoomPreset
@@ -20,12 +21,17 @@ import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.HardwareLevel
 import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.LensFacing
+import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.NightSetting
 import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.VideoKind
+import com.camoron.domain.model.VideoResolution
+import com.camoron.domain.model.VideoSpec
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.MediaRepository
+import com.camoron.domain.repository.PendingVideo
 import com.camoron.domain.repository.PhotoProcessor
 import com.camoron.domain.repository.SettingsRepository
 import com.camoron.domain.repository.PreviewTarget
@@ -45,6 +51,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import java.io.FileDescriptor
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CameraViewModelTest {
@@ -55,7 +62,15 @@ class CameraViewModelTest {
     private val controller = FakeCameraController(listOf(backWide, back, front))
     private val media = object : MediaRepository {
         var saved = 0
+        val finishedVideos = mutableListOf<Boolean>()
         override suspend fun save(image: CapturedImage): String = "content://saved/${++saved}"
+        override suspend fun createVideo(timestampMillis: Long) = object : PendingVideo {
+            override val fileDescriptor = FileDescriptor()
+            override suspend fun finish(keep: Boolean): String? {
+                finishedVideos += keep
+                return if (keep) "content://video/${finishedVideos.size}" else null
+            }
+        }
         override suspend fun latestCapture(): String? = "content://saved/earlier"
     }
     private val processor = object : PhotoProcessor {
@@ -425,6 +440,149 @@ class CameraViewModelTest {
     }
 
     @Test
+    fun `video mode opens a video session with an upright preview`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.VIDEO)
+        assertThat(vm.uiState.value.previewSize).isEqualTo(PixelSize(1080, 1920))
+        assertThat(controller.videoOpened).isEmpty()
+
+        vm.onSurfaceReady(Target(1080, 1920))
+        assertThat(controller.videoOpened).containsExactly(VideoSpec(VideoKind.STANDARD))
+    }
+
+    @Test
+    fun `each video mode gets its own session and photo mode goes back to stills`() = runTest {
+        val vm = viewModel()
+        vm.setMode(CaptureMode.VIDEO)
+        vm.onSurfaceReady(Target(1080, 1920))
+        vm.setMode(CaptureMode.CINEMATIC)
+        vm.setMode(CaptureMode.TIMELAPSE)
+        assertThat(controller.videoOpened.map { it.kind })
+            .containsExactly(VideoKind.STANDARD, VideoKind.CINEMATIC, VideoKind.TIMELAPSE).inOrder()
+
+        vm.setMode(CaptureMode.PHOTO)
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(controller.opened).hasSize(4)
+        assertThat(controller.videoOpened).hasSize(3)
+    }
+
+    @Test
+    fun `the shutter starts and stops a recording and saves it`() = runTest {
+        val vm = recordingViewModel()
+        assertThat(vm.uiState.value.recording).isTrue()
+        assertThat(controller.recordingActive).isTrue()
+
+        vm.onShutter()
+        assertThat(vm.uiState.value.recording).isFalse()
+        assertThat(controller.recordingActive).isFalse()
+        assertThat(media.finishedVideos).containsExactly(true)
+        assertThat(vm.uiState.value.event).isEqualTo(CameraEvent.Saved("content://video/1"))
+        assertThat(vm.uiState.value.lastCaptureUri).isEqualTo("content://video/1")
+    }
+
+    @Test
+    fun `a recording with nothing in it is discarded`() = runTest {
+        val vm = recordingViewModel()
+        controller.stopResult = false
+        vm.onShutter()
+        assertThat(media.finishedVideos).containsExactly(false)
+        assertThat(vm.uiState.value.event).isEqualTo(CameraEvent.RecordingFailed)
+    }
+
+    @Test
+    fun `a recording that fails to start leaves no file behind`() = runTest {
+        controller.failRecording = true
+        val vm = viewModel()
+        vm.setMode(CaptureMode.VIDEO)
+        vm.onSurfaceReady(Target(1080, 1920))
+        vm.onShutter()
+        assertThat(vm.uiState.value.recording).isFalse()
+        assertThat(media.finishedVideos).containsExactly(false)
+        assertThat(vm.uiState.value.event).isEqualTo(CameraEvent.RecordingFailed)
+    }
+
+    @Test
+    fun `going to the background while recording saves the video first`() = runTest {
+        val vm = recordingViewModel()
+        vm.onForegroundChanged(false)
+        assertThat(media.finishedVideos).containsExactly(true)
+        assertThat(controller.state.value).isEqualTo(CameraState.Closed)
+    }
+
+    @Test
+    fun `losing the camera while recording keeps what was filmed`() = runTest {
+        val vm = recordingViewModel()
+        controller.state.value = CameraState.Error(CameraError.CAMERA_IN_USE)
+        assertThat(media.finishedVideos).containsExactly(true)
+        assertThat(vm.uiState.value.recording).isFalse()
+    }
+
+    @Test
+    fun `mode, camera and lens stay put while recording`() = runTest {
+        controller.all = listOf(
+            back.copy(equivalentFocalLengthMm = 26f, maxDigitalZoom = 4f),
+            backWide.copy(equivalentFocalLengthMm = 13f),
+            front,
+        )
+        val vm = recordingViewModel()
+        val opens = controller.opened.size
+        vm.setMode(CaptureMode.PHOTO)
+        vm.switchCamera()
+        vm.selectZoomPreset(vm.uiState.value.zoomPresets.first { it.cameraId == backWide.cameraId })
+        assertThat(vm.uiState.value.mode).isEqualTo(CaptureMode.VIDEO)
+        assertThat(controller.opened).hasSize(opens)
+        assertThat(vm.uiState.value.recording).isTrue()
+    }
+
+    @Test
+    fun `video frames get the chosen look and the live enhancement`() = runTest {
+        val vm = viewModel()
+        vm.setLook(ShotLook.VIVID)
+        val (look, enhance) = controller.videoFilters.last()
+        assertThat(look.toList()).isEqualTo(LookMatrix.forLook(ShotLook.VIVID).toList())
+        assertThat(enhance).isNotNull()
+
+        vm.toggleEnhance()
+        assertThat(controller.videoFilters.last().second).isNull()
+    }
+
+    @Test
+    fun `4k is offered only where supported and reopens the session`() = runTest {
+        controller.all = listOf(backWide, back.copy(videoResolutions = setOf(VideoResolution.FHD, VideoResolution.UHD)), front)
+        val vm = viewModel()
+        vm.setMode(CaptureMode.VIDEO)
+        vm.onSurfaceReady(Target(1080, 1920))
+        assertThat(vm.uiState.value.showResolutionControl).isTrue()
+
+        vm.toggleVideoResolution()
+        assertThat(controller.videoOpened.last().resolution).isEqualTo(VideoResolution.UHD)
+
+        vm.setMode(CaptureMode.PHOTO)
+        assertThat(vm.uiState.value.showResolutionControl).isFalse()
+    }
+
+    @Test
+    fun `in video the flash is a light that is on or off`() = runTest {
+        controller.all = listOf(backWide, back.copy(hasFlash = true), front)
+        val vm = viewModel()
+        vm.setMode(CaptureMode.VIDEO)
+        vm.cycleFlash()
+        assertThat(vm.uiState.value.cameraSettings.flash).isEqualTo(FlashMode.ON)
+        vm.cycleFlash()
+        assertThat(vm.uiState.value.cameraSettings.flash).isEqualTo(FlashMode.OFF)
+    }
+
+    /** A view model in Video mode with a recording running. */
+    private fun recordingViewModel(): CameraViewModel {
+        val vm = viewModel()
+        vm.setMode(CaptureMode.VIDEO)
+        vm.onSurfaceReady(Target(1080, 1920))
+        vm.onShutter()
+        return vm
+    }
+
+    @Test
     fun `a camera taken away is reopened`() = runTest {
         val vm = viewModel()
         vm.onSurfaceReady(Target(1440, 1080))
@@ -507,6 +665,28 @@ class CameraViewModelTest {
         override suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage> {
             bursts += frames
             return List(frames) { CapturedImage(ByteArray(1), ImageFormat.JPEG, PixelSize(4000, 3000), 0L) }
+        }
+        val videoOpened = mutableListOf<VideoSpec>()
+        val videoFilters = mutableListOf<Pair<FloatArray, EnhanceParams?>>()
+        var recordingActive = false
+        var stopResult = true
+        var failRecording = false
+        override suspend fun videoPreviewSize(cameraId: String, spec: VideoSpec) = PixelSize(1080, 1920)
+        override suspend fun openVideo(cameraId: String, target: PreviewTarget, spec: VideoSpec) {
+            opened += cameraId
+            videoOpened += spec
+            state.value = CameraState.Previewing(all.first { it.cameraId == cameraId }, ManualSettings.AUTO, null)
+        }
+        override fun setVideoFilter(look: FloatArray, enhance: EnhanceParams?) {
+            videoFilters += look to enhance
+        }
+        override suspend fun startRecording(output: FileDescriptor, deviceRotationDegrees: Int) {
+            if (failRecording) error("Recorder didn't start")
+            recordingActive = true
+        }
+        override suspend fun stopRecording(): Boolean {
+            recordingActive = false
+            return stopResult
         }
         override suspend fun close() {
             state.value = CameraState.Closed

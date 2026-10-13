@@ -19,6 +19,7 @@ class FeatureGate @Inject constructor() {
             Feature.SAVE_WITH_EXIF,
             Feature.NIGHT_MODE,
             Feature.BASIC_LOOKS,
+            Feature.VIDEO,
         )
     }
 }

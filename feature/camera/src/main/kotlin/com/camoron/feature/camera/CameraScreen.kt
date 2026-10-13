@@ -1,8 +1,10 @@
 package com.camoron.feature.camera
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
 import android.media.MediaActionSound
 import android.view.OrientationEventListener
@@ -10,6 +12,8 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,6 +30,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -43,6 +48,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
@@ -89,13 +97,17 @@ fun CameraScreen(
     HideStatusBar()
     ShutterSounds(viewModel)
     ScreenFlashBrightness(state.screenFlash)
+    KeepScreenOn(state.recording)
+    RequestMicrophone(state.mode.video?.recordsSound == true)
 
     val failedText = stringResource(R.string.capture_failed)
+    val recordingFailedText = stringResource(R.string.recording_failed)
     LaunchedEffect(state.event) {
         when (state.event) {
             // Like the phone's own camera, a saved photo just shows up in the thumbnail.
             is CameraEvent.Saved -> Unit
             CameraEvent.CaptureFailed -> Toast.makeText(context, failedText, Toast.LENGTH_LONG).show()
+            CameraEvent.RecordingFailed -> Toast.makeText(context, recordingFailedText, Toast.LENGTH_LONG).show()
             null -> return@LaunchedEffect
         }
         viewModel.eventConsumed()
@@ -109,12 +121,12 @@ fun CameraScreen(
     ) {
         val aspect = state.cameraSettings.aspectRatio
         // Full screen really is the whole screen, under the (hidden) status bar and the camera cutout.
-        val previewArea = when (aspect) {
-            AspectRatioSetting.FULL_SCREEN -> Modifier.fillMaxSize()
-            AspectRatioSetting.RATIO_9_16 ->
+        // Video is always 16:9, so its preview shows exactly the frame being recorded.
+        val previewArea = when {
+            state.mode.isVideo || aspect == AspectRatioSetting.RATIO_9_16 ->
                 Modifier.safeDrawingPadding().padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(9f / 16)
-            AspectRatioSetting.RATIO_3_4 ->
-                Modifier.safeDrawingPadding().padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(3f / 4)
+            aspect == AspectRatioSetting.FULL_SCREEN -> Modifier.fillMaxSize()
+            else -> Modifier.safeDrawingPadding().padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(3f / 4)
         }
         PreviewArea(
             state = state,
@@ -138,7 +150,9 @@ fun CameraScreen(
                 onTimer = viewModel::cycleTimer,
                 onAspectRatio = viewModel::cycleAspectRatio,
                 onNight = viewModel::cycleNight,
-            onEnhance = viewModel::toggleEnhance,
+                onEnhance = viewModel::toggleEnhance,
+                onResolution = viewModel::toggleVideoResolution,
+                onTimelapseSpeed = viewModel::cycleTimelapseSpeed,
                 onSettings = onOpenSettings,
                 modifier = Modifier.align(Alignment.TopCenter),
             )
@@ -168,7 +182,7 @@ fun CameraScreen(
                     onModeChange = viewModel::setMode,
                     onCapture = viewModel::onShutter,
                     onSwitch = viewModel::switchCamera,
-                    translucent = aspect == AspectRatioSetting.FULL_SCREEN,
+                    translucent = aspect == AspectRatioSetting.FULL_SCREEN && !state.mode.isVideo,
                 )
             }
         }
@@ -213,10 +227,11 @@ private fun PreviewArea(
                         detectTransformGestures { _, _, zoom, _ -> if (zoom != 1f) onPinch(zoom) }
                     },
             ) {
+                // Video frames arrive already enhanced by the camera's renderer.
                 CameraPreview(
                     previewSize = bufferSize,
-                    look = state.cameraSettings.look,
-                    enhance = enhance,
+                    look = if (state.mode.isVideo) ShotLook.NORMAL else state.cameraSettings.look,
+                    enhance = if (state.mode.isVideo) null else enhance,
                     onSurfaceReady = onSurfaceReady,
                     onSurfaceDestroyed = onSurfaceDestroyed,
                     modifier = Modifier.fillMaxSize(),
@@ -227,7 +242,7 @@ private fun PreviewArea(
         if (state.cameraSettings.grid) GridOverlay(Modifier.fillMaxSize())
         if (state.cameraSettings.leveller) LevellerOverlay(Modifier.fillMaxSize())
         // In full screen the preview runs under the top menu, so keep the badges below it.
-        val badgeTop = if (state.cameraSettings.aspectRatio == AspectRatioSetting.FULL_SCREEN) {
+        val badgeTop = if (state.cameraSettings.aspectRatio == AspectRatioSetting.FULL_SCREEN && !state.mode.isVideo) {
             WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding() + TOP_BAR_HEIGHT + 8.dp
         } else {
             12.dp
@@ -236,6 +251,7 @@ private fun PreviewArea(
             Modifier.align(Alignment.TopCenter).padding(top = badgeTop),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (state.recording) RecordingBadge(state)
             if (state.macro) MacroBadge()
             if (state.nightActive) NightBadge()
         }
@@ -329,22 +345,34 @@ private fun BottomBar(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        ModeCarousel(selected = state.mode, onSelect = onModeChange)
+        // While recording the mode can't change; keep the space so the shutter doesn't jump.
+        Box(Modifier.height(MODE_ROW_HEIGHT), contentAlignment = Alignment.Center) {
+            if (!state.recording) ModeCarousel(selected = state.mode, onSelect = onModeChange)
+        }
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 32.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                GalleryThumbnail(state.lastCaptureUri)
+                if (!state.recording) GalleryThumbnail(state.lastCaptureUri)
             }
-            ShutterButton(
-                busy = state.isCapturing,
-                counting = state.countdown != null,
-                enabled = state.cameraState is CameraState.Previewing,
-                onClick = onCapture,
-            )
+            if (state.mode.isVideo) {
+                RecordButton(
+                    recording = state.recording,
+                    busy = state.isCapturing,
+                    enabled = state.cameraState is CameraState.Previewing || state.recording,
+                    onClick = onCapture,
+                )
+            } else {
+                ShutterButton(
+                    busy = state.isCapturing,
+                    counting = state.countdown != null,
+                    enabled = state.cameraState is CameraState.Previewing,
+                    onClick = onCapture,
+                )
+            }
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-                if (state.canSwitchCamera) {
+                if (state.canSwitchCamera && !state.recording) {
                     IconButton(onClick = onSwitch) {
                         Icon(
                             Icons.Filled.Cameraswitch,
@@ -378,6 +406,28 @@ private fun ShutterButton(busy: Boolean, counting: Boolean, enabled: Boolean, on
         contentAlignment = Alignment.Center,
     ) {
         if (busy) CircularProgressIndicator(Modifier.size(32.dp), color = Color.Black, strokeWidth = 3.dp)
+    }
+}
+
+/** Red record button; while recording, a red square to stop. */
+@Composable
+private fun RecordButton(recording: Boolean, busy: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val description = stringResource(if (recording) R.string.cd_stop_recording else R.string.cd_start_recording)
+    Box(
+        Modifier
+            .size(76.dp)
+            .border(4.dp, Color.White, CircleShape)
+            .clip(CircleShape)
+            .clickable(enabled = enabled && !busy, onClickLabel = description, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        val color = if (enabled) RECORDING_RED else Color.Gray
+        if (recording) {
+            Box(Modifier.size(28.dp).background(color, RoundedCornerShape(6.dp)))
+        } else {
+            Box(Modifier.size(60.dp).background(color, CircleShape))
+        }
+        if (busy) CircularProgressIndicator(Modifier.size(32.dp), color = Color.White, strokeWidth = 3.dp)
     }
 }
 
@@ -458,6 +508,8 @@ private fun ShutterSounds(viewModel: CameraViewModel) {
     DisposableEffect(sound) {
         sound.load(MediaActionSound.SHUTTER_CLICK)
         sound.load(MediaActionSound.FOCUS_COMPLETE)
+        sound.load(MediaActionSound.START_VIDEO_RECORDING)
+        sound.load(MediaActionSound.STOP_VIDEO_RECORDING)
         onDispose { sound.release() }
     }
     LaunchedEffect(viewModel, sound) {
@@ -465,7 +517,37 @@ private fun ShutterSounds(viewModel: CameraViewModel) {
             when (effect) {
                 CameraEffect.SHUTTER -> sound.play(MediaActionSound.SHUTTER_CLICK)
                 CameraEffect.TIMER_TICK -> sound.play(MediaActionSound.FOCUS_COMPLETE)
+                CameraEffect.RECORDING_STARTED -> sound.play(MediaActionSound.START_VIDEO_RECORDING)
+                CameraEffect.RECORDING_STOPPED -> sound.play(MediaActionSound.STOP_VIDEO_RECORDING)
             }
+        }
+    }
+}
+
+/** The screen doesn't sleep in the middle of a recording. */
+@Composable
+private fun KeepScreenOn(on: Boolean) {
+    val view = LocalView.current
+    DisposableEffect(view, on) {
+        view.keepScreenOn = on
+        onDispose { view.keepScreenOn = false }
+    }
+}
+
+/**
+ * Asks for the microphone once, the first time a video mode with sound is opened. Declining is
+ * fine: videos are then recorded silent.
+ */
+@Composable
+private fun RequestMicrophone(wanted: Boolean) {
+    val context = LocalContext.current
+    var asked by rememberSaveable { mutableStateOf(false) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(wanted) {
+        if (!wanted || asked) return@LaunchedEffect
+        asked = true
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            launcher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 }
@@ -494,3 +576,4 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 }
 
 internal val TOP_BAR_HEIGHT = 56.dp
+private val MODE_ROW_HEIGHT = 36.dp

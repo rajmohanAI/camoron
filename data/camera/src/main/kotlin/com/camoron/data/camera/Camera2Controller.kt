@@ -1,7 +1,9 @@
 package com.camoron.data.camera
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.ImageFormat as AndroidImageFormat
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
@@ -26,6 +28,11 @@ import android.hardware.camera2.DngCreator
 import android.media.Image
 import android.media.ImageReader
 import android.media.MediaActionSound
+import android.media.MediaCodecList
+import android.media.MediaFormat
+import android.media.MediaRecorder
+import android.system.Os
+import android.system.OsConstants
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -41,6 +48,7 @@ import com.camoron.domain.model.CameraError
 import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.DeviceProfile
+import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.CaptureBundle
@@ -49,9 +57,14 @@ import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.LensFacing
 import com.camoron.domain.model.LiveExposure
+import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.StillAspect
+import com.camoron.domain.model.VideoMath
+import com.camoron.domain.model.VideoResolution
+import com.camoron.domain.model.VideoSpec
 import com.camoron.domain.model.WhiteBalance
 import com.camoron.domain.model.WhiteBalancePreset
 import com.camoron.domain.repository.CameraController
@@ -73,6 +86,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayOutputStream
+import java.io.FileDescriptor
 import java.util.concurrent.Executor
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -86,7 +100,7 @@ import kotlin.math.abs
  */
 @Singleton
 class Camera2Controller @Inject constructor(
-    @ApplicationContext context: Context,
+    @ApplicationContext private val context: Context,
     private val mapper: CapabilityMapper,
     private val sanitize: SanitizeManualSettings,
     @DefaultDispatcher private val processing: CoroutineDispatcher,
@@ -153,10 +167,13 @@ class Camera2Controller @Inject constructor(
         val characteristics: CameraCharacteristics,
         val device: CameraDevice,
         val session: CameraCaptureSession,
+        /** Where the camera streams for preview: the screen, or the video renderer's texture. */
         val previewSurface: Surface,
-        val jpegReader: ImageReader,
+        /** Absent in a video session, which has no still output. */
+        val jpegReader: ImageReader?,
         val rawReader: ImageReader?,
         val analysisReader: ImageReader?,
+        val video: VideoSession? = null,
     ) {
         var settings: ManualSettings = ManualSettings.AUTO
         @Volatile
@@ -189,16 +206,46 @@ class Camera2Controller @Inject constructor(
         val isFront: Boolean get() = capabilities.lensFacing == LensFacing.FRONT
 
         fun closeReaders() {
-            runCatching { jpegReader.close() }
+            runCatching { jpegReader?.close() }
             runCatching { rawReader?.close() }
             runCatching { analysisReader?.close() }
         }
     }
 
+    /** How an open video session was set up. */
+    private class VideoSession(
+        val spec: VideoSpec,
+        /** Camera stream and encoded video size (landscape). */
+        val size: PixelSize,
+        /** The camera frame-rate range in use, or null for the camera's default. */
+        val fpsRange: IntRange?,
+        /** The picture is turned a quarter turn in the encoded frame (sideways sensor). */
+        val turned: Boolean,
+        val renderer: VideoRenderer,
+        val stabilization: Boolean,
+    )
+
+    /** A recording in progress. Kept apart from the session so it can be finished if the camera is lost. */
+    private class Recording(val recorder: MediaRecorder, val renderer: VideoRenderer)
+
+    @Volatile
+    private var recording: Recording? = null
+
+    /** The video renderer, released on close even when the camera itself was taken away. */
+    @Volatile
+    private var renderer: VideoRenderer? = null
+
+    /** Look and enhancement for video frames; survives reopening. */
+    @Volatile
+    private var videoLook: FloatArray = LookMatrix.forLook(ShotLook.NORMAL)
+
+    @Volatile
+    private var videoEnhance: EnhanceParams? = null
+
     // Camera queries can take hundreds of milliseconds on some phones, so keep them off the UI thread.
     override suspend fun cameras(): List<CameraCapabilities> = withContext(processing) {
         manager.cameraIdList.mapNotNull { id ->
-            runCatching { mapper.map(id, manager.getCameraCharacteristics(id)).copy(extensions = extensionsFor(id)) }
+            runCatching { withVideoEncoderLimits(mapper.map(id, manager.getCameraCharacteristics(id))).copy(extensions = extensionsFor(id)) }
                 .onFailure { Log.w(TAG, "Skipping camera $id", it) }
                 .getOrNull()
         }
@@ -411,6 +458,212 @@ class Camera2Controller @Inject constructor(
             reader.setOnImageAvailableListener(null, null)
         }
     }
+
+    override suspend fun videoPreviewSize(cameraId: String, spec: VideoSpec): PixelSize = withContext(processing) {
+        val characteristics = manager.getCameraCharacteristics(cameraId)
+        val size = videoSize(characteristics, spec.resolution)
+        VideoMath.previewSize(size, isTurned(characteristics))
+    }
+
+    override suspend fun openVideo(cameraId: String, target: PreviewTarget, spec: VideoSpec) {
+        mutex.withLock {
+            val surface = (target as? SurfacePreviewTarget)?.surface
+                ?: error("Camera2Controller needs a SurfacePreviewTarget")
+            openVideoLocked(cameraId, surface, PixelSize(target.width, target.height), spec)
+        }
+    }
+
+    private suspend fun openVideoLocked(cameraId: String, surface: Surface, previewSize: PixelSize, spec: VideoSpec) {
+        closeLocked()
+        _state.value = CameraState.Opening(cameraId)
+        var device: CameraDevice? = null
+        var analysisReader: ImageReader? = null
+        try {
+            val characteristics = manager.getCameraCharacteristics(cameraId)
+            val caps = withVideoEncoderLimits(mapper.map(cameraId, characteristics))
+            val resolution = spec.resolution.takeIf { it in caps.videoResolutions } ?: VideoResolution.FHD
+            val size = videoSize(characteristics, resolution)
+            val turned = isTurned(characteristics)
+            val fpsRange = VideoMath.chooseFpsRange(
+                characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                    ?.map { it.lower..it.upper }.orEmpty(),
+                spec.kind,
+            )
+            val realtime = characteristics.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) ==
+                CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
+            val stabilization = characteristics.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
+                ?.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON) == true
+
+            val videoRenderer = withContext(processing) {
+                VideoRenderer(surface, previewSize, size, turned, realtime).also { renderer = it }.let { it to it.start() }
+            }
+            videoRenderer.first.setFilter(videoLook, videoEnhance)
+            device = openDevice(cameraId)
+
+            // The analysis stream feeds the histogram (for Enhance) and subject tracking. If the
+            // camera can't add it next to a large video stream, film without it.
+            val streams = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            analysisReader = streams?.getOutputSizes(AndroidImageFormat.YUV_420_888)
+                ?.map { PixelSize(it.width, it.height) }
+                ?.let(CameraMath::chooseAnalysisSize)
+                ?.let {
+                    ImageReader.newInstance(it.width, it.height, AndroidImageFormat.YUV_420_888, ANALYSIS_IMAGES)
+                        .apply { setOnImageAvailableListener(::onAnalysisFrame, handler) }
+                }
+            val cameraSurface = videoRenderer.second
+            val session = try {
+                createSession(device, listOfNotNull(cameraSurface, analysisReader?.surface))
+            } catch (e: IllegalStateException) {
+                if (analysisReader == null) throw e
+                DiagnosticLog.record(TAG, "Filming without the analysis stream", e)
+                analysisReader?.close()
+                analysisReader = null
+                createSession(device, listOf(cameraSurface))
+            }
+            val video = VideoSession(spec.copy(resolution = resolution), size, fpsRange, turned, videoRenderer.first, stabilization)
+            val camera = ActiveCamera(caps, characteristics, device, session, cameraSurface, null, null, analysisReader, video)
+            active = camera
+            startRepeating(camera)
+            _state.value = CameraState.Previewing(caps, camera.settings, liveExposure = null)
+        } catch (e: Exception) {
+            DiagnosticLog.record(TAG, "Failed to open camera $cameraId for video", e)
+            runCatching { analysisReader?.close() }
+            device?.close()
+            active = null
+            renderer?.let { withContext(nonCancellableProcessing) { it.release() } }
+            renderer = null
+            if (e is CancellationException) {
+                _state.value = CameraState.Closed
+                throw e
+            }
+            _state.value = CameraState.Error(e.toCameraError())
+        }
+    }
+
+    /** The recording size: the requested one, else the largest 16:9 stream up to 1080p. */
+    private fun videoSize(characteristics: CameraCharacteristics, resolution: VideoResolution): PixelSize {
+        val sizes = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?.getOutputSizes(SurfaceTexture::class.java)
+            ?.map { PixelSize(it.width, it.height) }
+            .orEmpty()
+        if (resolution.size in sizes) return resolution.size
+        return sizes.filter { abs(it.width * 9 - it.height * 16) <= it.height && it.width <= VideoResolution.FHD.width }
+            .maxByOrNull { it.width }
+            ?: sizes.filter { it.width <= VideoResolution.FHD.width }.maxByOrNull { it.width.toLong() * it.height }
+            ?: VideoResolution.FHD.size
+    }
+
+    private fun isTurned(characteristics: CameraCharacteristics): Boolean =
+        (characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90) % 180 != 0
+
+    /** Drops 4K where the phone's H.264 encoder can't take it at 30 fps. */
+    private fun withVideoEncoderLimits(caps: CameraCapabilities): CameraCapabilities {
+        if (VideoResolution.UHD !in caps.videoResolutions || encoderHandles4k) return caps
+        return caps.copy(videoResolutions = caps.videoResolutions - VideoResolution.UHD)
+    }
+
+    private val encoderHandles4k: Boolean by lazy {
+        runCatching {
+            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+                info.isEncoder && MediaFormat.MIMETYPE_VIDEO_AVC in info.supportedTypes &&
+                    info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).videoCapabilities
+                        ?.areSizeAndRateSupported(VideoResolution.UHD.width, VideoResolution.UHD.height, 30.0) == true
+            }
+        }.getOrDefault(false)
+    }
+
+    override fun setVideoFilter(look: FloatArray, enhance: EnhanceParams?) {
+        videoLook = look
+        videoEnhance = enhance
+        renderer?.setFilter(look, enhance)
+    }
+
+    override suspend fun startRecording(output: FileDescriptor, deviceRotationDegrees: Int) {
+        mutex.withLock {
+            check(recording == null) { "Already recording" }
+            val camera = active ?: error("Camera is not open")
+            val video = camera.video ?: error("The camera is not open for video")
+            val hint = VideoMath.orientationHint(deviceRotationDegrees, camera.isFront, video.turned)
+            val sound = video.spec.kind.recordsSound &&
+                context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            val recorder = withContext(processing) { startRecorder(output, video, hint, sound) }
+            try {
+                withContext(processing) { video.renderer.startEncoding(recorder.surface, VideoMath.pacerFor(video.spec, video.fpsRange)) }
+            } catch (e: Exception) {
+                runCatching { recorder.stop() }
+                recorder.release()
+                throw e
+            }
+            recording = Recording(recorder, video.renderer)
+        }
+    }
+
+    /**
+     * Starts a recorder, with stereo sound if the microphones allow it, else mono, else silent, so
+     * a phone with an unusual microphone setup still records.
+     */
+    @SuppressLint("MissingPermission") // Sound is only requested once RECORD_AUDIO is confirmed granted.
+    private fun startRecorder(output: FileDescriptor, video: VideoSession, hint: Int, sound: Boolean): MediaRecorder {
+        val channelOptions = if (sound) listOf(2, 1, 0) else listOf(0)
+        var failure: Exception? = null
+        for (channels in channelOptions) {
+            val recorder = newRecorder()
+            try {
+                // A failed attempt may have written a header; start the file afresh.
+                runCatching {
+                    Os.lseek(output, 0, OsConstants.SEEK_SET)
+                    Os.ftruncate(output, 0)
+                }
+                if (channels > 0) recorder.setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
+                recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+                recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                recorder.setOutputFile(output)
+                recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+                recorder.setVideoSize(video.size.width, video.size.height)
+                recorder.setVideoFrameRate(video.spec.kind.outputFps)
+                recorder.setVideoEncodingBitRate(VideoMath.bitrate(video.size, video.spec.kind.outputFps))
+                if (channels > 0) {
+                    recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                    recorder.setAudioSamplingRate(AUDIO_SAMPLE_RATE)
+                    recorder.setAudioChannels(channels)
+                    recorder.setAudioEncodingBitRate(AUDIO_BITRATE_PER_CHANNEL * channels)
+                }
+                recorder.setOrientationHint(hint)
+                recorder.prepare()
+                recorder.start()
+                return recorder
+            } catch (e: Exception) {
+                DiagnosticLog.record(TAG, "Recorder didn't start with $channels sound channels", e)
+                recorder.release()
+                failure = e
+            }
+        }
+        throw failure ?: IllegalStateException("Recorder didn't start")
+    }
+
+    @Suppress("DEPRECATION")
+    private fun newRecorder(): MediaRecorder =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else MediaRecorder()
+
+    override suspend fun stopRecording(): Boolean = mutex.withLock { stopRecordingLocked() }
+
+    private suspend fun stopRecordingLocked(): Boolean {
+        val current = recording ?: return false
+        recording = null
+        return withContext(nonCancellableProcessing) {
+            runCatching { current.renderer.stopEncoding() }
+                .onFailure { DiagnosticLog.record(TAG, "Couldn't detach the encoder", it) }
+            // stop() throws when no frame was recorded, which leaves an unusable file.
+            val ok = runCatching { current.recorder.stop() }
+                .onFailure { DiagnosticLog.record(TAG, "Recording had nothing to save", it) }
+                .isSuccess
+            current.recorder.release()
+            ok
+        }
+    }
+
+    /** Off the caller's thread, and finishing even if the caller is cancelled, so files are never left half-written. */
+    private val nonCancellableProcessing get() = processing + kotlinx.coroutines.NonCancellable
 
     override suspend fun setFlashMode(mode: FlashMode) {
         mutex.withLock {
@@ -674,7 +927,7 @@ class Camera2Controller @Inject constructor(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return@withLock captureNight(night, deviceRotationDegrees)
         }
         val camera = active ?: error("Camera is not open")
-        val jpegReader = camera.jpegReader
+        val jpegReader = camera.jpegReader ?: error("Photos can't be taken while filming")
         val rawReader = camera.rawReader?.takeIf { includeRaw }
         val rotation = CameraMath.jpegOrientation(camera.sensorOrientation, deviceRotationDegrees, camera.isFront)
 
@@ -774,7 +1027,7 @@ class Camera2Controller @Inject constructor(
 
     override suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage> = mutex.withLock {
         val camera = active ?: error("Camera is not open")
-        val reader = camera.jpegReader
+        val reader = camera.jpegReader ?: error("Photos can't be taken while filming")
         val rotation = CameraMath.jpegOrientation(camera.sensorOrientation, deviceRotationDegrees, camera.isFront)
         reader.acquireLatestImage()?.close()
 
@@ -887,7 +1140,8 @@ class Camera2Controller @Inject constructor(
         mutex.withLock { closeLocked() }
     }
 
-    private fun closeLocked() {
+    private suspend fun closeLocked() {
+        if (recording != null) stopRecordingLocked()
         activeNight?.let { night ->
             activeNight = null
             runCatching { night.session.close() }
@@ -895,15 +1149,20 @@ class Camera2Controller @Inject constructor(
             runCatching { night.jpegReader.close() }
             _state.value = CameraState.Closed
         }
-        val camera = active ?: return
+        val camera = active
         active = null
-        runCatching { camera.session.stopRepeating() }
-        runCatching { camera.session.close() }
-        runCatching { camera.device.close() }
-        camera.closeReaders()
-        _histogram.value = null
-        _focusTarget.value = null
-        _state.value = CameraState.Closed
+        if (camera != null) {
+            runCatching { camera.session.stopRepeating() }
+            runCatching { camera.session.close() }
+            runCatching { camera.device.close() }
+            camera.closeReaders()
+            _histogram.value = null
+            _focusTarget.value = null
+            _state.value = CameraState.Closed
+        }
+        // After the camera, so it has stopped streaming into the renderer's texture.
+        renderer?.let { withContext(nonCancellableProcessing) { it.release() } }
+        renderer = null
     }
 
     @SuppressLint("MissingPermission") // Onboarding guarantees CAMERA is granted before the camera opens.
@@ -986,7 +1245,9 @@ class Camera2Controller @Inject constructor(
         }
 
     private fun previewRequest(camera: ActiveCamera): CaptureRequest.Builder =
-        camera.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+        camera.device.createCaptureRequest(
+            if (camera.video != null) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW,
+        ).apply {
             addTarget(camera.previewSurface)
             camera.analysisReader?.let { addTarget(it.surface) }
             applyControls(camera, this)
@@ -1004,8 +1265,19 @@ class Camera2Controller @Inject constructor(
 
         // Lens distortion correction on every request, so preview and photo match and the HAL never
         // has to switch modes between frames.
+        // Video uses the fast mode, which keeps up with every frame.
+        val video = camera.video
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && caps.supportsDistortionCorrection) {
-            builder.set(CaptureRequest.DISTORTION_CORRECTION_MODE, CapabilityMapper.DISTORTION_CORRECTION_HIGH_QUALITY)
+            builder.set(
+                CaptureRequest.DISTORTION_CORRECTION_MODE,
+                if (video != null) DISTORTION_CORRECTION_FAST else CapabilityMapper.DISTORTION_CORRECTION_HIGH_QUALITY,
+            )
+        }
+        if (video != null) {
+            video.fpsRange?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, android.util.Range(it.first, it.last)) }
+            if (video.stabilization) {
+                builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+            }
         }
 
         // Zoom applies to every output, so preview, analysis and still all match.
@@ -1021,6 +1293,12 @@ class Camera2Controller @Inject constructor(
         // Focus: continuous by default; after a tap, either a one-shot scan on that spot or, when
         // tracking, continuous focus on a region that follows the subject. Macro overrides both.
         val region = camera.focusRegion
+        // Video refocuses smoothly instead of hunting the way a photo autofocus may.
+        val continuous = if (video != null && CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO in camera.afModes) {
+            CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+        } else {
+            CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+        }
         when {
             macroActive(camera) && caps.supportsMacroAf -> {
                 builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_MACRO)
@@ -1030,17 +1308,15 @@ class Camera2Controller @Inject constructor(
                 builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
                 builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, caps.minFocusDistanceDiopters)
             }
-            region != null && camera.trackingWanted &&
-                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE in camera.afModes -> {
-                builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            region != null && camera.trackingWanted && continuous in camera.afModes -> {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, continuous)
                 builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
             }
             region != null && CameraMetadata.CONTROL_AF_MODE_AUTO in camera.afModes -> {
                 builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
                 builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
             }
-            CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE in camera.afModes ->
-                builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            continuous in camera.afModes -> builder.set(CaptureRequest.CONTROL_AF_MODE, continuous)
         }
         if (region != null && camera.maxAeRegions > 0) {
             builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
@@ -1055,6 +1331,16 @@ class Camera2Controller @Inject constructor(
             builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
             builder.set(CaptureRequest.SENSOR_SENSITIVITY, iso.coerceIn(caps.isoRange!!))
             builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposure.coerceIn(caps.exposureTimeRangeNs!!))
+        } else if (video != null) {
+            // Flash On is a steady light while filming.
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+            if (caps.hasFlash) {
+                builder.set(
+                    CaptureRequest.FLASH_MODE,
+                    if (flashMode == FlashMode.ON) CameraMetadata.FLASH_MODE_TORCH else CameraMetadata.FLASH_MODE_OFF,
+                )
+            }
+            builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, settings.exposureCompensation)
         } else {
             val aeMode = when {
                 !caps.hasFlash -> CameraMetadata.CONTROL_AE_MODE_ON
@@ -1156,6 +1442,11 @@ class Camera2Controller @Inject constructor(
         const val TRACK_INTERVAL_MS = 66L
         /** Normalised movement below which the focus region is left where it is. */
         const val TRACK_MIN_MOVE = 0.015f
+
+        /** CameraMetadata.DISTORTION_CORRECTION_MODE_FAST, added in Android 9. */
+        const val DISTORTION_CORRECTION_FAST = 1
+        const val AUDIO_SAMPLE_RATE = 48_000
+        const val AUDIO_BITRATE_PER_CHANNEL = 96_000
 
         /** EXTENSION_FACE_RETOUCH (named EXTENSION_BEAUTY before Android 14). */
         const val EXTENSION_FACE_RETOUCH = 1

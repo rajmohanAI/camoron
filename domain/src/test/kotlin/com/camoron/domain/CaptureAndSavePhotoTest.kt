@@ -5,6 +5,7 @@ import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.DeviceProfile
+import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.Histogram
@@ -13,14 +14,17 @@ import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.model.StillAspect
+import com.camoron.domain.model.VideoSpec
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.MediaRepository
+import com.camoron.domain.repository.PendingVideo
 import com.camoron.domain.repository.PhotoProcessor
 import com.camoron.domain.repository.PreviewTarget
 import com.camoron.domain.usecase.CaptureAndSavePhoto
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
+import java.io.FileDescriptor
 import org.junit.Test
 
 class CaptureAndSavePhotoTest {
@@ -35,6 +39,7 @@ class CaptureAndSavePhotoTest {
             saved += image
             return "content://${saved.size}"
         }
+        override suspend fun createVideo(timestampMillis: Long): PendingVideo = error("No video here")
         override suspend fun latestCapture(): String? = null
     }
 
@@ -126,6 +131,11 @@ class CaptureAndSavePhotoTest {
             }
             return CaptureBundle(jpeg, dng.takeIf { includeDng && includeRaw })
         }
+        override suspend fun videoPreviewSize(cameraId: String, spec: VideoSpec) = PixelSize(1080, 1920)
+        override suspend fun openVideo(cameraId: String, target: PreviewTarget, spec: VideoSpec) = Unit
+        override fun setVideoFilter(look: FloatArray, enhance: EnhanceParams?) = Unit
+        override suspend fun startRecording(output: FileDescriptor, deviceRotationDegrees: Int) = Unit
+        override suspend fun stopRecording() = false
         override suspend fun close() = Unit
     }
 }

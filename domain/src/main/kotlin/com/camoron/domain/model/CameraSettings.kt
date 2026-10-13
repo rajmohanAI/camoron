@@ -29,6 +29,9 @@ data class CameraSettings(
     val look: ShotLook = ShotLook.NORMAL,
     /** Scene-adaptive tone, colour and detail, live on the preview and on the photo. */
     val enhance: Boolean = true,
+    /** Video and Cinematic recording size; 4K only where the camera and encoder support it. */
+    val videoResolution: VideoResolution = VideoResolution.FHD,
+    val timelapseSpeed: TimelapseSpeed = TimelapseSpeed.X15,
 )
 
 /** How a saved JPEG should be adjusted so it matches the preview. */

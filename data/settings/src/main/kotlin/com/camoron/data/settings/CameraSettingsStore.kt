@@ -7,7 +7,9 @@ import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.NightSetting
 import com.camoron.domain.model.ShotLook
+import com.camoron.domain.model.TimelapseSpeed
 import com.camoron.domain.model.TimerSetting
+import com.camoron.domain.model.VideoResolution
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -31,6 +33,8 @@ internal data class StoredCameraSettings(
     val night: String? = null,
     val look: String? = null,
     val enhance: Boolean? = null,
+    val videoResolution: String? = null,
+    val timelapseSpeed: String? = null,
 ) {
     fun toDomain(): CameraSettings {
         val defaults = CameraSettings()
@@ -46,6 +50,8 @@ internal data class StoredCameraSettings(
             night = enumOrNull<NightSetting>(night) ?: defaults.night,
             look = enumOrNull<ShotLook>(look) ?: defaults.look,
             enhance = enhance ?: defaults.enhance,
+            videoResolution = enumOrNull<VideoResolution>(videoResolution) ?: defaults.videoResolution,
+            timelapseSpeed = enumOrNull<TimelapseSpeed>(timelapseSpeed) ?: defaults.timelapseSpeed,
         )
     }
 
@@ -62,6 +68,8 @@ internal data class StoredCameraSettings(
             night = settings.night.name,
             look = settings.look.name,
             enhance = settings.enhance,
+            videoResolution = settings.videoResolution.name,
+            timelapseSpeed = settings.timelapseSpeed.name,
         )
     }
 }

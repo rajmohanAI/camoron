@@ -24,7 +24,7 @@ Camera UI plan v2 (phases A to F):
 | A. Device scan, new layout, flash, timer, aspect ratio, settings | Done |
 | B. Lenses and focus | Done |
 | C. Looks and night | Done: six shot modes live on the preview and photo; Night via the maker extension or an on-device multi-frame merge; hardware noise reduction and distortion correction on stills |
-| D. Video family | Not started |
+| D. Video family | Video (1080p, 4K where supported), Cinematic 24 fps and Timelapse (5× to 60×), with Enhance and looks drawn into the recording on the GPU, stabilization, torch and sound |
 | E. Portrait, Scan, Google Lens | Not started |
 | F. Dual capture, Panorama | Not started |
 
