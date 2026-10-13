@@ -23,6 +23,8 @@
     <string name="camera_info">Camera info</string>
     <string name="camera_info_desc">See what this phone\'s cameras support.</string>
     <string name="camera_info_loading">Reading camera details…</string>
+    <string name="share_log">Share log</string>
+    <string name="share_log_title">Share the camera log</string>
     <string name="about">About</string>
     <!-- Keep in sync with the onboarding disclaimer, Play Store listing and paywall. -->
     <string name="about_disclaimer">Camoron enhances the photo your camera actually captures. Results depend on your phone\'s camera hardware, and a minimum compatible camera is required. Enhancement does not recreate or generate scene content.</string>

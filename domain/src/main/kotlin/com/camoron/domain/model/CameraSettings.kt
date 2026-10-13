@@ -44,6 +44,8 @@ data class PhotoAdjustments(
     val look: ShotLook = ShotLook.NORMAL,
     /** Scene-adaptive tone, colour and detail ([EnhanceMath]), plus sharpening the preview can't show. */
     val enhance: Boolean = false,
+    /** Digital zoom the photo was taken at; zoomed photos get gentler sharpening. */
+    val zoom: Float = 1f,
 ) {
     val isIdentity: Boolean get() = cropAspect == null && !mirror && look == ShotLook.NORMAL && !enhance
 

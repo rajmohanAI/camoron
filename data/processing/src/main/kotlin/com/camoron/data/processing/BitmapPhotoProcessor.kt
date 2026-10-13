@@ -6,9 +6,10 @@ import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
 import android.os.Build
-import android.util.Log
 import androidx.exifinterface.media.ExifInterface
 import com.camoron.core.common.DefaultDispatcher
+import com.camoron.core.common.DiagnosticLog
+import com.camoron.core.common.timed
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.LookMatrix
@@ -16,6 +17,7 @@ import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.repository.PhotoProcessor
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
@@ -57,10 +59,18 @@ class BitmapPhotoProcessor @Inject constructor(
             val reencode = crop != null || look != null || enhance
             if (reencode) {
                 val transformed = try {
-                    transformJpeg(image.bytes, crop, look, enhance)
+                    DiagnosticLog.timed(TAG, "Adjusting ${bounds.width}x${bounds.height}") {
+                        transformJpeg(image.bytes, crop, look, enhance, adjustments.zoom)
+                    }
                 } catch (e: OutOfMemoryError) {
                     // Very large sensors can exceed the heap; keep the photo rather than lose it.
-                    Log.w(TAG, "Not enough memory to adjust a ${bounds.width}x${bounds.height} photo", e)
+                    DiagnosticLog.record(TAG, "Not enough memory to adjust a ${bounds.width}x${bounds.height} photo", e)
+                    null
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // A processing problem must never cost the photo: save it as the camera took it.
+                    DiagnosticLog.record(TAG, "Couldn't adjust the photo; saving it unadjusted", e)
                     null
                 }
                 if (transformed != null) {
@@ -85,16 +95,25 @@ class BitmapPhotoProcessor @Inject constructor(
                     reference.withBytes(writeExif(bytes, exif, orientation, size), size)
                 } ?: reference
             } catch (e: OutOfMemoryError) {
-                Log.w(TAG, "Not enough memory to merge the night burst; keeping the first frame", e)
+                DiagnosticLog.record(TAG, "Not enough memory to merge the night burst; keeping the first frame", e)
                 reference
             }
         }
     }
 
     /** Decodes (the cropped part of) a JPEG, enhances it, applies the colour matrix and re-encodes it. */
-    private suspend fun transformJpeg(bytes: ByteArray, crop: CropRect?, look: FloatArray?, enhance: Boolean): ByteArray {
-        val options = BitmapFactory.Options().apply { inMutable = true }
-        val bitmap = if (crop != null) {
+    private suspend fun transformJpeg(
+        bytes: ByteArray,
+        crop: CropRect?,
+        look: FloatArray?,
+        enhance: Boolean,
+        zoom: Float,
+    ): ByteArray {
+        val options = BitmapFactory.Options().apply {
+            inMutable = true
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = if (crop != null) {
             val decoder = regionDecoder(bytes)
             try {
                 decoder.decodeRegion(Rect(crop.left, crop.top, crop.right, crop.bottom), options)
@@ -104,8 +123,16 @@ class BitmapPhotoProcessor @Inject constructor(
         } else {
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
         } ?: error("Could not decode the captured JPEG")
+        // Region decoding ignores inMutable on many phones and hands back a read-only bitmap, which
+        // can't be written to; that was why full-screen photos failed. Copy it to a writable one.
+        val bitmap = if (decoded.isMutable) {
+            decoded
+        } else {
+            decoded.copy(Bitmap.Config.ARGB_8888, true).also { decoded.recycle() }
+                ?: error("Could not copy the decoded photo")
+        }
         try {
-            if (enhance) Enhancer.enhance(bitmap)
+            if (enhance) Enhancer.enhance(bitmap, zoom)
             if (look != null) applyLook(bitmap, look)
             return ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }
                 .toByteArray()

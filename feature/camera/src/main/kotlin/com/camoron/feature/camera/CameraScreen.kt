@@ -88,9 +88,11 @@ fun CameraScreen(
     viewModel: CameraViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val histogram by viewModel.histogram.collectAsStateWithLifecycle()
+    // These change many times a second; they are passed down as lambdas and read only where they
+    // are drawn, so they don't recompose the whole screen each time.
+    val histogram = viewModel.histogram.collectAsStateWithLifecycle()
     val focusTarget by viewModel.focusTarget.collectAsStateWithLifecycle()
-    val enhance by viewModel.enhanceParams.collectAsStateWithLifecycle()
+    val enhance = viewModel.enhanceParams.collectAsStateWithLifecycle()
     val context = LocalContext.current
     TrackDeviceRotation(viewModel::onDeviceRotation)
     TrackForeground(viewModel::onForegroundChanged)
@@ -130,7 +132,7 @@ fun CameraScreen(
         }
         PreviewArea(
             state = state,
-            enhance = enhance,
+            enhance = { enhance.value },
             focusTarget = focusTarget,
             onSurfaceReady = viewModel::onSurfaceReady,
             onSurfaceDestroyed = viewModel::onSurfaceDestroyed,
@@ -165,7 +167,7 @@ fun CameraScreen(
                         settings = state.settings,
                         liveExposure = previewing.liveExposure,
                         rawEnabled = state.rawEnabled,
-                        histogram = histogram,
+                        histogram = { histogram.value },
                         viewModel = viewModel,
                         modifier = Modifier.background(Color.Black.copy(alpha = 0.6f)),
                     )
@@ -198,7 +200,7 @@ fun CameraScreen(
 @Composable
 private fun PreviewArea(
     state: CameraUiState,
-    enhance: EnhanceParams?,
+    enhance: () -> EnhanceParams?,
     focusTarget: FocusTarget?,
     onSurfaceReady: (SurfacePreviewTarget) -> Unit,
     onSurfaceDestroyed: () -> Unit,
@@ -231,7 +233,7 @@ private fun PreviewArea(
                 CameraPreview(
                     previewSize = bufferSize,
                     look = if (state.mode.isVideo) ShotLook.NORMAL else state.cameraSettings.look,
-                    enhance = if (state.mode.isVideo) null else enhance,
+                    enhance = if (state.mode.isVideo) ({ null }) else enhance,
                     onSurfaceReady = onSurfaceReady,
                     onSurfaceDestroyed = onSurfaceDestroyed,
                     modifier = Modifier.fillMaxSize(),
@@ -268,7 +270,7 @@ private fun PreviewArea(
 private fun CameraPreview(
     previewSize: PixelSize,
     look: ShotLook,
-    enhance: EnhanceParams?,
+    enhance: () -> EnhanceParams?,
     onSurfaceReady: (SurfacePreviewTarget) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     modifier: Modifier = Modifier,
@@ -280,7 +282,8 @@ private fun CameraPreview(
         factory = { ctx -> PreviewTextureView(ctx, onReady = { ready(it) }, onDestroyed = { destroyed() }) },
         update = { view ->
             view.setBufferSize(previewSize)
-            view.setFilter(look, enhance)
+            // Read here, so new parameters only re-run this update, not the composition.
+            view.setFilter(look, enhance())
         },
         modifier = modifier,
     )
@@ -354,7 +357,7 @@ private fun BottomBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                if (!state.recording) GalleryThumbnail(state.lastCaptureUri)
+                if (!state.recording) GalleryThumbnail(state.lastCaptureUri, saving = state.photosSaving > 0)
             }
             if (state.mode.isVideo) {
                 RecordButton(

@@ -1,36 +1,41 @@
 package com.camoron.data.processing
 
 import android.graphics.Bitmap
+import android.os.SystemClock
+import com.camoron.core.common.DiagnosticLog
 import com.camoron.domain.model.EnhanceMath
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * On-device photo enhancement, in place on a decoded photo:
  *
- * 1. Scene-adaptive tone curve and vibrance ([EnhanceMath]), the same ones the preview shows.
- * 2. Local contrast ("clarity"): each pixel is lifted against the average brightness of its
- *    neighbourhood, which brings out texture in skies, faces and foliage without a halo.
- * 3. Fine detail: an unsharp mask on brightness with a noise threshold, so edges get crisper while
- *    flat, noisy areas are left alone.
+ * 1. Measures the photo's noise, so a clean daylight shot and a grainy indoor or zoomed one each get
+ *    the right strength ([DetailTuning]).
+ * 2. Noise and grain reduction that keeps edges and texture, and colour-speckle removal
+ *    ([DetailMath]).
+ * 3. Gentle sharpening and local contrast on the cleaned picture, held back for noisy or zoomed
+ *    photos so grain and zoom blockiness are not exaggerated.
+ * 4. Scene-adaptive tone curve and vibrance ([EnhanceMath]), the same ones the preview shows.
  *
- * Rows are processed in parallel bands.
+ * The photo is processed in bands of rows on several cores; each band reads a few extra rows above
+ * and below so the seams are invisible.
  */
 internal object Enhancer {
 
-    private const val SHARPEN = 0.6f
-    private const val NOISE_FLOOR = 3
-    private const val CLARITY = 0.3f
     private const val CLARITY_BLOCK = 32
     private const val HISTOGRAM_BINS = 64
     private const val HISTOGRAM_STEP = 4
-    private const val BAND_COUNT = 4
+    private const val BAND_ROWS = 64
+    private const val MAX_WORKERS = 4
 
-    suspend fun enhance(bitmap: Bitmap) {
+    suspend fun enhance(bitmap: Bitmap, zoom: Float = 1f) {
         val width = bitmap.width
         val height = bitmap.height
-        if (width < 3 || height < 3) return
+        if (width < 8 || height < 8) return
+        val started = SystemClock.elapsedRealtime()
 
         val luma = ByteArray(width * height)
         val row = IntArray(width)
@@ -46,89 +51,84 @@ internal object Enhancer {
         }
         val params = EnhanceMath.fromHistogram(bins)
         val lut = EnhanceMath.toneCurve(params)
+        val tuning = DetailTuning(DetailMath.estimateNoise(luma, width, height), zoom)
         val coarse = CoarseLuma(luma, width, height, CLARITY_BLOCK)
 
+        val halo = tuning.halo
+        val bands = (height + BAND_ROWS - 1) / BAND_ROWS
+        val next = AtomicInteger(0)
+        val workers = minOf(MAX_WORKERS, Runtime.getRuntime().availableProcessors(), bands).coerceAtLeast(1)
+        val capacity = width * (BAND_ROWS + 2 * halo)
+
+        // A band also reads [halo] rows of each neighbour, which that neighbour may already have
+        // rewritten. Keep the original edge rows of every band so each one reads the untouched picture.
+        val edgeRows = minOf(halo, BAND_ROWS)
+        val topEdges = arrayOfNulls<IntArray>(bands)
+        val bottomEdges = arrayOfNulls<IntArray>(bands)
+        for (band in 0 until bands) {
+            val coreStart = band * BAND_ROWS
+            val coreEnd = minOf(height, coreStart + BAND_ROWS)
+            val rows = minOf(edgeRows, coreEnd - coreStart)
+            if (band > 0) topEdges[band] = IntArray(width * rows).also {
+                bitmap.getPixels(it, 0, width, 0, coreStart, width, rows)
+            }
+            if (band < bands - 1) bottomEdges[band] = IntArray(width * rows).also {
+                bitmap.getPixels(it, 0, width, 0, coreEnd - rows, width, rows)
+            }
+        }
+
         coroutineScope {
-            val bandHeight = (height + BAND_COUNT - 1) / BAND_COUNT
-            (0 until BAND_COUNT).map { band ->
+            (0 until workers).map {
                 async {
-                    val top = band * bandHeight
-                    val bottom = minOf(height, top + bandHeight)
-                    val pixels = IntArray(width)
-                    for (y in top until bottom) {
-                        bitmap.getPixels(pixels, 0, width, 0, y, width, 1)
-                        for (x in 0 until width) {
-                            val l = luma(luma, width, height, x, y)
-                            val blur = blur3x3(luma, width, height, x, y)
-                            var detail = l - blur
-                            detail = when {
-                                detail > NOISE_FLOOR -> detail - NOISE_FLOOR
-                                detail < -NOISE_FLOOR -> detail + NOISE_FLOOR
-                                else -> 0
-                            }
-                            // Local contrast mostly in the midtones, never pushing shadows or highlights to clip.
-                            val local = l - coarse.at(x, y)
-                            val mid = l / 255f
-                            val boost = SHARPEN * detail + CLARITY * local * 4f * mid * (1f - mid)
-                            pixels[x] = addBrightness(EnhanceMath.apply(lut, params.vibrance, pixels[x]), boost)
+                    val work = DetailMath.Workspace(capacity)
+                    val out = IntArray(width * BAND_ROWS)
+                    val pixels = IntArray(capacity)
+                    while (true) {
+                        val band = next.getAndIncrement()
+                        if (band >= bands) break
+                        val coreStart = band * BAND_ROWS
+                        val coreEnd = minOf(height, coreStart + BAND_ROWS)
+                        val top = maxOf(0, coreStart - halo)
+                        val bottom = minOf(height, coreEnd + halo)
+                        val rows = bottom - top
+                        bottomEdges.getOrNull(band - 1)?.let { above ->
+                            // The rows just above this band: the end of the previous band's edge.
+                            val count = (coreStart - top) * width
+                            above.copyInto(pixels, 0, above.size - count, above.size)
                         }
-                        bitmap.setPixels(pixels, 0, width, 0, y, width, 1)
+                        synchronized(bitmap) {
+                            bitmap.getPixels(pixels, (coreStart - top) * width, width, 0, coreStart, width, coreEnd - coreStart)
+                        }
+                        topEdges.getOrNull(band + 1)?.let { below ->
+                            val count = (bottom - coreEnd) * width
+                            below.copyInto(pixels, (coreEnd - top) * width, 0, count)
+                        }
+                        DetailMath.processBand(
+                            pixels = pixels,
+                            w = width,
+                            h = rows,
+                            coreTop = coreStart - top,
+                            coreBottom = coreEnd - top,
+                            tuning = tuning,
+                            lut = lut,
+                            vibrance = params.vibrance,
+                            localMean = { x, coreRow -> coarse.at(x, coreStart + coreRow) },
+                            work = work,
+                            out = out,
+                        )
+                        synchronized(bitmap) {
+                            bitmap.setPixels(out, 0, width, 0, coreStart, width, coreEnd - coreStart)
+                        }
                     }
                 }
             }.awaitAll()
         }
+        DiagnosticLog.info(
+            TAG,
+            "Enhanced ${width}x$height in ${SystemClock.elapsedRealtime() - started} ms " +
+                "(noise %.4f, zoom %.1f, sharpen %.2f, workers $workers)".format(tuning.noise, zoom, tuning.sharpen),
+        )
     }
 
-    private fun luma(plane: ByteArray, width: Int, height: Int, x: Int, y: Int): Int =
-        plane[y.coerceIn(0, height - 1) * width + x.coerceIn(0, width - 1)].toInt() and 0xFF
-
-    private fun blur3x3(plane: ByteArray, width: Int, height: Int, x: Int, y: Int): Int {
-        var sum = 0
-        for (dy in -1..1) for (dx in -1..1) sum += luma(plane, width, height, x + dx, y + dy)
-        return sum / 9
-    }
-
-    private fun addBrightness(argb: Int, amount: Float): Int {
-        if (amount == 0f) return argb
-        val delta = amount.toInt()
-        val r = (((argb shr 16) and 0xFF) + delta).coerceIn(0, 255)
-        val g = (((argb shr 8) and 0xFF) + delta).coerceIn(0, 255)
-        val b = ((argb and 0xFF) + delta).coerceIn(0, 255)
-        return (argb and 0xFF000000.toInt()) or (r shl 16) or (g shl 8) or b
-    }
-
-    /** Average brightness of [block]-sized tiles, read back with bilinear interpolation. */
-    private class CoarseLuma(plane: ByteArray, width: Int, height: Int, private val block: Int) {
-        private val cols = (width + block - 1) / block
-        private val rows = (height + block - 1) / block
-        private val values = FloatArray(cols * rows)
-
-        init {
-            val counts = IntArray(cols * rows)
-            for (y in 0 until height) {
-                val tileRow = (y / block) * cols
-                val offset = y * width
-                for (x in 0 until width) {
-                    val i = tileRow + x / block
-                    values[i] += (plane[offset + x].toInt() and 0xFF).toFloat()
-                    counts[i]++
-                }
-            }
-            for (i in values.indices) if (counts[i] > 0) values[i] /= counts[i]
-        }
-
-        fun at(x: Int, y: Int): Float {
-            val fx = ((x + 0.5f) / block - 0.5f).coerceIn(0f, (cols - 1).toFloat())
-            val fy = ((y + 0.5f) / block - 0.5f).coerceIn(0f, (rows - 1).toFloat())
-            val x0 = fx.toInt()
-            val y0 = fy.toInt()
-            val x1 = minOf(x0 + 1, cols - 1)
-            val y1 = minOf(y0 + 1, rows - 1)
-            val tx = fx - x0
-            val ty = fy - y0
-            val top = values[y0 * cols + x0] * (1 - tx) + values[y0 * cols + x1] * tx
-            val bottom = values[y1 * cols + x0] * (1 - tx) + values[y1 * cols + x1] * tx
-            return top * (1 - ty) + bottom * ty
-        }
-    }
+    private const val TAG = "Enhancer"
 }
