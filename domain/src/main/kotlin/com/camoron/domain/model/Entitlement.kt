@@ -21,4 +21,6 @@ enum class Feature {
     BASIC_LOOKS,
     /** Vivid, Cool, Warm and Studio. */
     ALL_LOOKS,
+    /** Scene-adaptive tone, colour and detail enhancement. */
+    AUTO_ENHANCE,
 }

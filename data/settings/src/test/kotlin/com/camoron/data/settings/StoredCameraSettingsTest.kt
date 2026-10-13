@@ -24,6 +24,7 @@ class StoredCameraSettingsTest {
             grid = true,
             night = NightSetting.AUTO,
             look = ShotLook.STUDIO,
+            enhance = false,
         )
         val out = ByteArrayOutputStream()
         StoredCameraSettingsSerializer.writeTo(StoredCameraSettings.from(settings), out)

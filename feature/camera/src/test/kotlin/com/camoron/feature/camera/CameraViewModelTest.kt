@@ -208,7 +208,7 @@ class CameraViewModelTest {
         vm.onDisplayAspect(0.45f)
         vm.onSurfaceReady(Target(1920, 1080))
         vm.onShutter()
-        assertThat(processor.applied.single()).isEqualTo(PhotoAdjustments(cropAspect = 0.45f, mirror = false))
+        assertThat(processor.applied.single()).isEqualTo(PhotoAdjustments(cropAspect = 0.45f, mirror = false, enhance = true))
     }
 
     @Test
@@ -390,6 +390,18 @@ class CameraViewModelTest {
 
         settings.state.update { it.copy(night = NightSetting.OFF) }
         assertThat(controller.openedWithNightExtension.last()).isFalse()
+    }
+
+    @Test
+    fun `enhance is on by default and can be turned off`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.onShutter()
+        assertThat(processor.applied.last().enhance).isTrue()
+
+        vm.toggleEnhance()
+        vm.onShutter()
+        assertThat(processor.applied.last().enhance).isFalse()
     }
 
     @Test

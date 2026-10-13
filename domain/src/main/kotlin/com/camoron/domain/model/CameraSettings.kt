@@ -27,6 +27,8 @@ data class CameraSettings(
     val leveller: Boolean = false,
     val night: NightSetting = NightSetting.OFF,
     val look: ShotLook = ShotLook.NORMAL,
+    /** Scene-adaptive tone, colour and detail, live on the preview and on the photo. */
+    val enhance: Boolean = true,
 )
 
 /** How a saved JPEG should be adjusted so it matches the preview. */
@@ -37,8 +39,10 @@ data class PhotoAdjustments(
     val mirror: Boolean = false,
     /** Colour look, the same one the preview shows. */
     val look: ShotLook = ShotLook.NORMAL,
+    /** Scene-adaptive tone, colour and detail ([EnhanceMath]), plus sharpening the preview can't show. */
+    val enhance: Boolean = false,
 ) {
-    val isIdentity: Boolean get() = cropAspect == null && !mirror && look == ShotLook.NORMAL
+    val isIdentity: Boolean get() = cropAspect == null && !mirror && look == ShotLook.NORMAL && !enhance
 
     companion object {
         val NONE = PhotoAdjustments()

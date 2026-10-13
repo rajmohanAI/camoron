@@ -30,6 +30,7 @@ internal data class StoredCameraSettings(
     val leveller: Boolean? = null,
     val night: String? = null,
     val look: String? = null,
+    val enhance: Boolean? = null,
 ) {
     fun toDomain(): CameraSettings {
         val defaults = CameraSettings()
@@ -44,6 +45,7 @@ internal data class StoredCameraSettings(
             leveller = leveller ?: defaults.leveller,
             night = enumOrNull<NightSetting>(night) ?: defaults.night,
             look = enumOrNull<ShotLook>(look) ?: defaults.look,
+            enhance = enhance ?: defaults.enhance,
         )
     }
 
@@ -59,6 +61,7 @@ internal data class StoredCameraSettings(
             leveller = settings.leveller,
             night = settings.night.name,
             look = settings.look.name,
+            enhance = settings.enhance,
         )
     }
 }
