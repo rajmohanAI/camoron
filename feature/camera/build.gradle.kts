@@ -25,6 +25,11 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // DiagnosticLog writes to android.util.Log, which is a stub in JVM unit tests.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 kotlin {
