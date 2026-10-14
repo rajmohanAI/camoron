@@ -6,6 +6,7 @@ import java.nio.ByteBuffer
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.pow
+import kotlin.math.roundToInt
 
 /** Pure geometry and colour helpers for the Camera2 layer, kept free of Android types for testing. */
 internal object CameraMath {
@@ -112,6 +113,17 @@ internal object CameraMath {
         return matching.ifEmpty { jpegSizes }.maxBy { it.width.toLong() * it.height }
     }
 
+    /**
+     * Size of the frames merged into photos: the largest of [aspect] up to [maxPixels], falling back
+     * to the smallest one of that shape when every size is larger, and to any shape when none matches.
+     */
+    fun chooseFrameSize(sizes: List<PixelSize>, aspect: StillAspect, maxPixels: Long): PixelSize {
+        require(sizes.isNotEmpty()) { "Camera reports no frame sizes" }
+        val matching = sizes.filter { abs(aspectOf(it) - aspect.ratio) < ASPECT_TOLERANCE }.ifEmpty { sizes }
+        val area = { s: PixelSize -> s.width.toLong() * s.height }
+        return matching.filter { area(it) <= maxPixels }.maxByOrNull(area) ?: matching.minBy(area)
+    }
+
     /** 35mm-equivalent focal length: scales by the ratio of a full-frame diagonal (43.27 mm) to the sensor's. */
     fun equivalentFocalLength(focalLengthMm: Float, sensorDiagonalMm: Float): Float =
         if (sensorDiagonalMm <= 0f) focalLengthMm else focalLengthMm * FULL_FRAME_DIAGONAL_MM / sensorDiagonalMm
@@ -194,4 +206,13 @@ internal object CameraMath {
         if (baseFocalMm == null || activeFocalMm == null || baseFocalMm <= 0f || activeFocalMm <= 0f) return ceiling
         return (zoom * baseFocalMm / activeFocalMm).coerceIn(1f, ceiling)
     }
+
+    /**
+     * The longer-lens zoom steps worth a button, from each lens's focal length relative to the main
+     * one: telephotos only (1.8x and up), rounded to the nearest half, without repeats.
+     */
+    fun opticalZoomSteps(ratios: List<Float>): List<Float> =
+        ratios.filter { it >= MIN_TELE_RATIO }.map { (it * 2).roundToInt() / 2f }.distinct().sorted()
+
+    private const val MIN_TELE_RATIO = 1.8f
 }

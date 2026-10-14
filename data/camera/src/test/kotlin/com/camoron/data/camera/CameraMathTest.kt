@@ -159,4 +159,17 @@ class CameraMathTest {
         assertThat(CameraMath.digitalZoom(2f, null, null)).isEqualTo(2f)
         assertThat(CameraMath.digitalZoom(0.6f, 6f, 2f)).isEqualTo(1f)
     }
+
+    @Test
+    fun `merged frames stay near 12 MP on 50 and 200 MP sensors`() {
+        val sizes = listOf(PixelSize(8160, 6120), PixelSize(4080, 3060), PixelSize(4000, 2250), PixelSize(1920, 1440))
+        assertThat(CameraMath.chooseFrameSize(sizes, StillAspect.FOUR_THREE, 13_000_000L)).isEqualTo(PixelSize(4080, 3060))
+        assertThat(CameraMath.chooseFrameSize(listOf(PixelSize(8160, 6120)), StillAspect.FOUR_THREE, 13_000_000L))
+            .isEqualTo(PixelSize(8160, 6120))
+    }
+
+    @Test
+    fun `optical zoom steps keep telephotos only, rounded to halves`() {
+        assertThat(CameraMath.opticalZoomSteps(listOf(0.5f, 1f, 2.9f, 3.1f, 4.8f))).containsExactly(3f, 5f).inOrder()
+    }
 }
