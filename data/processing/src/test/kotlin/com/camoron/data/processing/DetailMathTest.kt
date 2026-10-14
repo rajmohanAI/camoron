@@ -127,4 +127,10 @@ class DetailMathTest {
     }
 
     private fun grey(v: Int) = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+
+    @Test
+    fun `clean photos skip the smoothing`() {
+        assertThat(DetailTuning(noise = 0.5f / 255).denoise).isFalse()
+        assertThat(DetailTuning(noise = 4f / 255).denoise).isTrue()
+    }
 }

@@ -6,9 +6,9 @@ import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
 import android.os.Build
+import android.os.Process
 import android.os.SystemClock
 import androidx.exifinterface.media.ExifInterface
-import com.camoron.core.common.DefaultDispatcher
 import com.camoron.core.common.DiagnosticLog
 import com.camoron.core.common.timed
 import com.camoron.domain.model.CapturedImage
@@ -21,6 +21,7 @@ import com.camoron.domain.repository.PhotoProcessor
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -28,6 +29,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 import javax.inject.Inject
 
 /**
@@ -38,8 +40,9 @@ import javax.inject.Inject
  */
 class BitmapPhotoProcessor @Inject constructor(
     @ApplicationContext private val context: Context,
-    @DefaultDispatcher private val processing: CoroutineDispatcher,
 ) : PhotoProcessor {
+
+    private val processing: CoroutineDispatcher get() = pool
 
     override suspend fun apply(image: CapturedImage, adjustments: PhotoAdjustments): CapturedImage {
         if (image.format != ImageFormat.JPEG || adjustments.isIdentity) return image
@@ -91,49 +94,58 @@ class BitmapPhotoProcessor @Inject constructor(
 
     override suspend fun render(burst: FrameBurst, adjustments: PhotoAdjustments): CapturedImage = withContext(processing) {
         val started = SystemClock.elapsedRealtime()
+        val first = burst.frames.first()
+        // Crop before merging: pixels outside the photo's shape would be merged only to be thrown away.
+        val crop = adjustments.cropAspect?.let { PhotoMath.centreCrop(first.width, first.height, 1f / it) }
+            ?: CropRect(0, 0, first.width, first.height)
+        // With digital zoom the camera enlarged a small part of the sensor. Work at that part's real
+        // size, where the noise is fine-grained and easy to clean, and enlarge once at the end.
+        val shrink = shrinkFor(burst.info.digitalZoom)
+        val frames = burst.frames.map { it.crop(crop.left, crop.top, crop.width, crop.height).shrink(shrink) }
         val merged = try {
-            BurstMerger.merge(burst.frames, processing)
+            BurstMerger.merge(frames, processing)
         } catch (e: OutOfMemoryError) {
             // Keep the photo: one frame is still a photo, just a noisier one.
-            DiagnosticLog.record(TAG, "Not enough memory to merge ${burst.frames.size} frames; using one", e)
-            BurstMerger.Result(burst.frames.first(), 0f, 1, 0)
+            DiagnosticLog.record(TAG, "Not enough memory to merge ${frames.size} frames; using one", e)
+            BurstMerger.Result(frames.first(), 0f, 1, 0)
         }
         val frame = merged.frame
         DiagnosticLog.info(
             TAG,
-            "Merged ${merged.framesUsed} of ${burst.frames.size} frames (${frame.width}x${frame.height}, " +
+            "Merged ${merged.framesUsed} of ${frames.size} frames (${frame.width}x${frame.height}, shrunk ${shrink}x, " +
                 "reference ${merged.reference}, noise %.1f) in ${SystemClock.elapsedRealtime() - started} ms".format(merged.noise),
         )
 
-        val crop = adjustments.cropAspect?.let { PhotoMath.centreCrop(frame.width, frame.height, 1f / it) }
-            ?: CropRect(0, 0, frame.width, frame.height)
         val look = LookMatrix.forLook(adjustments.look).takeUnless(LookMatrix::isIdentity)
-        val bitmap = Bitmap.createBitmap(crop.width, crop.height, Bitmap.Config.ARGB_8888)
+        // The photo keeps the full resolution of the crop; the sharpening knows how much is left to enlarge.
+        val output = PixelSize(crop.width, crop.height).takeIf { shrink > 1 }
+        val residualZoom = (burst.info.digitalZoom / shrink).coerceAtLeast(1f)
+        val bitmap = Bitmap.createBitmap(frame.width, frame.height, Bitmap.Config.ARGB_8888)
         val bytes = try {
-            val rows = IntArray(crop.width * CONVERT_ROWS)
+            val rows = IntArray(frame.width * CONVERT_ROWS)
             var top = 0
-            while (top < crop.height) {
-                val count = minOf(CONVERT_ROWS, crop.height - top)
-                YuvMath.toArgb(frame, crop.left, crop.top + top, crop.width, count, rows)
-                bitmap.setPixels(rows, 0, crop.width, 0, top, crop.width, count)
+            while (top < frame.height) {
+                val count = minOf(CONVERT_ROWS, frame.height - top)
+                YuvMath.toArgb(frame, 0, top, frame.width, count, rows)
+                bitmap.setPixels(rows, 0, frame.width, 0, top, frame.width, count)
                 top += count
             }
             try {
-                finishPixels(bitmap, look, adjustments.enhance, adjustments.zoom)
+                finishPixels(bitmap, look, adjustments.enhance, residualZoom, output)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 DiagnosticLog.record(TAG, "Couldn't enhance the merged photo; saving it without", e)
-                finishPixels(bitmap, null, enhance = false, zoom = 1f)
+                finishPixels(bitmap, null, enhance = false, zoom = 1f, output = output)
             } catch (e: OutOfMemoryError) {
                 DiagnosticLog.record(TAG, "Not enough memory to enhance the merged photo; saving it without", e)
-                finishPixels(bitmap, null, enhance = false, zoom = 1f)
+                finishPixels(bitmap, null, enhance = false, zoom = 1f, output = null)
             }
         } finally {
             bitmap.recycle()
         }
 
-        val size = PixelSize(crop.width, crop.height)
+        val size = decodeBounds(bytes)
         val orientation = PhotoMath.orientationTag(burst.orientationDegrees)
             .let { if (adjustments.mirror) PhotoMath.mirroredOrientation(it) else it }
         val withExif = writeShotExif(bytes, burst, orientation, size)
@@ -196,11 +208,25 @@ class BitmapPhotoProcessor @Inject constructor(
     }
 
     /** Enhancement, colour look and JPEG encoding, shared by single photos and merged bursts. */
-    private suspend fun finishPixels(bitmap: Bitmap, look: FloatArray?, enhance: Boolean, zoom: Float): ByteArray {
+    private suspend fun finishPixels(
+        bitmap: Bitmap,
+        look: FloatArray?,
+        enhance: Boolean,
+        zoom: Float,
+        output: PixelSize? = null,
+    ): ByteArray {
         if (enhance) Enhancer.enhance(bitmap, zoom)
         if (look != null) applyLook(bitmap, look)
-        return DiagnosticLog.timed(TAG, "Encoding ${bitmap.width}x${bitmap.height}") {
-            ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }.toByteArray()
+        // Enlarge last, after cleaning and sharpening at the real resolution.
+        val final = output?.takeIf { it.width > bitmap.width }
+            ?.let { Bitmap.createScaledBitmap(bitmap, it.width, it.height, true) }
+            ?: bitmap
+        try {
+            return DiagnosticLog.timed(TAG, "Encoding ${final.width}x${final.height}") {
+                ByteArrayOutputStream().also { final.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }.toByteArray()
+            }
+        } finally {
+            if (final !== bitmap) final.recycle()
         }
     }
 
@@ -282,6 +308,25 @@ class BitmapPhotoProcessor @Inject constructor(
     private companion object {
         const val TAG = "PhotoProcessor"
         const val CONVERT_ROWS = 64
+        const val POOL_THREADS = 4
+
+        /**
+         * Photo processing runs on its own threads at a lower priority than the screen and the
+         * camera, so the preview and buttons stay responsive while a photo is being finished.
+         */
+        val pool: CoroutineDispatcher by lazy {
+            Executors.newFixedThreadPool(POOL_THREADS) { task ->
+                Thread({
+                    Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND + Process.THREAD_PRIORITY_MORE_FAVORABLE)
+                    task.run()
+                }, "CamoronPhoto").apply { isDaemon = true }
+            }.asCoroutineDispatcher()
+        }
+
+        /** Whole-pixel shrink that undoes most of a [digitalZoom] enlargement; 1 for none. */
+        fun shrinkFor(digitalZoom: Float): Int = if (digitalZoom < MIN_SHRINK_ZOOM) 1 else (digitalZoom + 0.25f).toInt()
+
+        const val MIN_SHRINK_ZOOM = 1.75f
 
         val COPIED_TAGS = listOf(
             ExifInterface.TAG_DATETIME,

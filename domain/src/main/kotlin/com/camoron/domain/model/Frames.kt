@@ -48,6 +48,75 @@ class YuvFrame(
         }
         return Thumbnail(w, h, pixels)
     }
+
+    /**
+     * The part of the frame from ([left], [top]), [cropWidth] x [cropHeight]. Edges are rounded down to
+     * even pixels so the half-resolution colour stays lined up with the brightness.
+     */
+    fun crop(left: Int, top: Int, cropWidth: Int, cropHeight: Int): YuvFrame {
+        val x0 = (left and 1.inv()).coerceIn(0, width)
+        val y0 = (top and 1.inv()).coerceIn(0, height)
+        val w = (minOf(cropWidth, width - x0) and 1.inv()).coerceAtLeast(2)
+        val h = (minOf(cropHeight, height - y0) and 1.inv()).coerceAtLeast(2)
+        if (x0 == 0 && y0 == 0 && w == width && h == height) return this
+        val outY = ByteArray(w * h)
+        for (row in 0 until h) System.arraycopy(y, (y0 + row) * width + x0, outY, row * w, w)
+        val cw = w / 2
+        val ch = h / 2
+        val outU = ByteArray(cw * ch)
+        val outV = ByteArray(cw * ch)
+        for (row in 0 until ch) {
+            val from = (y0 / 2 + row) * chromaWidth + x0 / 2
+            System.arraycopy(u, from, outU, row * cw, cw)
+            System.arraycopy(v, from, outV, row * cw, cw)
+        }
+        return YuvFrame(w, h, outY, outU, outV)
+    }
+
+    /**
+     * The frame [factor] times smaller in each direction, each pixel the average of the block it
+     * covers. For a frame the camera enlarged with digital zoom this keeps all the real detail while
+     * turning the enlarged, blotchy noise back into fine noise that merging and cleaning can remove.
+     */
+    fun shrink(factor: Int): YuvFrame {
+        if (factor <= 1) return this
+        val w = (width / factor) and 1.inv()
+        val h = (height / factor) and 1.inv()
+        require(w >= 2 && h >= 2) { "Frame too small to shrink ${factor}x" }
+        val outY = ByteArray(w * h)
+        val area = factor * factor
+        for (oy in 0 until h) {
+            for (ox in 0 until w) {
+                var sum = 0
+                for (dy in 0 until factor) {
+                    val row = (oy * factor + dy) * width + ox * factor
+                    for (dx in 0 until factor) sum += y[row + dx].toInt() and 0xFF
+                }
+                outY[oy * w + ox] = ((sum + area / 2) / area).toByte()
+            }
+        }
+        val cw = w / 2
+        val ch = h / 2
+        val outU = ByteArray(cw * ch)
+        val outV = ByteArray(cw * ch)
+        for (oy in 0 until ch) {
+            for (ox in 0 until cw) {
+                var su = 0
+                var sv = 0
+                for (dy in 0 until factor) {
+                    val row = (oy * factor + dy).coerceAtMost(chromaHeight - 1) * chromaWidth
+                    for (dx in 0 until factor) {
+                        val i = row + (ox * factor + dx).coerceAtMost(chromaWidth - 1)
+                        su += u[i].toInt() and 0xFF
+                        sv += v[i].toInt() and 0xFF
+                    }
+                }
+                outU[oy * cw + ox] = ((su + area / 2) / area).toByte()
+                outV[oy * cw + ox] = ((sv + area / 2) / area).toByte()
+            }
+        }
+        return YuvFrame(w, h, outY, outU, outV)
+    }
 }
 
 /** Small ARGB image, row by row. */
@@ -61,6 +130,11 @@ data class ShotInfo(
     val focalLengthMm: Float? = null,
     val focalLength35mm: Int? = null,
     val flashFired: Boolean = false,
+    /**
+     * How much of the zoom the camera made up by enlarging the picture rather than with a longer
+     * lens: 1 when the lens covers it optically, 3 for 3x on a phone without a telephoto lens.
+     */
+    val digitalZoom: Float = 1f,
 )
 
 /**
