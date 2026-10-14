@@ -44,4 +44,21 @@ class PlanZoomPresetsTest {
         val similar = fullCamera(id = "3").copy(equivalentFocalLengthMm = 24f)
         assertThat(plan(main, listOf(main, similar)).map { it.label }).containsExactly(1f)
     }
+
+    @Test
+    fun `flagship with telephoto and periscope gets a button for each, plus 10x`() {
+        val main = fullCamera().copy(zoomRatioRange = 0.6f..100f, equivalentFocalLengthMm = 23f, opticalZoomRatios = listOf(3f, 5f))
+        assertThat(plan(main, listOf(main)).map { it.label }).containsExactly(0.6f, 1f, 2f, 3f, 5f, 10f).inOrder()
+    }
+
+    @Test
+    fun `a telephoto exposed as its own camera is reached by switching to it`() {
+        val main = fullCamera(id = "0").copy(zoomRatioRange = 1f..8f, equivalentFocalLengthMm = 24f)
+        val tele = fullCamera(id = "2").copy(equivalentFocalLengthMm = 73f)
+        assertThat(plan(main, listOf(main, tele))).containsExactly(
+            ZoomPreset(1f, "0", 1f),
+            ZoomPreset(2f, "0", 2f),
+            ZoomPreset(3f, "2", 1f),
+        ).inOrder()
+    }
 }

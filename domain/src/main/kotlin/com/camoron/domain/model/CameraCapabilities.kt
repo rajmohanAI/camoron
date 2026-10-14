@@ -46,6 +46,11 @@ data class CameraCapabilities(
     /** 35mm-equivalent focal length of the primary lens, used to classify wide/ultra-wide/tele. */
     val equivalentFocalLengthMm: Float? = null,
     val physicalCameraCount: Int = 1,
+    /**
+     * Zoom ratios this (logical) camera reaches through a longer lens of its own, e.g. 3 and 5 on a
+     * phone with a telephoto and a periscope. Empty when it has none or the phone doesn't say.
+     */
+    val opticalZoomRatios: List<Float> = emptyList(),
     /** Upper bounds of the AE target fps ranges, e.g. 24, 30, 60. */
     val videoFrameRates: Set<Int> = emptySet(),
     val supportsHighSpeedVideo: Boolean = false,

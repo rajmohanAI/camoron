@@ -3,6 +3,7 @@ package com.camoron.domain.usecase
 import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.ZoomPreset
 import javax.inject.Inject
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -12,8 +13,11 @@ import kotlin.math.roundToInt
  * * **Ultra-wide**: the main camera's zoom ratio goes below 1 (Android 11+ multi-camera), or a
  *   separate camera on the same side has a clearly wider lens.
  * * **1×** is always there.
- * * **2× and 3×**: the main camera can zoom that far (optical through its tele lens on
- *   multi-camera phones, otherwise digital).
+ * * **Telephoto and periscope lenses**: one button each at their own reach (3×, 5×, ...), whether
+ *   the phone exposes them through the main camera's zoom or as separate cameras. A periscope of
+ *   5× or more also gets a 10× button, as flagship cameras offer.
+ * * **2×** whenever the main camera can zoom that far: a sharp crop on today's large sensors.
+ * * **3×** as a digital step only on phones without any longer lens.
  */
 class PlanZoomPresets @Inject constructor() {
 
@@ -22,8 +26,30 @@ class PlanZoomPresets @Inject constructor() {
         ultraWide(main, sameSide)?.let(presets::add)
         presets += ZoomPreset(1f, main.cameraId, 1f)
         val maxZoom = main.zoomRange.endInclusive
-        TELE_STEPS.filter { it <= maxZoom + EPSILON }.forEach { presets += ZoomPreset(it, main.cameraId, it) }
-        return presets
+        val reachable = { ratio: Float -> ratio <= maxZoom + EPSILON }
+
+        val tele = mutableListOf<ZoomPreset>()
+        main.opticalZoomRatios.filter(reachable).forEach { tele += ZoomPreset(it, main.cameraId, it) }
+        separateTele(main, sameSide).forEach { (camera, ratio) ->
+            if (tele.none { abs(it.label - ratio) < SAME_STEP }) tele += ZoomPreset(ratio, camera.cameraId, 1f)
+        }
+        val longest = tele.maxOfOrNull { it.label }
+        if (longest != null && longest >= PERISCOPE && reachable(HYBRID_STEP) && longest < HYBRID_STEP - SAME_STEP) {
+            tele += ZoomPreset(HYBRID_STEP, main.cameraId, HYBRID_STEP)
+        }
+        if (reachable(2f) && tele.none { abs(it.label - 2f) < SAME_STEP }) tele += ZoomPreset(2f, main.cameraId, 2f)
+        if (longest == null && reachable(3f)) tele += ZoomPreset(3f, main.cameraId, 3f)
+        return presets + tele.sortedBy { it.label }
+    }
+
+    /** Cameras on the same side whose lens is clearly longer than the main one, with their reach. */
+    private fun separateTele(main: CameraCapabilities, sameSide: List<CameraCapabilities>): List<Pair<CameraCapabilities, Float>> {
+        val mainFocal = main.equivalentFocalLengthMm ?: return emptyList()
+        return sameSide
+            .filter { it.cameraId != main.cameraId }
+            .mapNotNull { other -> other.equivalentFocalLengthMm?.let { other to (it / mainFocal * 2).roundToInt() / 2f } }
+            .filter { (_, ratio) -> ratio >= TELE_MIN_RATIO }
+            .distinctBy { (_, ratio) -> ratio }
     }
 
     private fun ultraWide(main: CameraCapabilities, sameSide: List<CameraCapabilities>): ZoomPreset? {
@@ -45,8 +71,11 @@ class PlanZoomPresets @Inject constructor() {
     private fun roundLabel(ratio: Float): Float = (ratio * 10).roundToInt() / 10f
 
     private companion object {
-        val TELE_STEPS = listOf(2f, 3f)
         const val ULTRA_WIDE_MAX_RATIO = 0.8f
+        const val TELE_MIN_RATIO = 1.8f
+        const val PERISCOPE = 5f
+        const val HYBRID_STEP = 10f
+        const val SAME_STEP = 0.3f
         const val EPSILON = 0.01f
     }
 }

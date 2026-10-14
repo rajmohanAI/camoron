@@ -120,7 +120,22 @@ class Camera2Controller @Inject constructor(
         characteristicsCache.getOrPut(cameraId) { manager.getCameraCharacteristics(cameraId) }
 
     private fun capabilitiesOf(cameraId: String): CameraCapabilities =
-        capabilitiesCache.getOrPut(cameraId) { mapper.map(cameraId, characteristicsOf(cameraId)) }
+        capabilitiesCache.getOrPut(cameraId) { withOpticalZoom(mapper.map(cameraId, characteristicsOf(cameraId)), cameraId) }
+
+    /** Adds the zoom ratios a multi-lens camera covers with its own longer lenses (Android 9+). */
+    private fun withOpticalZoom(caps: CameraCapabilities, cameraId: String): CameraCapabilities {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return caps
+        val main = caps.equivalentFocalLengthMm ?: return caps
+        val ratios = characteristicsOf(cameraId).physicalCameraIds.mapNotNull { id ->
+            runCatching {
+                val physical = characteristicsOf(id)
+                val focal = physical.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.minOrNull()
+                val size = physical.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+                if (focal == null || size == null) null else CameraMath.equivalentFocalLength(focal, kotlin.math.hypot(size.width, size.height)) / main
+            }.getOrNull()
+        }
+        return caps.copy(opticalZoomRatios = CameraMath.opticalZoomSteps(ratios))
+    }
     private val thread = HandlerThread("CamoronCamera").apply { start() }
     private val handler = Handler(thread.looper)
 
@@ -285,7 +300,7 @@ class Camera2Controller @Inject constructor(
     // Camera queries can take hundreds of milliseconds on some phones, so keep them off the UI thread.
     override suspend fun cameras(): List<CameraCapabilities> = withContext(processing) {
         manager.cameraIdList.mapNotNull { id ->
-            runCatching { withVideoEncoderLimits(mapper.map(id, manager.getCameraCharacteristics(id))).copy(extensions = extensionsFor(id)) }
+            runCatching { withVideoEncoderLimits(capabilitiesOf(id)).copy(extensions = extensionsFor(id)) }
                 .onFailure { Log.w(TAG, "Skipping camera $id", it) }
                 .getOrNull()
         }
@@ -755,8 +770,11 @@ class Camera2Controller @Inject constructor(
                 streams?.getOutputSizes(AndroidImageFormat.YUV_420_888)
                     ?.map { PixelSize(it.width, it.height) }
                     ?.takeIf { it.isNotEmpty() }
-                    ?.let { CameraMath.chooseStillSize(it, effectiveAspect(caps, aspect)) }
-                    ?.takeIf { it.width.toLong() * it.height >= jpegSize.width.toLong() * jpegSize.height * MIN_FRAME_AREA }
+                    ?.let { CameraMath.chooseFrameSize(it, effectiveAspect(caps, aspect), MAX_FRAME_PIXELS) }
+                    ?.takeIf {
+                        it.width.toLong() * it.height >=
+                            minOf(jpegSize.width.toLong() * jpegSize.height, MAX_FRAME_PIXELS) * MIN_FRAME_AREA
+                    }
             } else {
                 null
             }
@@ -1659,7 +1677,14 @@ class Camera2Controller @Inject constructor(
         /** Buffers for burst frames: one being copied out while the camera fills the others. */
         const val FRAME_IMAGES = 3
 
-        /** Merged frames are used only if they keep at least this share of the JPEG's pixels. */
+        /**
+         * Largest frame merged into a photo, about 12.5 MP. 50 to 200 MP sensors give their best
+         * low-light quality binned to this size, as their own camera apps do by default, and full-size
+         * frames would not fit in memory or process in time.
+         */
+        const val MAX_FRAME_PIXELS = 13_000_000L
+
+        /** Merged frames are used only if they keep at least this share of the JPEG's (capped) pixels. */
         const val MIN_FRAME_AREA = 0.6
         const val JPEG_QUALITY: Byte = 95
         const val FOCUS_REGION_FRACTION = 0.15f
