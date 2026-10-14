@@ -9,6 +9,17 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Size
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.camoron.feature.camera.Glass.glass
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -49,7 +60,6 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.TimerOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -102,11 +112,13 @@ internal fun TopMenu(
     modifier: Modifier = Modifier,
 ) {
     val settings = state.cameraSettings
+    // A floating glass bar over the preview, not a black band across it.
     Row(
         modifier
             .fillMaxWidth()
             .height(TOP_BAR_HEIGHT)
-            .background(Color.Black.copy(alpha = 0.35f)),
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .glass(RoundedCornerShape(22.dp)),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -206,16 +218,24 @@ private fun TopMenuButton(
     onClick: () -> Unit,
     tint: Color = Color.White,
 ) {
+    val haptics = rememberHaptics()
+    val colour by animateColorAsState(tint, label = "menu tint")
     Column(
         Modifier
-            .clip(CircleShape)
-            .clickable(role = Role.Button, onClickLabel = description, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 4.dp),
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(role = Role.Button, onClickLabel = description) {
+                haptics.tick()
+                onClick()
+            }
+            .padding(horizontal = 10.dp, vertical = 2.dp)
+            .upright(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // The label is read with the description, e.g. "Flash, Auto".
-        Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(24.dp))
-        if (label != null) Text(label, color = Color.White, fontSize = 11.sp)
+        Icon(icon, contentDescription = description, tint = colour, modifier = Modifier.size(22.dp))
+        if (label != null) {
+            Text(label, color = if (tint == Color.White) Color.White.copy(alpha = 0.8f) else colour, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+        }
     }
 }
 
@@ -234,69 +254,101 @@ internal fun LensRow(
 ) {
     val presets = state.zoomPresets.takeIf { it.size > 1 }.orEmpty()
     val active = state.activePreset
+    val haptics = rememberHaptics()
     var looksOpen by rememberSaveable { mutableStateOf(false) }
-    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (looksOpen) LookPicker(state.cameraSettings.look, onLook)
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        AnimatedVisibility(
+            visible = looksOpen,
+            enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
+            exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom),
+        ) {
+            LookPicker(state.cameraSettings.look) {
+                haptics.tick()
+                onLook(it)
+            }
+        }
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val looksDescription = stringResource(R.string.cd_looks)
-            Box(
-                Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .clickable(role = Role.Button, onClickLabel = looksDescription) { looksOpen = !looksOpen },
-                contentAlignment = Alignment.Center,
+            GlassIconButton(
+                icon = Icons.Filled.Palette,
+                description = stringResource(R.string.cd_looks),
+                active = looksOpen || state.cameraSettings.look != ShotLook.NORMAL,
+                role = Role.Button,
             ) {
-                Icon(
-                    Icons.Filled.Palette,
-                    contentDescription = looksDescription,
-                    tint = if (looksOpen || state.cameraSettings.look != ShotLook.NORMAL) MODE_SELECTED else Color.White,
-                    modifier = Modifier.size(20.dp),
-                )
+                haptics.tick()
+                looksOpen = !looksOpen
             }
             if (state.macroAvailable) {
-                val description = stringResource(R.string.cd_macro)
-                Box(
-                    Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.5f))
-                        .clickable(role = Role.Switch, onClickLabel = description, onClick = onMacro),
-                    contentAlignment = Alignment.Center,
+                GlassIconButton(
+                    icon = Icons.Filled.LocalFlorist,
+                    description = stringResource(R.string.cd_macro),
+                    active = state.macro,
+                    role = Role.Switch,
                 ) {
-                    Icon(
-                        Icons.Filled.LocalFlorist,
-                        contentDescription = description,
-                        tint = if (state.macro) MODE_SELECTED else Color.White,
-                        modifier = Modifier.size(20.dp),
-                    )
+                    haptics.tick()
+                    onMacro()
                 }
             }
-            presets.forEach { preset ->
-                val isActive = preset == active && !state.macro
-                val text = if (isActive) formatZoom(state.displayZoom) + "×" else formatZoom(preset.label)
-                val description = stringResource(R.string.cd_zoom, formatZoom(preset.label))
-                Box(
-                    Modifier
-                        .size(if (isActive) 44.dp else 36.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.5f))
-                        .clickable(role = Role.Button, onClickLabel = description) { onPreset(preset) },
-                    contentAlignment = Alignment.Center,
+            // All zoom steps share one glass capsule, like a lens dial.
+            if (presets.isNotEmpty()) {
+                Row(
+                    Modifier.glass().padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text,
-                        color = if (isActive) MODE_SELECTED else Color.White,
-                        fontSize = if (isActive) 13.sp else 12.sp,
-                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
-                    )
+                    presets.forEach { preset ->
+                        val isActive = preset == active && !state.macro
+                        ZoomChip(
+                            text = if (isActive) formatZoom(state.displayZoom) + "×" else formatZoom(preset.label),
+                            description = stringResource(R.string.cd_zoom, formatZoom(preset.label)),
+                            active = isActive,
+                        ) {
+                            haptics.tick()
+                            onPreset(preset)
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun GlassIconButton(icon: ImageVector, description: String, active: Boolean, role: Role, onClick: () -> Unit) {
+    val tint by animateColorAsState(if (active) Glass.Accent else Color.White, label = "icon tint")
+    Box(
+        Modifier
+            .size(42.dp)
+            .glass()
+            .clickable(role = role, onClickLabel = description, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(20.dp).upright())
+    }
+}
+
+@Composable
+private fun ZoomChip(text: String, description: String, active: Boolean, onClick: () -> Unit) {
+    val size by animateDpAsState(if (active) 42.dp else 34.dp, spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "zoom size")
+    val fill by animateColorAsState(if (active) Color.White.copy(alpha = 0.16f) else Color.Transparent, label = "zoom fill")
+    Box(
+        Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(fill)
+            .clickable(role = Role.Button, onClickLabel = description, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            color = if (active) Glass.Accent else Color.White,
+            fontSize = if (active) 13.sp else 12.sp,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+            modifier = Modifier.upright(),
+        )
     }
 }
 
@@ -315,10 +367,9 @@ private fun LookPicker(selected: ShotLook, onSelect: (ShotLook) -> Unit) {
                 fontSize = 13.sp,
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                 modifier = Modifier
-                    .clip(CircleShape)
-                    .background(if (isSelected) MODE_SELECTED else Color.Black.copy(alpha = 0.5f))
+                    .then(if (isSelected) Modifier.clip(CircleShape).background(Glass.Accent) else Modifier.glass())
                     .clickable(role = Role.RadioButton) { onSelect(look) }
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                    .padding(horizontal = 14.dp, vertical = 7.dp),
             )
         }
     }
@@ -337,8 +388,7 @@ private fun lookLabel(look: ShotLook): Int = when (look) {
 internal fun NightBadge(modifier: Modifier = Modifier) {
     Row(
         modifier
-            .clip(CircleShape)
-            .background(Color.Black.copy(alpha = 0.55f))
+            .glass()
             .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -358,8 +408,7 @@ internal fun formatZoom(value: Float): String {
 internal fun MacroBadge(modifier: Modifier = Modifier) {
     Row(
         modifier
-            .clip(CircleShape)
-            .background(Color.Black.copy(alpha = 0.55f))
+            .glass()
             .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -373,6 +422,7 @@ internal fun MacroBadge(modifier: Modifier = Modifier) {
 @Composable
 internal fun ModeCarousel(selected: CaptureMode, onSelect: (CaptureMode) -> Unit) {
     val listState = rememberLazyListState()
+    val haptics = rememberHaptics()
     val index = CaptureMode.entries.indexOf(selected)
     // Keep the selected mode in the middle, like the phone's own camera, so modes at either end
     // (Pro, Timelapse) are always reachable and visible once chosen.
@@ -392,16 +442,33 @@ internal fun ModeCarousel(selected: CaptureMode, onSelect: (CaptureMode) -> Unit
         ) {
             items(CaptureMode.entries, key = { it.name }) { mode ->
                 val isSelected = mode == selected
-                Text(
-                    text = stringResource(modeLabel(mode)),
-                    color = if (isSelected) MODE_SELECTED else Color.White,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable(role = Role.Tab) { onSelect(mode) }
-                        .padding(horizontal = 14.dp, vertical = 6.dp),
-                )
+                val colour by animateColorAsState(if (isSelected) Glass.Accent else Color.White.copy(alpha = 0.75f), label = "mode colour")
+                Column(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(role = Role.Tab) {
+                            if (!isSelected) haptics.tick()
+                            onSelect(mode)
+                        }
+                        .padding(horizontal = 14.dp, vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = stringResource(modeLabel(mode)).uppercase(Locale.getDefault()),
+                        color = colour,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        fontSize = 12.sp,
+                        letterSpacing = 1.2.sp,
+                    )
+                    // A small accent dot marks the current mode.
+                    Box(
+                        Modifier
+                            .padding(top = 4.dp)
+                            .size(4.dp)
+                            .clip(CircleShape)
+                            .background(if (isSelected) Glass.Accent else Color.Transparent),
+                    )
+                }
             }
         }
     }
@@ -432,8 +499,7 @@ internal fun RecordingBadge(state: CameraUiState, modifier: Modifier = Modifier)
     }
     Row(
         modifier
-            .clip(CircleShape)
-            .background(Color.Black.copy(alpha = 0.55f))
+            .glass()
             .padding(horizontal = 12.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -456,8 +522,8 @@ internal fun GalleryThumbnail(uri: String?, saving: Boolean = false, instant: Im
         Modifier
             .size(52.dp)
             .clip(CircleShape)
-            .border(2.dp, Color.White, CircleShape)
-            .background(Color.DarkGray)
+            .border(2.dp, Color.White.copy(alpha = 0.85f), CircleShape)
+            .background(Color.White.copy(alpha = 0.08f))
             // While the newest photo is still saving, wait for it rather than open the previous one.
             .clickable(enabled = uri != null && !saving, onClickLabel = description) { uri?.let { openInGallery(context, it) } },
     ) {
@@ -512,5 +578,5 @@ private fun openInGallery(context: Context, uri: String) {
 }
 
 private const val THUMBNAIL_PX = 160
-private val MODE_SELECTED = Color(0xFFFFD54F)
-internal val RECORDING_RED = Color(0xFFE53935)
+private val MODE_SELECTED = Glass.Accent
+internal val RECORDING_RED = Glass.Recording

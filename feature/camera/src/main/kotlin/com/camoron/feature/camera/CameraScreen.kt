@@ -16,6 +16,30 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.Dp
+import com.camoron.feature.camera.Glass.glass
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -41,9 +65,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -100,7 +122,13 @@ fun CameraScreen(
     val focusTarget by viewModel.focusTarget.collectAsStateWithLifecycle()
     val enhance = viewModel.enhanceParams.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    TrackDeviceRotation(viewModel::onDeviceRotation)
+    var quarterTurns by remember { mutableIntStateOf(0) }
+    TrackDeviceRotation { degrees ->
+        viewModel.onDeviceRotation(degrees)
+        // Only whole quarter turns change the UI, so the sensor doesn't recompose the screen.
+        val quarter = ((degrees + 45) / 90) % 4
+        if (quarter != quarterTurns) quarterTurns = quarter
+    }
     TrackForeground(viewModel::onForegroundChanged)
     HideStatusBar()
     ShutterSounds(viewModel)
@@ -121,82 +149,100 @@ fun CameraScreen(
         viewModel.eventConsumed()
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .onSizeChanged { if (it.height > 0) viewModel.onDisplayAspect(it.width.toFloat() / it.height) },
-    ) {
-        val aspect = state.cameraSettings.aspectRatio
-        // Full screen really is the whole screen, under the (hidden) status bar and the camera cutout.
-        // Video is always 16:9, so its preview shows exactly the frame being recorded.
-        val previewArea = when {
-            state.mode.isVideo || aspect == AspectRatioSetting.RATIO_9_16 ->
-                Modifier.safeDrawingPadding().padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(9f / 16)
-            aspect == AspectRatioSetting.FULL_SCREEN -> Modifier.fillMaxSize()
-            else -> Modifier.safeDrawingPadding().padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(3f / 4)
-        }
-        PreviewArea(
-            state = state,
-            enhance = { enhance.value },
-            focusTarget = focusTarget,
-            onSurfaceReady = viewModel::onSurfaceReady,
-            onSurfaceDestroyed = viewModel::onSurfaceDestroyed,
-            onTap = viewModel::focusAt,
-            onPinch = viewModel::onPinch,
-            modifier = Modifier.align(Alignment.TopCenter).then(previewArea),
-        )
-
-        Box(Modifier.fillMaxSize().safeDrawingPadding()) {
-            (state.cameraState as? CameraState.Error)?.let {
-                ErrorMessage(it.error, onRetry = viewModel::retryCamera, modifier = Modifier.align(Alignment.Center))
+    ProvideIconRotation(quarterTurns * 90) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .onSizeChanged { if (it.height > 0) viewModel.onDisplayAspect(it.width.toFloat() / it.height) },
+        ) {
+            val aspect = state.cameraSettings.aspectRatio
+            // Full screen really is the whole screen, under the (hidden) status bar and the camera cutout.
+            // Video is always 16:9, so its preview shows exactly the frame being recorded.
+            val previewArea = when {
+                state.mode.isVideo || aspect == AspectRatioSetting.RATIO_9_16 ->
+                    Modifier.safeDrawingPadding().padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(9f / 16)
+                aspect == AspectRatioSetting.FULL_SCREEN -> Modifier.fillMaxSize()
+                else -> Modifier.safeDrawingPadding().padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(3f / 4)
             }
-
-            TopMenu(
+            PreviewArea(
                 state = state,
-                onFlash = viewModel::cycleFlash,
-                onTimer = viewModel::cycleTimer,
-                onAspectRatio = viewModel::cycleAspectRatio,
-                onNight = viewModel::cycleNight,
-                onEnhance = viewModel::toggleEnhance,
-                onResolution = viewModel::toggleVideoResolution,
-                onTimelapseSpeed = viewModel::cycleTimelapseSpeed,
-                onSettings = onOpenSettings,
-                modifier = Modifier.align(Alignment.TopCenter),
+                enhance = { enhance.value },
+                focusTarget = focusTarget,
+                onSurfaceReady = viewModel::onSurfaceReady,
+                onSurfaceDestroyed = viewModel::onSurfaceDestroyed,
+                onTap = viewModel::focusAt,
+                onPinch = viewModel::onPinch,
+                modifier = Modifier.align(Alignment.TopCenter).then(previewArea),
+            )
+            CaptureBlink(
+                capturing = state.isCapturing && !state.mode.isVideo,
+                modifier = Modifier.align(Alignment.TopCenter).then(previewArea),
             )
 
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
-                val previewing = state.cameraState as? CameraState.Previewing
-                if (state.mode == CaptureMode.PRO && previewing != null) {
-                    ProControls(
-                        capabilities = previewing.capabilities,
-                        settings = state.settings,
-                        liveExposure = previewing.liveExposure,
-                        rawEnabled = state.rawEnabled,
-                        histogram = { histogram.value },
-                        viewModel = viewModel,
-                        modifier = Modifier.background(Color.Black.copy(alpha = 0.6f)),
+            Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                (state.cameraState as? CameraState.Error)?.let {
+                    ErrorMessage(it.error, onRetry = viewModel::retryCamera, modifier = Modifier.align(Alignment.Center))
+                }
+
+                TopMenu(
+                    state = state,
+                    onFlash = viewModel::cycleFlash,
+                    onTimer = viewModel::cycleTimer,
+                    onAspectRatio = viewModel::cycleAspectRatio,
+                    onNight = viewModel::cycleNight,
+                    onEnhance = viewModel::toggleEnhance,
+                    onResolution = viewModel::toggleVideoResolution,
+                    onTimelapseSpeed = viewModel::cycleTimelapseSpeed,
+                    onSettings = onOpenSettings,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+                    val previewing = state.cameraState as? CameraState.Previewing
+                    if (state.mode == CaptureMode.PRO && previewing != null) {
+                        ProControls(
+                            capabilities = previewing.capabilities,
+                            settings = state.settings,
+                            liveExposure = previewing.liveExposure,
+                            rawEnabled = state.rawEnabled,
+                            histogram = { histogram.value },
+                            viewModel = viewModel,
+                            modifier = Modifier.padding(horizontal = 12.dp).glass(RoundedCornerShape(20.dp)),
+                        )
+                    }
+                    LensRow(
+                        state = state,
+                        onMacro = viewModel::toggleMacro,
+                        onPreset = viewModel::selectZoomPreset,
+                        onLook = viewModel::setLook,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                    )
+                    BottomBar(
+                        state = state,
+                        onModeChange = viewModel::setMode,
+                        onCapture = viewModel::onShutter,
+                        onSwitch = viewModel::switchCamera,
+                        translucent = aspect == AspectRatioSetting.FULL_SCREEN && !state.mode.isVideo,
                     )
                 }
-                LensRow(
-                    state = state,
-                    onMacro = viewModel::toggleMacro,
-                    onPreset = viewModel::selectZoomPreset,
-                    onLook = viewModel::setLook,
-                    modifier = Modifier.padding(vertical = 8.dp),
-                )
-                BottomBar(
-                    state = state,
-                    onModeChange = viewModel::setMode,
-                    onCapture = viewModel::onShutter,
-                    onSwitch = viewModel::switchCamera,
-                    translucent = aspect == AspectRatioSetting.FULL_SCREEN && !state.mode.isVideo,
-                )
             }
-        }
 
-        if (state.screenFlash) Box(Modifier.fillMaxSize().background(Color.White))
+            if (state.screenFlash) Box(Modifier.fillMaxSize().background(Color.White))
+        }
     }
+}
+
+/** The preview dips dark for an instant when a photo is taken, like a shutter closing. */
+@Composable
+private fun CaptureBlink(capturing: Boolean, modifier: Modifier) {
+    val alpha = remember { Animatable(0f) }
+    LaunchedEffect(capturing) {
+        if (!capturing) return@LaunchedEffect
+        alpha.snapTo(BLINK_ALPHA)
+        alpha.animateTo(0f, tween(BLINK_MS))
+    }
+    if (alpha.value > 0f) Box(modifier.background(Color.Black.copy(alpha = alpha.value)))
 }
 
 /**
@@ -431,11 +477,12 @@ private fun BottomBar(
     onSwitch: () -> Unit,
     translucent: Boolean,
 ) {
+    val haptics = rememberHaptics()
     Column(
         Modifier
             .fillMaxWidth()
-            .background(if (translucent) Color.Black.copy(alpha = 0.35f) else Color.Black)
-            .padding(vertical = 12.dp),
+            .then(if (translucent) Modifier.background(Glass.BottomScrim) else Modifier.background(Color.Black))
+            .padding(top = 8.dp, bottom = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -472,11 +519,26 @@ private fun BottomBar(
             }
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                 if (state.canSwitchCamera && !state.recording) {
-                    IconButton(onClick = onSwitch) {
+                    // The arrows spin half a turn on every switch.
+                    var turns by remember { mutableStateOf(0) }
+                    val spin by animateFloatAsState(turns * 180f, spring(stiffness = Spring.StiffnessLow), label = "switch spin")
+                    val description = stringResource(R.string.cd_switch_camera)
+                    Box(
+                        Modifier
+                            .size(52.dp)
+                            .glass()
+                            .clickable(role = Role.Button, onClickLabel = description) {
+                                haptics.tick()
+                                turns++
+                                onSwitch()
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
                         Icon(
                             Icons.Filled.Cameraswitch,
-                            contentDescription = stringResource(R.string.cd_switch_camera),
+                            contentDescription = description,
                             tint = Color.White,
+                            modifier = Modifier.size(24.dp).rotate(spin + LocalIconRotation.current),
                         )
                     }
                 }
@@ -485,48 +547,91 @@ private fun BottomBar(
     }
 }
 
+/**
+ * Glass pro shutter: a white ring around a white disc that sinks in when pressed. While a photo is
+ * being taken a warm arc runs around the ring; during a timer the disc turns red to cancel.
+ */
 @Composable
 private fun ShutterButton(busy: Boolean, counting: Boolean, enabled: Boolean, onClick: () -> Unit) {
     val description = stringResource(if (counting) R.string.cd_cancel_timer else R.string.cd_shutter)
+    val haptics = rememberHaptics()
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        if (pressed) 0.86f else 1f,
+        spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        label = "shutter press",
+    )
+    val disc by animateColorAsState(
+        when {
+            !enabled -> Color.White.copy(alpha = 0.35f)
+            counting -> Glass.Recording
+            else -> Color.White
+        },
+        label = "shutter colour",
+    )
     Box(
         Modifier
-            .size(76.dp)
-            .border(4.dp, Color.White, CircleShape)
-            .padding(8.dp)
-            .background(
-                when {
-                    !enabled -> Color.Gray
-                    counting -> Color(0xFFE53935)
-                    else -> Color.White
-                },
-                CircleShape,
-            )
-            .clickable(enabled = enabled && !busy, onClickLabel = description, onClick = onClick),
+            .size(80.dp)
+            .clip(CircleShape)
+            .clickable(interactionSource = interaction, indication = null, enabled = enabled && !busy, onClickLabel = description) {
+                haptics.confirm()
+                onClick()
+            },
         contentAlignment = Alignment.Center,
     ) {
-        if (busy) CircularProgressIndicator(Modifier.size(32.dp), color = Color.Black, strokeWidth = 3.dp)
+        Box(Modifier.fillMaxSize().border(3.dp, Color.White.copy(alpha = 0.9f), CircleShape))
+        Box(Modifier.size(64.dp).scale(scale).background(disc, CircleShape))
+        if (busy) BusyArc(Modifier.fillMaxSize())
     }
 }
 
-/** Red record button; while recording, a red square to stop. */
+/** A short accent arc chasing round the shutter ring while a shot is being taken. */
+@Composable
+private fun BusyArc(modifier: Modifier) {
+    val transition = rememberInfiniteTransition(label = "busy")
+    val angle by transition.animateFloat(
+        0f,
+        360f,
+        infiniteRepeatable(tween(BUSY_TURN_MS, easing = LinearEasing)),
+        label = "busy angle",
+    )
+    Canvas(modifier) {
+        val stroke = 3.dp.toPx()
+        drawArc(
+            color = Glass.Accent,
+            startAngle = angle - 90f,
+            sweepAngle = 90f,
+            useCenter = false,
+            topLeft = Offset(stroke / 2, stroke / 2),
+            size = Size(size.width - stroke, size.height - stroke),
+            style = Stroke(width = stroke, cap = StrokeCap.Round),
+        )
+    }
+}
+
+/** Red record button that morphs into a rounded stop square while recording. */
 @Composable
 private fun RecordButton(recording: Boolean, busy: Boolean, enabled: Boolean, onClick: () -> Unit) {
     val description = stringResource(if (recording) R.string.cd_stop_recording else R.string.cd_start_recording)
+    val haptics = rememberHaptics()
+    val springy = spring<Dp>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)
+    val size by animateDpAsState(if (recording) 30.dp else 62.dp, springy, label = "record size")
+    val corner by animateDpAsState(if (recording) 8.dp else 31.dp, springy, label = "record corner")
+    val color = if (enabled) Glass.Recording else Color.White.copy(alpha = 0.35f)
     Box(
         Modifier
-            .size(76.dp)
-            .border(4.dp, Color.White, CircleShape)
+            .size(80.dp)
             .clip(CircleShape)
-            .clickable(enabled = enabled && !busy, onClickLabel = description, onClick = onClick),
+            .clickable(enabled = enabled && !busy, onClickLabel = description) {
+                haptics.confirm()
+                onClick()
+            },
         contentAlignment = Alignment.Center,
     ) {
-        val color = if (enabled) RECORDING_RED else Color.Gray
-        if (recording) {
-            Box(Modifier.size(28.dp).background(color, RoundedCornerShape(6.dp)))
-        } else {
-            Box(Modifier.size(60.dp).background(color, CircleShape))
-        }
-        if (busy) CircularProgressIndicator(Modifier.size(32.dp), color = Color.White, strokeWidth = 3.dp)
+        Box(Modifier.fillMaxSize().border(3.dp, Color.White.copy(alpha = 0.9f), CircleShape))
+        Box(Modifier.size(size).background(color, RoundedCornerShape(corner)))
+        if (busy) BusyArc(Modifier.fillMaxSize())
     }
 }
 
@@ -674,5 +779,8 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
-internal val TOP_BAR_HEIGHT = 56.dp
+internal val TOP_BAR_HEIGHT = 60.dp
+private const val BUSY_TURN_MS = 900
+private const val BLINK_MS = 280
+private const val BLINK_ALPHA = 0.6f
 private val MODE_ROW_HEIGHT = 36.dp
