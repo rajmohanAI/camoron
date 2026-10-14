@@ -9,6 +9,9 @@ import kotlin.math.pow
  * shadows, and how much colour to add. The same numbers drive the live preview filter and the
  * saved photo, so what the user sees is what they get.
  *
+ * The camera has already tone-mapped its photo, so every correction here is a gentle touch-up:
+ * levels never crush more than a little at either end, and colour is lifted, not pushed.
+ *
  * Levels are 0..1 fractions of full scale.
  */
 data class EnhanceParams(
@@ -24,16 +27,21 @@ data class EnhanceParams(
 ) {
     companion object {
         /** A gentle default used until the camera has reported a histogram. */
-        val DEFAULT = EnhanceParams(black = 0.01f, white = 0.99f, gamma = 1f, contrast = 0.2f, shadowLift = 0.04f, vibrance = 0.18f)
+        val DEFAULT = EnhanceParams(black = 0.01f, white = 0.99f, gamma = 1f, contrast = 0.12f, shadowLift = 0.03f, vibrance = VIBRANCE)
     }
 }
+
+/** Extra colour for muted pixels: enough to lift a dull scene, not enough to look painted. */
+private const val VIBRANCE = 0.12f
 
 object EnhanceMath {
 
     private const val CLIP_LOW = 0.004
     private const val CLIP_HIGH = 0.996
-    private const val MAX_BLACK = 0.2f
-    private const val MIN_WHITE = 0.6f
+    private const val MAX_BLACK = 0.1f
+    private const val MIN_WHITE = 0.8f
+    private const val MIN_GAMMA = 0.8f
+    private const val MAX_GAMMA = 1.1f
     private const val TARGET_MID = 0.47
     private const val DARK_SCENE_MID = 0.3
 
@@ -52,18 +60,18 @@ object EnhanceMath {
             weighted += count * ((centre - black) / (white - black)).coerceIn(0.0, 1.0)
         }
         val mean = (weighted / total).coerceIn(0.02, 0.98)
-        val gamma = (ln(TARGET_MID) / ln(mean)).toFloat().coerceIn(0.65f, 1.15f)
+        val gamma = (ln(TARGET_MID) / ln(mean)).toFloat().coerceIn(MIN_GAMMA, MAX_GAMMA)
 
         // Dark scenes get their shadows opened; bright, flat ones get a little more punch instead.
         val quarter = percentile(bins, total, 0.25)
         val shadowLift = when {
-            mean < DARK_SCENE_MID -> 0.1f
-            quarter < 0.15f -> 0.06f
-            else -> 0.03f
+            mean < DARK_SCENE_MID -> 0.07f
+            quarter < 0.15f -> 0.04f
+            else -> 0.02f
         }
         val spread = percentile(bins, total, 0.9) - percentile(bins, total, 0.1)
-        val contrast = if (spread < 0.45f) 0.3f else 0.18f
-        return EnhanceParams(black, white, gamma, contrast, shadowLift, vibrance = 0.18f)
+        val contrast = if (spread < 0.45f) 0.2f else 0.1f
+        return EnhanceParams(black, white, gamma, contrast, shadowLift, vibrance = VIBRANCE)
     }
 
     /** Eases from [from] to [to] so the live preview doesn't flicker as the scene changes. */

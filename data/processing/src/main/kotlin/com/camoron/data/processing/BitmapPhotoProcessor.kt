@@ -7,12 +7,10 @@ import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
 import android.os.Build
 import android.os.Process
-import android.os.SystemClock
 import androidx.exifinterface.media.ExifInterface
 import com.camoron.core.common.DiagnosticLog
 import com.camoron.core.common.timed
 import com.camoron.domain.model.CapturedImage
-import com.camoron.domain.model.FrameBurst
 import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.PhotoAdjustments
@@ -26,17 +24,14 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.Executors
 import javax.inject.Inject
 
 /**
- * Makes the saved JPEG match the preview: centre crop for the taller aspect ratios, on-device
- * enhancement ([Enhancer]), the chosen colour look, and a mirror flag for selfies. Mirroring only rewrites the EXIF orientation, so it
- * costs no quality. Cropping or a look re-encodes the pixels and carries the camera's EXIF across.
- * Also merges night bursts.
+ * Finishes the camera's photo to match the preview: centre crop for the taller aspect ratios, the
+ * gentle on-device optimisation ([Enhancer]), the chosen colour look, and a mirror flag for selfies.
+ * Mirroring only rewrites the EXIF orientation, so it costs no quality. Cropping, optimising or a
+ * look re-encodes the pixels and carries the camera's EXIF across. Also merges night bursts.
  */
 class BitmapPhotoProcessor @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -90,67 +85,6 @@ class BitmapPhotoProcessor @Inject constructor(
             bytes = writeExif(bytes, original.takeIf { bytes !== image.bytes }, newOrientation, size)
             image.withBytes(bytes, size)
         }
-    }
-
-    override suspend fun render(burst: FrameBurst, adjustments: PhotoAdjustments): CapturedImage = withContext(processing) {
-        val started = SystemClock.elapsedRealtime()
-        val first = burst.frames.first()
-        // Crop before merging: pixels outside the photo's shape would be merged only to be thrown away.
-        val crop = adjustments.cropAspect?.let { PhotoMath.centreCrop(first.width, first.height, 1f / it) }
-            ?: CropRect(0, 0, first.width, first.height)
-        // With digital zoom the camera enlarged a small part of the sensor. Work at that part's real
-        // size, where the noise is fine-grained and easy to clean, and enlarge once at the end.
-        val shrink = shrinkFor(burst.info.digitalZoom)
-        val frames = burst.frames.map { it.crop(crop.left, crop.top, crop.width, crop.height).shrink(shrink) }
-        val merged = try {
-            BurstMerger.merge(frames, processing)
-        } catch (e: OutOfMemoryError) {
-            // Keep the photo: one frame is still a photo, just a noisier one.
-            DiagnosticLog.record(TAG, "Not enough memory to merge ${frames.size} frames; using one", e)
-            BurstMerger.Result(frames.first(), 0f, 1, 0)
-        }
-        val frame = merged.frame
-        DiagnosticLog.info(
-            TAG,
-            "Merged ${merged.framesUsed} of ${frames.size} frames (${frame.width}x${frame.height}, shrunk ${shrink}x, " +
-                "reference ${merged.reference}, noise %.1f) in ${SystemClock.elapsedRealtime() - started} ms".format(merged.noise),
-        )
-
-        val look = LookMatrix.forLook(adjustments.look).takeUnless(LookMatrix::isIdentity)
-        // The photo keeps the full resolution of the crop; the sharpening knows how much is left to enlarge.
-        val output = PixelSize(crop.width, crop.height).takeIf { shrink > 1 }
-        val residualZoom = (burst.info.digitalZoom / shrink).coerceAtLeast(1f)
-        val bitmap = Bitmap.createBitmap(frame.width, frame.height, Bitmap.Config.ARGB_8888)
-        val bytes = try {
-            val rows = IntArray(frame.width * CONVERT_ROWS)
-            var top = 0
-            while (top < frame.height) {
-                val count = minOf(CONVERT_ROWS, frame.height - top)
-                YuvMath.toArgb(frame, 0, top, frame.width, count, rows)
-                bitmap.setPixels(rows, 0, frame.width, 0, top, frame.width, count)
-                top += count
-            }
-            try {
-                finishPixels(bitmap, look, adjustments.enhance, residualZoom, output)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                DiagnosticLog.record(TAG, "Couldn't enhance the merged photo; saving it without", e)
-                finishPixels(bitmap, null, enhance = false, zoom = 1f, output = output)
-            } catch (e: OutOfMemoryError) {
-                DiagnosticLog.record(TAG, "Not enough memory to enhance the merged photo; saving it without", e)
-                finishPixels(bitmap, null, enhance = false, zoom = 1f, output = null)
-            }
-        } finally {
-            bitmap.recycle()
-        }
-
-        val size = decodeBounds(bytes)
-        val orientation = PhotoMath.orientationTag(burst.orientationDegrees)
-            .let { if (adjustments.mirror) PhotoMath.mirroredOrientation(it) else it }
-        val withExif = writeShotExif(bytes, burst, orientation, size)
-        DiagnosticLog.info(TAG, "Rendered the burst in ${SystemClock.elapsedRealtime() - started} ms")
-        CapturedImage(withExif, ImageFormat.JPEG, size, burst.timestampMillis)
     }
 
     override suspend fun mergeNight(frames: List<CapturedImage>): CapturedImage {
@@ -207,68 +141,12 @@ class BitmapPhotoProcessor @Inject constructor(
         }
     }
 
-    /** Enhancement, colour look and JPEG encoding, shared by single photos and merged bursts. */
-    private suspend fun finishPixels(
-        bitmap: Bitmap,
-        look: FloatArray?,
-        enhance: Boolean,
-        zoom: Float,
-        output: PixelSize? = null,
-    ): ByteArray {
+    /** Optimisation, colour look and JPEG encoding. */
+    private suspend fun finishPixels(bitmap: Bitmap, look: FloatArray?, enhance: Boolean, zoom: Float): ByteArray {
         if (enhance) Enhancer.enhance(bitmap, zoom)
         if (look != null) applyLook(bitmap, look)
-        // Enlarge last, after cleaning and sharpening at the real resolution.
-        val final = output?.takeIf { it.width > bitmap.width }
-            ?.let { Bitmap.createScaledBitmap(bitmap, it.width, it.height, true) }
-            ?: bitmap
-        try {
-            return DiagnosticLog.timed(TAG, "Encoding ${final.width}x${final.height}") {
-                ByteArrayOutputStream().also { final.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }.toByteArray()
-            }
-        } finally {
-            if (final !== bitmap) final.recycle()
-        }
-    }
-
-    /** EXIF for a photo we encoded ourselves from camera frames: what the camera's JPEG would carry. */
-    private fun writeShotExif(bytes: ByteArray, burst: FrameBurst, orientation: Int, size: PixelSize): ByteArray {
-        val file = File.createTempFile("render", ".jpg", context.cacheDir)
-        try {
-            file.writeBytes(bytes)
-            ExifInterface(file).apply {
-                val date = Date(burst.timestampMillis)
-                val stamp = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(date)
-                val offset = SimpleDateFormat("XXX", Locale.US).format(date)
-                val subSec = (burst.timestampMillis % 1000).toString().padStart(3, '0')
-                setAttribute(ExifInterface.TAG_DATETIME, stamp)
-                setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, stamp)
-                setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, stamp)
-                setAttribute(ExifInterface.TAG_SUBSEC_TIME, subSec)
-                setAttribute(ExifInterface.TAG_SUBSEC_TIME_ORIGINAL, subSec)
-                setAttribute(ExifInterface.TAG_SUBSEC_TIME_DIGITIZED, subSec)
-                setAttribute(ExifInterface.TAG_OFFSET_TIME, offset)
-                setAttribute(ExifInterface.TAG_OFFSET_TIME_ORIGINAL, offset)
-                setAttribute(ExifInterface.TAG_OFFSET_TIME_DIGITIZED, offset)
-                setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER)
-                setAttribute(ExifInterface.TAG_MODEL, Build.MODEL)
-                setAttribute(ExifInterface.TAG_SOFTWARE, "Camoron")
-                setAttribute(ExifInterface.TAG_PIXEL_X_DIMENSION, size.width.toString())
-                setAttribute(ExifInterface.TAG_PIXEL_Y_DIMENSION, size.height.toString())
-                setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
-                setAttribute(ExifInterface.TAG_COLOR_SPACE, ExifInterface.COLOR_SPACE_S_RGB.toString())
-                val info = burst.info
-                info.iso?.let { setAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, it.toString()) }
-                // Rationals, not decimals: ExifInterface can't parse "1.0E-4".
-                info.exposureTimeNs?.let { setAttribute(ExifInterface.TAG_EXPOSURE_TIME, "${it / 1000}/1000000") }
-                info.aperture?.let { setAttribute(ExifInterface.TAG_F_NUMBER, "${(it * 100).toInt()}/100") }
-                info.focalLengthMm?.let { setAttribute(ExifInterface.TAG_FOCAL_LENGTH, "${(it * 1000).toInt()}/1000") }
-                info.focalLength35mm?.let { setAttribute(ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM, it.toString()) }
-                setAttribute(ExifInterface.TAG_FLASH, if (info.flashFired) "1" else "0")
-                saveAttributes()
-            }
-            return file.readBytes()
-        } finally {
-            file.delete()
+        return DiagnosticLog.timed(TAG, "Encoding ${bitmap.width}x${bitmap.height}") {
+            ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }.toByteArray()
         }
     }
 
@@ -307,7 +185,6 @@ class BitmapPhotoProcessor @Inject constructor(
 
     private companion object {
         const val TAG = "PhotoProcessor"
-        const val CONVERT_ROWS = 64
         const val POOL_THREADS = 4
 
         /**
@@ -322,11 +199,6 @@ class BitmapPhotoProcessor @Inject constructor(
                 }, "CamoronPhoto").apply { isDaemon = true }
             }.asCoroutineDispatcher()
         }
-
-        /** Whole-pixel shrink that undoes most of a [digitalZoom] enlargement; 1 for none. */
-        fun shrinkFor(digitalZoom: Float): Int = if (digitalZoom < MIN_SHRINK_ZOOM) 1 else (digitalZoom + 0.25f).toInt()
-
-        const val MIN_SHRINK_ZOOM = 1.75f
 
         val COPIED_TAGS = listOf(
             ExifInterface.TAG_DATETIME,

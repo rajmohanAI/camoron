@@ -106,20 +106,13 @@ internal object CameraMath {
         return aspects.ifEmpty { setOf(StillAspect.FOUR_THREE) }
     }
 
-    /** Largest still size of [aspect], or the largest overall if the camera has none (cropped later). */
-    fun chooseStillSize(jpegSizes: List<PixelSize>, aspect: StillAspect): PixelSize {
-        require(jpegSizes.isNotEmpty()) { "Camera reports no JPEG sizes" }
-        val matching = jpegSizes.filter { abs(aspectOf(it) - aspect.ratio) < ASPECT_TOLERANCE }
-        return matching.ifEmpty { jpegSizes }.maxBy { it.width.toLong() * it.height }
-    }
-
     /**
-     * Size of the frames merged into photos: the largest of [aspect] up to [maxPixels], falling back
-     * to the smallest one of that shape when every size is larger, and to any shape when none matches.
+     * Photo size: the largest of [aspect] up to [maxPixels], falling back to the smallest one of that
+     * shape when every size is larger, and to any shape (cropped later) when none matches.
      */
-    fun chooseFrameSize(sizes: List<PixelSize>, aspect: StillAspect, maxPixels: Long): PixelSize {
-        require(sizes.isNotEmpty()) { "Camera reports no frame sizes" }
-        val matching = sizes.filter { abs(aspectOf(it) - aspect.ratio) < ASPECT_TOLERANCE }.ifEmpty { sizes }
+    fun chooseStillSize(jpegSizes: List<PixelSize>, aspect: StillAspect, maxPixels: Long = Long.MAX_VALUE): PixelSize {
+        require(jpegSizes.isNotEmpty()) { "Camera reports no JPEG sizes" }
+        val matching = jpegSizes.filter { abs(aspectOf(it) - aspect.ratio) < ASPECT_TOLERANCE }.ifEmpty { jpegSizes }
         val area = { s: PixelSize -> s.width.toLong() * s.height }
         return matching.filter { area(it) <= maxPixels }.maxByOrNull(area) ?: matching.minBy(area)
     }
@@ -134,17 +127,6 @@ internal object CameraMath {
         180 -> EXIF_ROTATE_180
         270 -> EXIF_ROTATE_270
         else -> EXIF_NORMAL
-    }
-
-    /**
-     * How many of [requested] burst frames of [frameBytes] each fit in [availableHeap] bytes, keeping
-     * room for the merged frame, the photo being enhanced and its working memory. Never below one.
-     */
-    fun framesThatFit(requested: Int, frameBytes: Long, availableHeap: Long): Int {
-        if (frameBytes <= 0) return requested.coerceAtLeast(1)
-        val reserve = frameBytes * PROCESSING_RESERVE_FRAMES
-        val usable = ((availableHeap - reserve) * BURST_HEAP_SHARE).toLong()
-        return (usable / frameBytes).toInt().coerceIn(1, requested.coerceAtLeast(1))
     }
 
     /** Smallest analysis stream at least [minWidth] wide; small keeps the histogram cheap. */
@@ -183,11 +165,6 @@ internal object CameraMath {
 
     const val HISTOGRAM_BINS = 64
 
-    /** Memory kept free for processing, in frames: merged frame, ARGB photo and enhancement buffers. */
-    private const val PROCESSING_RESERVE_FRAMES = 5
-
-    /** Share of the rest that burst frames may take, leaving slack for the rest of the app. */
-    private const val BURST_HEAP_SHARE = 0.8
     private const val FULL_FRAME_DIAGONAL_MM = 43.27f
     private const val EXIF_NORMAL = 1
     private const val EXIF_ROTATE_180 = 3
@@ -195,17 +172,6 @@ internal object CameraMath {
     private const val EXIF_ROTATE_270 = 8
     private const val ASPECT_TOLERANCE = 0.02
     private const val MAX_GAIN = 8f
-
-    /**
-     * The part of [zoom] the camera makes up by enlarging the picture. On a multi-lens camera zooming
-     * past a longer lens's reach switches to it, and the capture reports that lens's [activeFocalMm];
-     * only what goes beyond it is digital. Without focal lengths, all of the zoom is assumed digital.
-     */
-    fun digitalZoom(zoom: Float, baseFocalMm: Float?, activeFocalMm: Float?): Float {
-        val ceiling = maxOf(1f, zoom)
-        if (baseFocalMm == null || activeFocalMm == null || baseFocalMm <= 0f || activeFocalMm <= 0f) return ceiling
-        return (zoom * baseFocalMm / activeFocalMm).coerceIn(1f, ceiling)
-    }
 
     /**
      * The longer-lens zoom steps worth a button, from each lens's focal length relative to the main

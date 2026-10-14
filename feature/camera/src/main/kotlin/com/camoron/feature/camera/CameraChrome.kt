@@ -3,17 +3,26 @@ package com.camoron.feature.camera
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Size
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -71,6 +80,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -527,13 +537,44 @@ internal fun GalleryThumbnail(uri: String?, saving: Boolean = false, instant: Im
             // While the newest photo is still saving, wait for it rather than open the previous one.
             .clickable(enabled = uri != null && !saving, onClickLabel = description) { uri?.let { openInGallery(context, it) } },
     ) {
-        // The shot appears the moment it is taken; the saved photo's own thumbnail takes over later.
-        val shown = if (instant != null && (saving || uri == instantUri)) instant else bitmap
-        shown?.let {
-            Image(it, contentDescription = description, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        // The shot appears the moment it is taken; once it is optimised and saved, the saved photo's
+        // own thumbnail takes over, so what shows here is the finished photo.
+        val shown = when {
+            instant != null && saving -> instant
+            bitmap != null -> bitmap
+            uri == instantUri -> instant
+            else -> null
         }
-        // The last photo is still being enhanced and saved; it appears here when ready.
-        if (saving) CircularProgressIndicator(Modifier.fillMaxSize(), color = MODE_SELECTED, strokeWidth = 2.dp)
+        Crossfade(shown, animationSpec = tween(THUMBNAIL_FADE_MS), label = "thumbnail") { image ->
+            image?.let {
+                Image(it, contentDescription = description, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            }
+        }
+        if (saving) OptimisingLoader(Modifier.fillMaxSize())
+    }
+}
+
+/** Over the newest shot while it is being optimised: the picture dims and a sparkle pulses inside a spinning ring. */
+@Composable
+private fun OptimisingLoader(modifier: Modifier) {
+    val pulse by rememberInfiniteTransition(label = "optimising").animateFloat(
+        initialValue = 0.7f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(PULSE_MS), RepeatMode.Reverse),
+        label = "pulse",
+    )
+    Box(modifier.background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
+        Icon(
+            Icons.Filled.AutoAwesome,
+            contentDescription = stringResource(R.string.cd_optimising),
+            tint = MODE_SELECTED,
+            modifier = Modifier.size(20.dp).graphicsLayer {
+                scaleX = pulse
+                scaleY = pulse
+                alpha = pulse
+            },
+        )
+        CircularProgressIndicator(Modifier.fillMaxSize(), color = MODE_SELECTED, strokeWidth = 2.dp)
     }
 }
 
@@ -555,7 +596,21 @@ private fun loadThumbnail(context: Context, uri: Uri): ImageBitmap? = runCatchin
         var sample = 1
         while (minOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= THUMBNAIL_PX) sample *= 2
         val options = BitmapFactory.Options().apply { inSampleSize = sample }
-        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+        val small = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+        // Before Android 10 the gallery's own thumbnails aren't used, so turn the photo upright here.
+        val degrees = context.contentResolver.openInputStream(uri)?.use {
+            when (ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+        } ?: 0f
+        if (small == null || degrees == 0f) {
+            small
+        } else {
+            Bitmap.createBitmap(small, 0, 0, small.width, small.height, Matrix().apply { postRotate(degrees) }, true)
+        }
     }
 }.getOrNull()?.asImageBitmap()
 
@@ -578,5 +633,7 @@ private fun openInGallery(context: Context, uri: String) {
 }
 
 private const val THUMBNAIL_PX = 160
+private const val THUMBNAIL_FADE_MS = 300
+private const val PULSE_MS = 600
 private val MODE_SELECTED = Glass.Accent
 internal val RECORDING_RED = Glass.Recording

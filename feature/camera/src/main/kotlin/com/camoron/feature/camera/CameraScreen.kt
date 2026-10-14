@@ -53,10 +53,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -85,6 +85,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -150,7 +151,7 @@ fun CameraScreen(
     }
 
     ProvideIconRotation(quarterTurns * 90) {
-        Box(
+        BoxWithConstraints(
             Modifier
                 .fillMaxSize()
                 .background(Color.Black)
@@ -159,12 +160,23 @@ fun CameraScreen(
             val aspect = state.cameraSettings.aspectRatio
             // Full screen really is the whole screen, under the (hidden) status bar and the camera cutout.
             // Video is always 16:9, so its preview shows exactly the frame being recorded.
-            val previewArea = when {
-                state.mode.isVideo || aspect == AspectRatioSetting.RATIO_9_16 ->
-                    Modifier.safeDrawingPadding().padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(9f / 16)
-                aspect == AspectRatioSetting.FULL_SCREEN -> Modifier.fillMaxSize()
-                else -> Modifier.safeDrawingPadding().padding(top = TOP_BAR_HEIGHT).fillMaxWidth().aspectRatio(3f / 4)
-            }
+            val insets = WindowInsets.safeDrawing.asPaddingValues()
+            val frame = PreviewFrame.of(
+                ratio = when {
+                    state.mode.isVideo || aspect == AspectRatioSetting.RATIO_9_16 -> 16f / 9
+                    aspect == AspectRatioSetting.FULL_SCREEN -> null
+                    else -> 4f / 3
+                },
+                screenWidth = maxWidth.value,
+                screenHeight = maxHeight.value,
+                topInset = (insets.calculateTopPadding() + TOP_BAR_HEIGHT).value,
+                bottomInset = insets.calculateBottomPadding().value,
+            )
+            // The picture glides to a new shape like the phone's own camera, rather than jumping.
+            val top by animateDpAsState(frame.top.dp, tween(FRAME_MS), label = "frameTop")
+            val width by animateDpAsState(frame.width.dp, tween(FRAME_MS), label = "frameWidth")
+            val height by animateDpAsState(frame.height.dp, tween(FRAME_MS), label = "frameHeight")
+            val previewArea = Modifier.offset(y = top).size(width, height)
             PreviewArea(
                 state = state,
                 enhance = { enhance.value },
@@ -337,6 +349,19 @@ private fun CameraPreview(
     val ready by rememberUpdatedState(onSurfaceReady)
     val destroyed by rememberUpdatedState(onSurfaceDestroyed)
     var freeze by remember { mutableStateOf<ImageBitmap?>(null) }
+    // The held frame fades into the live picture rather than vanishing in one step.
+    var shownFreeze by remember { mutableStateOf<ImageBitmap?>(null) }
+    val freezeAlpha = remember { Animatable(0f) }
+    LaunchedEffect(freeze) {
+        val held = freeze
+        if (held != null) {
+            shownFreeze = held
+            freezeAlpha.snapTo(1f)
+        } else if (shownFreeze != null) {
+            freezeAlpha.animateTo(0f, tween(UNFREEZE_FADE_MS))
+            shownFreeze = null
+        }
+    }
 
     Box(modifier) {
         AndroidView(
@@ -356,18 +381,20 @@ private fun CameraPreview(
             },
             modifier = Modifier.fillMaxSize(),
         )
-        freeze?.let {
+        shownFreeze?.let {
+            // Cropped, never stretched: the camera may be switching to a differently shaped picture.
             Image(
                 bitmap = it,
                 contentDescription = null,
-                contentScale = ContentScale.FillBounds,
-                modifier = Modifier.fillMaxSize().blur(FREEZE_BLUR),
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = freezeAlpha.value }.blur(FREEZE_BLUR),
             )
         }
     }
 }
 
 private val FREEZE_BLUR = 12.dp
+private const val UNFREEZE_FADE_MS = 220
 
 private class PreviewTextureView(
     context: Context,
@@ -782,5 +809,6 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 internal val TOP_BAR_HEIGHT = 60.dp
 private const val BUSY_TURN_MS = 900
 private const val BLINK_MS = 280
+private const val FRAME_MS = 280
 private const val BLINK_ALPHA = 0.6f
 private val MODE_ROW_HEIGHT = 36.dp

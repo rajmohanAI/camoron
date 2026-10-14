@@ -140,31 +140,10 @@ class CameraMathTest {
     }
 
     @Test
-    fun `burst size shrinks to fit the memory left, but never below one frame`() {
-        val frame = 4080L * 3072 * 3 / 2
-        assertThat(CameraMath.framesThatFit(6, frame, 450L shl 20)).isEqualTo(6)
-        assertThat(CameraMath.framesThatFit(6, frame, 200L shl 20)).isIn(2..5)
-        assertThat(CameraMath.framesThatFit(6, frame, 50L shl 20)).isEqualTo(1)
-    }
-
-    @Test
-    fun `digital zoom is what the lens in use doesn't cover`() {
-        // One lens: 3x is all digital.
-        assertThat(CameraMath.digitalZoom(3f, 6f, 6f)).isEqualTo(3f)
-        // A 3x telephoto took over: nothing digital left.
-        assertThat(CameraMath.digitalZoom(3f, 6f, 18f)).isEqualTo(1f)
-        // 5x on that telephoto: the last 5/3 is digital.
-        assertThat(CameraMath.digitalZoom(5f, 6f, 18f)).isWithin(0.01f).of(5f / 3)
-        // No focal lengths: assume digital. Ultra-wide is never digital.
-        assertThat(CameraMath.digitalZoom(2f, null, null)).isEqualTo(2f)
-        assertThat(CameraMath.digitalZoom(0.6f, 6f, 2f)).isEqualTo(1f)
-    }
-
-    @Test
-    fun `merged frames stay near 12 MP on 50 and 200 MP sensors`() {
+    fun `photos stay near 12 MP on 50 and 200 MP sensors`() {
         val sizes = listOf(PixelSize(8160, 6120), PixelSize(4080, 3060), PixelSize(4000, 2250), PixelSize(1920, 1440))
-        assertThat(CameraMath.chooseFrameSize(sizes, StillAspect.FOUR_THREE, 13_000_000L)).isEqualTo(PixelSize(4080, 3060))
-        assertThat(CameraMath.chooseFrameSize(listOf(PixelSize(8160, 6120)), StillAspect.FOUR_THREE, 13_000_000L))
+        assertThat(CameraMath.chooseStillSize(sizes, StillAspect.FOUR_THREE, 16_800_000L)).isEqualTo(PixelSize(4080, 3060))
+        assertThat(CameraMath.chooseStillSize(listOf(PixelSize(8160, 6120)), StillAspect.FOUR_THREE, 16_800_000L))
             .isEqualTo(PixelSize(8160, 6120))
     }
 

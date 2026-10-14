@@ -1,7 +1,6 @@
 package com.camoron.domain.usecase
 
 import com.camoron.domain.model.CapturedImage
-import com.camoron.domain.model.FrameBurst
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.MediaRepository
@@ -13,8 +12,8 @@ import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 
 /**
- * Capture path: take a burst of frames and merge them (or a single photo where the session can't),
- * match it to the preview, enhance it and save it.
+ * Capture path: take the camera's own fully processed photo (or a merged burst for Night), match it
+ * to the preview, give it a gentle auto-optimisation and save it.
  */
 class CaptureAndSavePhoto @Inject constructor(
     private val camera: CameraController,
@@ -30,36 +29,25 @@ class CaptureAndSavePhoto @Inject constructor(
      *
      * With [nightFrames] above 1 the photo is a merged night burst instead (no RAW).
      *
-     * [onFrames] hands over a merged burst's frames as soon as they arrive, so the shot can be shown at
-     * once. [onCaptured] runs as soon as the camera has delivered the frames, before processing and saving,
-     * so the shutter can be ready for the next shot straight away. A failed capture is retried once:
-     * some phones reject a still request issued while the session is still settling.
+     * [onCaptured] runs as soon as the camera has delivered the photo, before optimising and saving, with
+     * the camera's photo, so the shot can be shown at once and the shutter is ready for the next one
+     * straight away. A failed capture is retried once: some phones reject a still request issued
+     * while the session is still settling.
      */
     suspend operator fun invoke(
         deviceRotationDegrees: Int,
         includeRaw: Boolean = false,
         adjustments: PhotoAdjustments = PhotoAdjustments.NONE,
         nightFrames: Int = 0,
-        onCaptured: () -> Unit = {},
-        onFrames: (FrameBurst) -> Unit = {},
+        onCaptured: (CapturedImage) -> Unit = {},
     ): String {
-        // Every photo is a merged burst where the camera allows it: night simply uses more frames.
-        if (!includeRaw) {
-            val count = if (nightFrames > 1) nightFrames else BURST_FRAMES
-            val burst = retryOnce { camera.captureFrames(deviceRotationDegrees, count) }
-            if (burst != null) {
-                onFrames(burst)
-                onCaptured()
-                return saving.withLock { media.save(processor.render(burst, adjustments)) }
-            }
-        }
         if (nightFrames > 1) {
             val frames = retryOnce { camera.captureBurst(deviceRotationDegrees, nightFrames) }
-            onCaptured()
+            onCaptured(frames.first())
             return saving.withLock { media.save(adjust(processor.mergeNight(frames), adjustments)) }
         }
         val bundle = retryOnce { camera.capture(deviceRotationDegrees, includeRaw) }
-        onCaptured()
+        onCaptured(bundle.primary)
         return saving.withLock {
             val uri = media.save(adjust(bundle.primary, adjustments))
             bundle.raw?.let { media.save(it) }
@@ -81,8 +69,5 @@ class CaptureAndSavePhoto @Inject constructor(
 
     private companion object {
         const val RETRY_DELAY_MS = 300L
-
-        /** Frames merged for an ordinary photo: noise drops by about the square root of this. */
-        const val BURST_FRAMES = 6
     }
 }

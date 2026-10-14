@@ -11,7 +11,7 @@ import com.camoron.domain.model.CameraError
 import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.CameraState
-import com.camoron.domain.model.FrameBurst
+import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.EnhanceMath
 import com.camoron.domain.model.EnhanceParams
@@ -594,20 +594,17 @@ class CameraViewModel @Inject constructor(
         // The shutter is free again as soon as the frames are in; processing and saving carry on.
         val started = SystemClock.elapsedRealtime()
         var captured = false
-        val ready = {
+        val adjustments = adjustmentsFor(state)
+        val ready = { photo: CapturedImage ->
             captured = true
-            DiagnosticLog.info(TAG, "Photo frames in after ${SystemClock.elapsedRealtime() - started} ms")
+            DiagnosticLog.info(TAG, "Photo in after ${SystemClock.elapsedRealtime() - started} ms")
             _uiState.update {
                 it.copy(isCapturing = false, screenFlash = false, nightCapturing = false, photosSaving = it.photosSaving + 1)
             }
+            showInstantThumbnail(photo, adjustments.mirror)
         }
-        val adjustments = adjustmentsFor(state)
         val uri = runCatching {
-            captureAndSave(
-                deviceRotation, state.rawActive, adjustments, nightFrames,
-                onCaptured = ready,
-                onFrames = { burst -> showInstantThumbnail(burst, adjustments.mirror) },
-            )
+            captureAndSave(deviceRotation, state.rawActive, adjustments, nightFrames, onCaptured = ready)
         }.onFailure { DiagnosticLog.record(TAG, "Couldn't take the photo", it) }.getOrNull()
         if (uri != null) {
             DiagnosticLog.info(
@@ -630,10 +627,10 @@ class CameraViewModel @Inject constructor(
         }
     }
 
-    /** Shows the shot in the thumbnail straight away, upright, from the first frame of the burst. */
-    private fun showInstantThumbnail(burst: FrameBurst, mirror: Boolean) {
+    /** Shows the shot in the thumbnail straight away, upright, while it is being optimised. */
+    private fun showInstantThumbnail(photo: CapturedImage, mirror: Boolean) {
         viewModelScope.launch(Dispatchers.Default) {
-            val image = runCatching { InstantThumbnail.from(burst, mirror) }
+            val image = runCatching { InstantThumbnail.from(photo, mirror) }
                 .onFailure { DiagnosticLog.record(TAG, "Couldn't show the instant thumbnail", it) }
                 .getOrNull() ?: return@launch
             _uiState.update { it.copy(instantThumbnail = image, instantThumbnailUri = null) }
