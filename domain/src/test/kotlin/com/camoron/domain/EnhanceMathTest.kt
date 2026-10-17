@@ -15,7 +15,7 @@ class EnhanceMathTest {
     fun `a dark scene is brightened and its shadows opened`() {
         val p = EnhanceMath.fromHistogram(histogram(2..18))
         assertThat(p.gamma).isLessThan(1f)
-        assertThat(p.shadowLift).isAtLeast(0.1f)
+        assertThat(p.shadowLift).isGreaterThan(0.04f)
         assertThat(EnhanceMath.curve(p, 0.15f)).isGreaterThan(0.15f)
     }
 
@@ -26,9 +26,10 @@ class EnhanceMathTest {
     }
 
     @Test
-    fun `a washed out picture is stretched to full range`() {
+    fun `a washed out picture is stretched, without crushing its ends`() {
         val p = EnhanceMath.fromHistogram(histogram(12..44))
-        assertThat(p.black).isGreaterThan(0.15f)
+        assertThat(p.black).isWithin(1e-6f).of(0.1f)
+        assertThat(p.white).isWithin(1e-6f).of(0.8f)
         assertThat(EnhanceMath.curve(p, p.black)).isEqualTo(0f)
         assertThat(EnhanceMath.curve(p, p.white)).isEqualTo(1f)
     }

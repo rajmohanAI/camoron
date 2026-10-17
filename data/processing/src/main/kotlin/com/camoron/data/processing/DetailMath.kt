@@ -4,8 +4,9 @@ import com.camoron.domain.model.EnhanceMath
 
 /**
  * How strongly to clean and sharpen one photo, from the noise measured in it and the digital zoom
- * it was taken at. Noisy or zoomed photos get more noise reduction and less sharpening, so grain and
- * zoom blockiness are smoothed rather than exaggerated.
+ * it was taken at. The photo is the camera's own, already cleaned and sharpened, so this only
+ * touches it up: cleaning only where grain is still visible, and a light final crispness. Noisy or
+ * zoomed photos get less sharpening, so grain and zoom blockiness are not exaggerated.
  */
 internal class DetailTuning(
     /** Measured noise level (standard deviation, 0..1 of full scale). */
@@ -14,8 +15,8 @@ internal class DetailTuning(
     val zoom: Float = 1f,
 ) {
     /**
-     * Whether the picture needs cleaning at all. A merged burst in good light is already clean, and
-     * skipping the smoothing there saves most of the work.
+     * Whether the picture needs cleaning at all. The camera's photo in good light is already clean,
+     * and skipping the smoothing there keeps its fine texture and saves most of the work.
      */
     val denoise: Boolean = noise >= CLEAN
 
@@ -41,17 +42,17 @@ internal class DetailTuning(
     val halo: Int get() = maxOf(3 * radius, 2 * chromaRadius)
 
     private companion object {
-        const val CLEAN = 1.2f / 255
+        const val CLEAN = 2.5f / 255
         const val NOISY = 0.02f
         const val SOMEWHAT_NOISY = 0.012f
         const val MIN_NOISE = 1.5f / 255
         const val EPSILON_SCALE = 1.6f
         const val CHROMA_EPSILON_FACTOR = 4f
-        const val MAX_SHARPEN = 0.6f
-        const val MIN_SHARPEN = 0.12f
-        const val SHARPEN_PER_NOISE = 16f
-        const val MAX_CLARITY = 0.22f
-        const val CLARITY_PER_NOISE = 9f
+        const val MAX_SHARPEN = 0.25f
+        const val MIN_SHARPEN = 0.05f
+        const val SHARPEN_PER_NOISE = 6f
+        const val MAX_CLARITY = 0.12f
+        const val CLARITY_PER_NOISE = 4f
     }
 }
 
