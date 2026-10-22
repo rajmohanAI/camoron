@@ -40,9 +40,6 @@ internal object Glass {
         listOf(Color.White.copy(alpha = 0.10f).compositeOver(Tint.copy(alpha = 0.42f)), Tint.copy(alpha = 0.52f)),
     )
 
-    /** Background behind the controls at the bottom of a full-screen preview, fading into it. */
-    val BottomScrim = Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f), Color.Black.copy(alpha = 0.75f)))
-
     fun Modifier.glass(shape: Shape = CircleShape): Modifier =
         clip(shape).background(Fill, shape).border(1.dp, Stroke, shape)
 }

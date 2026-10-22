@@ -175,10 +175,12 @@ internal object CameraMath {
 
     /**
      * The longer-lens zoom steps worth a button, from each lens's focal length relative to the main
-     * one: telephotos only (1.8x and up), rounded to the nearest half, without repeats.
+     * one: telephotos only (1.8x and up), rounded to a whole step, without repeats. Focal lengths
+     * worked out from sensor sizes run a little short (a 3x lens can come out near 2.6), and makers
+     * name their lenses in whole steps, so a 3x lens gets a 3x button.
      */
     fun opticalZoomSteps(ratios: List<Float>): List<Float> =
-        ratios.filter { it >= MIN_TELE_RATIO }.map { (it * 2).roundToInt() / 2f }.distinct().sorted()
+        ratios.filter { it >= MIN_TELE_RATIO }.map { it.roundToInt().toFloat() }.distinct().sorted()
 
     private const val MIN_TELE_RATIO = 1.8f
 }

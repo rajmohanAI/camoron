@@ -42,12 +42,15 @@ class PlanZoomPresets @Inject constructor() {
         return presets + tele.sortedBy { it.label }
     }
 
-    /** Cameras on the same side whose lens is clearly longer than the main one, with their reach. */
+    /**
+     * Cameras on the same side whose lens is clearly longer than the main one, with their reach in
+     * whole steps, the way makers name their lenses (a 73 mm lens beside a 24 mm one is 3x).
+     */
     private fun separateTele(main: CameraCapabilities, sameSide: List<CameraCapabilities>): List<Pair<CameraCapabilities, Float>> {
         val mainFocal = main.equivalentFocalLengthMm ?: return emptyList()
         return sameSide
             .filter { it.cameraId != main.cameraId }
-            .mapNotNull { other -> other.equivalentFocalLengthMm?.let { other to (it / mainFocal * 2).roundToInt() / 2f } }
+            .mapNotNull { other -> other.equivalentFocalLengthMm?.let { other to (it / mainFocal).roundToInt().toFloat() } }
             .filter { (_, ratio) -> ratio >= TELE_MIN_RATIO }
             .distinctBy { (_, ratio) -> ratio }
     }
