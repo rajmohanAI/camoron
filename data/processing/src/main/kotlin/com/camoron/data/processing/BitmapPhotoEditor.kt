@@ -9,6 +9,7 @@ import android.graphics.Paint
 import androidx.exifinterface.media.ExifInterface
 import com.camoron.core.common.DiagnosticLog
 import com.camoron.core.common.timed
+import com.camoron.core.imaging.ObjectEraser
 import com.camoron.core.imaging.TryOnPainter
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.CropMath
@@ -29,8 +30,8 @@ import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 
 /**
- * Applies an editor [PhotoEdit] to the full-size photo: draws any try-ons, stands it upright,
- * turns, flips, straightens and crops it in one filtered draw, then runs the colour edit over the pixels in
+ * Applies an editor [PhotoEdit] to the full-size photo: stands it upright, erases and draws any try-ons,
+ * then turns, flips, straightens and crops it in one filtered draw, then runs the colour edit over the pixels in
  * parallel bands and encodes a high-quality JPEG with the original's camera details.
  */
 class BitmapPhotoEditor @Inject constructor(
@@ -54,18 +55,32 @@ class BitmapPhotoEditor @Inject constructor(
             },
         ) ?: error("Could not decode the photo")
 
-        // Try-ons are drawn where the face tracker found the face: on the upright photo, before cropping.
+        // Erases and try-ons are placed on the upright photo, where they were chosen, before cropping.
         var stored = source
         var storedOrientation = orientation
-        if (!edit.tryOn.isNone) {
+        if (edit.erases.isNotEmpty() || !edit.tryOn.isNone) {
             stored = try {
-                DiagnosticLog.timed(TAG, "Trying on at ${source.width}x${source.height}") {
-                    cut(source, orientation, PhotoEdit()).also { TryOnPainter.paint(it, edit.tryOn, scene) }
-                }
+                cut(source, orientation, PhotoEdit())
             } finally {
                 source.recycle()
             }
             storedOrientation = ExifInterface.ORIENTATION_NORMAL
+            try {
+                if (edit.erases.isNotEmpty()) {
+                    DiagnosticLog.timed(TAG, "Erasing ${edit.erases.size} at ${stored.width}x${stored.height}") {
+                        for (mask in edit.erases) {
+                            ensureActive()
+                            ObjectEraser.erase(stored, mask)
+                        }
+                    }
+                }
+                if (!edit.tryOn.isNone) {
+                    DiagnosticLog.timed(TAG, "Trying on at ${stored.width}x${stored.height}") { TryOnPainter.paint(stored, edit.tryOn, scene) }
+                }
+            } catch (e: Throwable) {
+                stored.recycle()
+                throw e
+            }
         }
         val bitmap = try {
             DiagnosticLog.timed(TAG, "Cropping ${stored.width}x${stored.height}") { cut(stored, storedOrientation, edit) }

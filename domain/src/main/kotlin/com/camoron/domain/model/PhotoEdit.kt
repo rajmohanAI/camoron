@@ -90,6 +90,8 @@ data class PhotoEdit(
     val adjustments: Map<Adjustment, Float> = emptyMap(),
     val crop: EditCrop = EditCrop(),
     val tryOn: TryOn = TryOn(),
+    /** Things removed with the magic eraser, in the order they were removed. */
+    val erases: List<EraseMask> = emptyList(),
 ) {
     fun value(adjustment: Adjustment): Float = adjustments[adjustment] ?: 0f
 
@@ -102,5 +104,5 @@ data class PhotoEdit(
     val changesColour: Boolean
         get() = (look != EditLook.ORIGINAL && lookStrength > 0f) || adjustments.values.any { it != 0f }
 
-    val isIdentity: Boolean get() = !changesColour && crop.isIdentity && tryOn.isNone
+    val isIdentity: Boolean get() = !changesColour && crop.isIdentity && tryOn.isNone && erases.isEmpty()
 }
