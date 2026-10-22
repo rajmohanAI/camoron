@@ -89,6 +89,7 @@ data class PhotoEdit(
     val lookStrength: Float = 1f,
     val adjustments: Map<Adjustment, Float> = emptyMap(),
     val crop: EditCrop = EditCrop(),
+    val tryOn: TryOn = TryOn(),
 ) {
     fun value(adjustment: Adjustment): Float = adjustments[adjustment] ?: 0f
 
@@ -101,5 +102,5 @@ data class PhotoEdit(
     val changesColour: Boolean
         get() = (look != EditLook.ORIGINAL && lookStrength > 0f) || adjustments.values.any { it != 0f }
 
-    val isIdentity: Boolean get() = !changesColour && crop.isIdentity
+    val isIdentity: Boolean get() = !changesColour && crop.isIdentity && tryOn.isNone
 }

@@ -53,6 +53,11 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // The face and hair models are memory-mapped straight from the APK, which needs them uncompressed.
+    androidResources {
+        noCompress += listOf("tflite", "task")
+    }
 }
 
 kotlin {

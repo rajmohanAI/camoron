@@ -30,6 +30,7 @@ kotlin {
 
 dependencies {
     implementation(projects.core.common)
+    implementation(projects.core.imaging)
     implementation(libs.androidx.exifinterface)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)

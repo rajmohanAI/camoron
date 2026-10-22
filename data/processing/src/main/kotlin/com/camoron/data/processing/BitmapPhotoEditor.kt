@@ -9,9 +9,11 @@ import android.graphics.Paint
 import androidx.exifinterface.media.ExifInterface
 import com.camoron.core.common.DiagnosticLog
 import com.camoron.core.common.timed
+import com.camoron.core.imaging.TryOnPainter
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.CropMath
 import com.camoron.domain.model.EditColour
+import com.camoron.domain.model.FaceScene
 import com.camoron.domain.model.PhotoEdit
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.repository.PhotoEditor
@@ -27,15 +29,15 @@ import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 
 /**
- * Applies an editor [PhotoEdit] to the full-size photo: stands it upright, turns, flips,
- * straightens and crops it in one filtered draw, then runs the colour edit over the pixels in
+ * Applies an editor [PhotoEdit] to the full-size photo: draws any try-ons, stands it upright,
+ * turns, flips, straightens and crops it in one filtered draw, then runs the colour edit over the pixels in
  * parallel bands and encodes a high-quality JPEG with the original's camera details.
  */
 class BitmapPhotoEditor @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : PhotoEditor {
 
-    override suspend fun render(photo: CapturedImage, edit: PhotoEdit): CapturedImage = withContext(Dispatchers.Default) {
+    override suspend fun render(photo: CapturedImage, edit: PhotoEdit, scene: FaceScene): CapturedImage = withContext(Dispatchers.Default) {
         val exif = ExifInterface(ByteArrayInputStream(photo.bytes))
         val orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
         val bounds = decodeBounds(photo.bytes)
@@ -52,10 +54,23 @@ class BitmapPhotoEditor @Inject constructor(
             },
         ) ?: error("Could not decode the photo")
 
+        // Try-ons are drawn where the face tracker found the face: on the upright photo, before cropping.
+        var stored = source
+        var storedOrientation = orientation
+        if (!edit.tryOn.isNone) {
+            stored = try {
+                DiagnosticLog.timed(TAG, "Trying on at ${source.width}x${source.height}") {
+                    cut(source, orientation, PhotoEdit()).also { TryOnPainter.paint(it, edit.tryOn, scene) }
+                }
+            } finally {
+                source.recycle()
+            }
+            storedOrientation = ExifInterface.ORIENTATION_NORMAL
+        }
         val bitmap = try {
-            DiagnosticLog.timed(TAG, "Cropping ${source.width}x${source.height}") { cut(source, orientation, edit) }
+            DiagnosticLog.timed(TAG, "Cropping ${stored.width}x${stored.height}") { cut(stored, storedOrientation, edit) }
         } finally {
-            source.recycle()
+            stored.recycle()
         }
         try {
             val colour = EditColour.of(edit)

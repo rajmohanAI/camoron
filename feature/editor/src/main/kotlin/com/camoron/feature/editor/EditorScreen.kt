@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.Grain
 import androidx.compose.material.icons.filled.Opacity
@@ -153,6 +154,7 @@ fun EditorScreen(
                         EditorTab.LOOKS -> LooksControls(state, viewModel)
                         EditorTab.ADJUST -> AdjustControls(state, viewModel)
                         EditorTab.CROP -> CropControls(state, viewModel)
+                        EditorTab.TRY_ON -> TryOnControls(state, viewModel)
                     }
                 }
                 Tabs(selected = state.tab, onSelect = viewModel::selectTab)
@@ -440,7 +442,7 @@ private fun ToolButton(icon: ImageVector, label: String, selected: Boolean, chan
 @Composable
 private fun Tabs(selected: EditorTab, onSelect: (EditorTab) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
         for (tab in EditorTab.entries) {
@@ -451,7 +453,7 @@ private fun Tabs(selected: EditorTab, onSelect: (EditorTab) -> Unit) {
                 modifier = Modifier
                     .clip(RoundedCornerShape(12.dp))
                     .clickable { onSelect(tab) }
-                    .padding(horizontal = 18.dp, vertical = 6.dp),
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
             ) {
                 Icon(tab.icon(), contentDescription = null, tint = color)
                 Text(stringResource(tab.label()), color = color, fontSize = 12.sp)
@@ -486,12 +488,14 @@ private fun EditorTab.label() = when (this) {
     EditorTab.LOOKS -> R.string.tab_looks
     EditorTab.ADJUST -> R.string.tab_adjust
     EditorTab.CROP -> R.string.tab_crop
+    EditorTab.TRY_ON -> R.string.tab_try_on
 }
 
 private fun EditorTab.icon() = when (this) {
     EditorTab.LOOKS -> Icons.Filled.Palette
     EditorTab.ADJUST -> Icons.Filled.Tune
     EditorTab.CROP -> Icons.Filled.Crop
+    EditorTab.TRY_ON -> Icons.Filled.Face
 }
 
 private fun EditLook.label() = when (this) {

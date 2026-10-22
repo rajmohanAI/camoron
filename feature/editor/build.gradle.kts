@@ -41,6 +41,8 @@ kotlin {
 dependencies {
     implementation(projects.core.common)
     implementation(projects.core.designsystem)
+    implementation(projects.core.imaging)
+    implementation(libs.mediapipe.tasks.vision)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.hilt.navigation.compose)

@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.camoron.core.common.DiagnosticLog
+import com.camoron.core.imaging.TryOnPainter
 import com.camoron.domain.model.Adjustment
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.CropAspect
@@ -14,7 +15,9 @@ import com.camoron.domain.model.CropRectF
 import com.camoron.domain.model.EditColour
 import com.camoron.domain.model.EditCrop
 import com.camoron.domain.model.EditLook
+import com.camoron.domain.model.FaceScene
 import com.camoron.domain.model.PhotoEdit
+import com.camoron.domain.model.TryOn
 import com.camoron.domain.repository.PhotoEditor
 import com.camoron.domain.repository.PhotoLibrary
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -32,7 +35,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
-enum class EditorTab { LOOKS, ADJUST, CROP }
+enum class EditorTab { LOOKS, ADJUST, CROP, TRY_ON }
+
+enum class TryOnSection { GLASSES, MASKS, HAIR }
 
 data class EditorUiState(
     val loading: Boolean = true,
@@ -53,6 +58,12 @@ data class EditorUiState(
     val saving: Boolean = false,
     val savedUri: String? = null,
     val saveFailed: Boolean = false,
+    val tryOnSection: TryOnSection = TryOnSection.GLASSES,
+    /** Looking for faces and hair, the first time the Try on tab opens. */
+    val scanning: Boolean = false,
+    val scanned: Boolean = false,
+    val faceCount: Int = 0,
+    val hairFound: Boolean = false,
 ) {
     val hasChanges: Boolean get() = !edit.isIdentity
 }
@@ -65,6 +76,7 @@ data class EditorUiState(
 class EditorViewModel @Inject constructor(
     private val library: PhotoLibrary,
     private val editor: PhotoEditor,
+    private val scanner: SceneScanner,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(EditorUiState())
@@ -77,6 +89,7 @@ class EditorViewModel @Inject constructor(
     private var openedUri: String? = null
     private var photo: CapturedImage? = null
     private var working: Bitmap? = null
+    private var scene: FaceScene = FaceScene.EMPTY
 
     /** The crop rectangle when a straighten drag began, so repeated adjustments don't keep shrinking it. */
     private var straightenBase: CropRectF? = null
@@ -93,6 +106,7 @@ class EditorViewModel @Inject constructor(
                 working = bitmap
                 _state.update { it.copy(loading = false) }
                 startRendering(bitmap)
+                if (_state.value.tab == EditorTab.TRY_ON) scanOnce()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -105,26 +119,38 @@ class EditorViewModel @Inject constructor(
     private fun startRendering(working: Bitmap) {
         // The edited preview: re-rendered for every change, dropping frames a newer change overtakes.
         viewModelScope.launch(Dispatchers.Default) {
-            var cutFor: EditCrop? = null
+            var cutFor: Pair<EditCrop, TryOn>? = null
             var cut: Bitmap? = null
-            var frameFor: EditCrop? = null
+            var frameFor: Pair<EditCrop, TryOn>? = null
             var frame: Bitmap? = null
+            var dressedFor: TryOn? = null
+            var dressed: Bitmap = working
             combine(edits, _state.map { it.tab == EditorTab.CROP }.distinctUntilChanged()) { edit, cropping -> edit to cropping }
                 .collectLatest { (edit, cropping) ->
                     val colour = EditColour.of(edit)
+                    // Try-ons are painted onto the upright photo once per change of what is tried on.
+                    if (dressedFor != edit.tryOn) {
+                        dressed = if (edit.tryOn.isNone) {
+                            working
+                        } else {
+                            working.copy(Bitmap.Config.ARGB_8888, true).also { TryOnPainter.paint(it, edit.tryOn, scene) }
+                        }
+                        dressedFor = edit.tryOn
+                    }
                     if (cropping) {
                         // The frame only depends on the turn, flip and straightening, not on the crop rectangle.
-                        val key = edit.crop.copy(left = 0f, top = 0f, right = 1f, bottom = 1f)
-                        val base = frame.takeIf { frameFor == key } ?: EditPreview.frame(working, edit.crop).also {
+                        val key = edit.crop.copy(left = 0f, top = 0f, right = 1f, bottom = 1f) to edit.tryOn
+                        val base = frame.takeIf { frameFor == key } ?: EditPreview.frame(dressed, edit.crop).also {
                             frame = it
                             frameFor = key
                         }
                         val shown = EditPreview.colour(base, colour)
                         _state.update { it.copy(frame = shown.asImageBitmap()) }
                     } else {
-                        val base = cut.takeIf { cutFor == edit.crop } ?: EditPreview.cut(working, edit.crop).also {
+                        val key = edit.crop to edit.tryOn
+                        val base = cut.takeIf { cutFor == key } ?: EditPreview.cut(dressed, edit.crop).also {
                             cut = it
-                            cutFor = edit.crop
+                            cutFor = key
                         }
                         val shown = EditPreview.colour(base, colour)
                         _state.update { it.copy(preview = shown.asImageBitmap(), original = base.asImageBitmap()) }
@@ -143,7 +169,39 @@ class EditorViewModel @Inject constructor(
         }
     }
 
-    fun selectTab(tab: EditorTab) = _state.update { it.copy(tab = tab) }
+    fun selectTab(tab: EditorTab) {
+        _state.update { it.copy(tab = tab) }
+        if (tab == EditorTab.TRY_ON) scanOnce()
+    }
+
+    fun selectTryOnSection(section: TryOnSection) = _state.update { it.copy(tryOnSection = section) }
+
+    /** Changes what is being tried on, as one undo step. */
+    fun setTryOn(tryOn: TryOn) {
+        show(edits.value.copy(tryOn = tryOn))
+        commit()
+    }
+
+    /** Hair colour strength while the slider moves; [commit] ends it. */
+    fun setHairStrength(value: Float) = show(edits.value.copy(tryOn = edits.value.tryOn.copy(hairStrength = value.coerceIn(0f, 1f))))
+
+    private fun scanOnce() {
+        val bitmap = working ?: return
+        val current = _state.value
+        if (current.scanned || current.scanning) return
+        _state.update { it.copy(scanning = true) }
+        viewModelScope.launch {
+            val found = withContext(Dispatchers.Default) { scanner.scan(bitmap) }
+            scene = found
+            _state.update {
+                it.copy(scanning = false, scanned = true, faceCount = found.faces.size, hairFound = found.hair != null)
+            }
+        }
+    }
+
+    override fun onCleared() {
+        scanner.close()
+    }
 
     fun selectTool(tool: Adjustment) = _state.update { it.copy(tool = tool) }
 
@@ -243,7 +301,7 @@ class EditorViewModel @Inject constructor(
         _state.update { it.copy(saving = true, saveFailed = false) }
         viewModelScope.launch {
             try {
-                val rendered = editor.render(image, edit)
+                val rendered = editor.render(image, edit, scene)
                 val uri = library.saveEdited(rendered)
                 _state.update { it.copy(saving = false, savedUri = uri) }
             } catch (e: CancellationException) {

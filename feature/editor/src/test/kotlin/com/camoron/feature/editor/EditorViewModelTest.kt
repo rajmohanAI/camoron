@@ -1,8 +1,12 @@
 package com.camoron.feature.editor
 
+import android.graphics.Bitmap
 import com.camoron.domain.model.Adjustment
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.EditLook
+import com.camoron.domain.model.FaceScene
+import com.camoron.domain.model.GlassesStyle
+import com.camoron.domain.model.TryOn
 import com.camoron.domain.model.PhotoEdit
 import com.camoron.domain.repository.PhotoEditor
 import com.camoron.domain.repository.PhotoLibrary
@@ -17,9 +21,13 @@ class EditorViewModelTest {
         override suspend fun saveEdited(image: CapturedImage): String = "content://edited"
     }
     private val editor = object : PhotoEditor {
-        override suspend fun render(photo: CapturedImage, edit: PhotoEdit): CapturedImage = photo
+        override suspend fun render(photo: CapturedImage, edit: PhotoEdit, scene: FaceScene): CapturedImage = photo
     }
-    private val viewModel = EditorViewModel(library, editor)
+    private val scanner = object : SceneScanner {
+        override fun scan(bitmap: Bitmap): FaceScene = FaceScene.EMPTY
+        override fun close() = Unit
+    }
+    private val viewModel = EditorViewModel(library, editor, scanner)
 
     @Test
     fun `a slider drag is one undo step`() {
@@ -45,6 +53,14 @@ class EditorViewModelTest {
         viewModel.commit()
         assertThat(viewModel.state.value.canRedo).isFalse()
         assertThat(viewModel.state.value.hasChanges).isTrue()
+    }
+
+    @Test
+    fun `trying something on is one undo step`() {
+        viewModel.setTryOn(TryOn(glasses = GlassesStyle.AVIATOR))
+        assertThat(viewModel.state.value.hasChanges).isTrue()
+        viewModel.undo()
+        assertThat(viewModel.state.value.edit.tryOn.isNone).isTrue()
     }
 
     @Test

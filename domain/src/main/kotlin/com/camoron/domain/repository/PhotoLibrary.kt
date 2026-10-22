@@ -1,6 +1,7 @@
 package com.camoron.domain.repository
 
 import com.camoron.domain.model.CapturedImage
+import com.camoron.domain.model.FaceScene
 import com.camoron.domain.model.PhotoEdit
 
 /** Photos for the in-app viewer and editor. */
@@ -17,6 +18,9 @@ interface PhotoLibrary {
 
 /** Renders an edit onto the full-size photo. */
 interface PhotoEditor {
-    /** The finished JPEG, upright, with the original's camera details carried across. */
-    suspend fun render(photo: CapturedImage, edit: PhotoEdit): CapturedImage
+    /**
+     * The finished JPEG, upright, with the original's camera details carried across. [scene] is
+     * where the faces and hair are, for try-ons.
+     */
+    suspend fun render(photo: CapturedImage, edit: PhotoEdit, scene: FaceScene = FaceScene.EMPTY): CapturedImage
 }
