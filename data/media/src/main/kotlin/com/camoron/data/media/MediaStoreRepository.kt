@@ -3,6 +3,7 @@ package com.camoron.data.media
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.os.Build
@@ -12,7 +13,9 @@ import androidx.exifinterface.media.ExifInterface
 import com.camoron.core.common.IoDispatcher
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.ImageFormat
+import com.camoron.domain.model.PixelSize
 import com.camoron.domain.repository.MediaRepository
+import com.camoron.domain.repository.PhotoLibrary
 import com.camoron.domain.repository.PendingVideo
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineDispatcher
@@ -35,15 +38,25 @@ import javax.inject.Inject
 class MediaStoreRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     @IoDispatcher private val io: CoroutineDispatcher,
-) : MediaRepository {
+) : MediaRepository, PhotoLibrary {
 
-    override suspend fun save(image: CapturedImage): String = withContext(io) {
+    override suspend fun save(image: CapturedImage): String = withContext(io) { insertPhoto(image, image.timestampMillis) }
+
+    /**
+     * An edited copy is named for when it was saved, so it never collides with the original, but
+     * keeps the original's date taken, so gallery apps show it right beside the original.
+     */
+    override suspend fun saveEdited(image: CapturedImage): String = withContext(io) {
+        insertPhoto(image, System.currentTimeMillis())
+    }
+
+    private fun insertPhoto(image: CapturedImage, nameMillis: Long): String {
         val resolver = context.contentResolver
         val (mime, extension) = when (image.format) {
             ImageFormat.JPEG -> "image/jpeg" to "jpg"
             ImageFormat.DNG -> "image/x-adobe-dng" to "dng"
         }
-        val name = PHOTO_PREFIX + SimpleDateFormat(NAME_TIME, Locale.US).format(Date(image.timestampMillis))
+        val name = PHOTO_PREFIX + SimpleDateFormat(NAME_TIME, Locale.US).format(Date(nameMillis))
 
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, "$name.$extension")
@@ -87,7 +100,41 @@ class MediaStoreRepository @Inject constructor(
             resolver.delete(uri, null, null)
             throw e
         }
-        uri.toString()
+        return uri.toString()
+    }
+
+    override suspend fun recentPhotos(limit: Int): List<String> = withContext(io) {
+        val collection = imageCollection()
+        runCatching {
+            val (selection, args) = oursSelection("image/jpeg", PHOTO_PREFIX, "jpg")
+            context.contentResolver.query(
+                collection,
+                arrayOf(MediaStore.MediaColumns._ID),
+                selection,
+                args,
+                "${MediaStore.Images.ImageColumns.DATE_TAKEN} DESC",
+            )?.use { cursor ->
+                buildList {
+                    while (size < limit && cursor.moveToNext()) add(ContentUris.withAppendedId(collection, cursor.getLong(0)).toString())
+                }
+            }
+        }.getOrNull().orEmpty()
+    }
+
+    override suspend fun read(uri: String): CapturedImage = withContext(io) {
+        val parsed = Uri.parse(uri)
+        val resolver = context.contentResolver
+        val bytes = resolver.openInputStream(parsed)?.use { it.readBytes() } ?: error("Could not open $uri")
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) error("Not a photo: $uri")
+        // Photos from other apps may not be in the gallery's index; then the time is now.
+        val taken = runCatching {
+            resolver.query(parsed, arrayOf(MediaStore.Images.ImageColumns.DATE_TAKEN), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0).takeIf { it > 0 } else null
+            }
+        }.getOrNull()
+        CapturedImage(bytes, ImageFormat.JPEG, PixelSize(bounds.outWidth, bounds.outHeight), taken ?: System.currentTimeMillis())
     }
 
     override suspend fun createVideo(timestampMillis: Long): PendingVideo = withContext(io) {
@@ -142,12 +189,25 @@ class MediaStoreRepository @Inject constructor(
         listOfNotNull(photo, video).maxByOrNull { it.second }?.first?.toString()
     }
 
-    /**
-     * Newest Camoron item of [mime] in [collection], with the time it was taken. Files are named like
-     * the phone camera's (IMG_..., VID_...), so on Android 10+ ours are told apart by owner; older
-     * builds named them CAMORON_....
-     */
+    /** Newest Camoron item of [mime] in [collection], with the time it was taken. */
     private fun latestIn(collection: Uri, mime: String, prefix: String, extension: String): Pair<Uri, Long>? = runCatching {
+        val (selection, args) = oursSelection(mime, prefix, extension)
+        context.contentResolver.query(
+            collection,
+            arrayOf(MediaStore.MediaColumns._ID, MediaStore.Images.ImageColumns.DATE_TAKEN),
+            selection,
+            args,
+            "${MediaStore.Images.ImageColumns.DATE_TAKEN} DESC",
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) ContentUris.withAppendedId(collection, cursor.getLong(0)) to cursor.getLong(1) else null
+        }
+    }.getOrNull()
+
+    /**
+     * Selects Camoron's own items of [mime]. Files are named like the phone camera's (IMG_..., VID_...),
+     * so on Android 10+ ours are told apart by owner; older builds named them CAMORON_....
+     */
+    private fun oursSelection(mime: String, prefix: String, extension: String): Pair<String, Array<String>> {
         val name = MediaStore.MediaColumns.DISPLAY_NAME
         val ours = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?"
@@ -160,16 +220,8 @@ class MediaStoreRepository @Inject constructor(
             "${prefix}[0-9]*_[0-9]*_[0-9][0-9][0-9].$extension"
         }
         val selection = "($ours OR $name LIKE ?) AND ${MediaStore.MediaColumns.MIME_TYPE} = ?"
-        context.contentResolver.query(
-            collection,
-            arrayOf(MediaStore.MediaColumns._ID, MediaStore.Images.ImageColumns.DATE_TAKEN),
-            selection,
-            arrayOf(oursArg, "$LEGACY_PREFIX%", mime),
-            "${MediaStore.Images.ImageColumns.DATE_TAKEN} DESC",
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) ContentUris.withAppendedId(collection, cursor.getLong(0)) to cursor.getLong(1) else null
-        }
-    }.getOrNull()
+        return selection to arrayOf(oursArg, "$LEGACY_PREFIX%", mime)
+    }
 
     private fun imageCollection(): Uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)

@@ -1,5 +1,6 @@
 package com.camoron.app
 
+import android.content.Intent
 import android.os.Bundle
 import android.graphics.Color as AndroidColor
 import androidx.activity.ComponentActivity
@@ -31,6 +32,8 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
         )
+        // "Edit with Camoron" from a gallery app hands over the photo to edit.
+        val editUri = intent?.takeIf { it.action == Intent.ACTION_EDIT }?.data?.toString()
         setContent {
             CamoronTheme {
                 val consentAccepted by viewModel.disclaimerAccepted.collectAsStateWithLifecycle()
@@ -38,7 +41,10 @@ class MainActivity : ComponentActivity() {
                     // Wait for the stored consent before choosing a start screen, so the camera
                     // never opens ahead of the disclaimer.
                     consentAccepted?.let { accepted ->
-                        CamoronNavHost(startOnCamera = accepted && hasRequiredPermissions(this@MainActivity))
+                        CamoronNavHost(
+                            startOnCamera = accepted && hasRequiredPermissions(this@MainActivity),
+                            editUri = editUri.takeIf { accepted },
+                        )
                     }
                 }
             }

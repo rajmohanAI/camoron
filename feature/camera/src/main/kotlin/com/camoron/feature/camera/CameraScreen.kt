@@ -114,6 +114,7 @@ import com.camoron.domain.model.PixelSize
 @Composable
 fun CameraScreen(
     onOpenSettings: () -> Unit,
+    onOpenPhoto: (String) -> Unit = {},
     viewModel: CameraViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -237,6 +238,7 @@ fun CameraScreen(
                         onModeChange = viewModel::setMode,
                         onCapture = viewModel::onShutter,
                         onSwitch = viewModel::switchCamera,
+                        onOpenPhoto = onOpenPhoto,
                     )
                 }
             }
@@ -497,6 +499,7 @@ private fun BottomBar(
     onModeChange: (CaptureMode) -> Unit,
     onCapture: () -> Unit,
     onSwitch: () -> Unit,
+    onOpenPhoto: (String) -> Unit,
 ) {
     val haptics = rememberHaptics()
     Column(
@@ -521,6 +524,7 @@ private fun BottomBar(
                     saving = state.photosSaving > 0,
                     instant = state.instantThumbnail,
                     instantUri = state.instantThumbnailUri,
+                    onOpenPhoto = onOpenPhoto,
                 )
             }
             if (state.mode.isVideo) {
