@@ -148,7 +148,9 @@ class CameraMathTest {
     }
 
     @Test
-    fun `optical zoom steps keep telephotos only, rounded to halves`() {
+    fun `optical zoom steps keep telephotos only, in whole steps`() {
         assertThat(CameraMath.opticalZoomSteps(listOf(0.5f, 1f, 2.9f, 3.1f, 4.8f))).containsExactly(3f, 5f).inOrder()
+        // A 3x lens whose sensor-based estimate comes out short still gets its 3x button.
+        assertThat(CameraMath.opticalZoomSteps(listOf(2.6f))).containsExactly(3f)
     }
 }

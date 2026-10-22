@@ -61,4 +61,11 @@ class PlanZoomPresetsTest {
             ZoomPreset(3f, "2", 1f),
         ).inOrder()
     }
+
+    @Test
+    fun `a 3x telephoto whose focal length reads short is still the 3x button`() {
+        val main = fullCamera(id = "0").copy(zoomRatioRange = 1f..8f, equivalentFocalLengthMm = 24f)
+        val tele = fullCamera(id = "2").copy(equivalentFocalLengthMm = 62f)
+        assertThat(plan(main, listOf(main, tele)).map { it.label }).containsExactly(1f, 2f, 3f).inOrder()
+    }
 }

@@ -158,21 +158,23 @@ fun CameraScreen(
                 .onSizeChanged { if (it.height > 0) viewModel.onDisplayAspect(it.width.toFloat() / it.height) },
         ) {
             val aspect = state.cameraSettings.aspectRatio
-            // Full screen really is the whole screen, under the (hidden) status bar and the camera cutout.
-            // Video is always 16:9, so its preview shows exactly the frame being recorded.
+            // Changing photo shape keeps the picture exactly as it is and only changes the frame, so
+            // nothing ever zooms or stretches. Video is always 16:9, so its preview shows exactly the
+            // frame being recorded.
             val insets = WindowInsets.safeDrawing.asPaddingValues()
-            val frame = PreviewFrame.of(
-                ratio = when {
-                    state.mode.isVideo || aspect == AspectRatioSetting.RATIO_9_16 -> 16f / 9
-                    aspect == AspectRatioSetting.FULL_SCREEN -> null
-                    else -> 4f / 3
-                },
-                screenWidth = maxWidth.value,
-                screenHeight = maxHeight.value,
-                topInset = (insets.calculateTopPadding() + TOP_BAR_HEIGHT).value,
-                bottomInset = insets.calculateBottomPadding().value,
-            )
-            // The picture glides to a new shape like the phone's own camera, rather than jumping.
+            val topInset = (insets.calculateTopPadding() + TOP_BAR_HEIGHT).value
+            val bottomInset = insets.calculateBottomPadding().value
+            val frame = if (state.mode.isVideo) {
+                PreviewFrame.video(16f / 9, maxWidth.value, maxHeight.value, topInset, bottomInset)
+            } else {
+                val ratio = when (aspect) {
+                    AspectRatioSetting.RATIO_3_4 -> 4f / 3
+                    AspectRatioSetting.RATIO_9_16 -> 16f / 9
+                    AspectRatioSetting.FULL_SCREEN -> maxHeight / maxWidth
+                }
+                PreviewFrame.photo(ratio, maxWidth.value, maxHeight.value, topInset, bottomInset)
+            }
+            // The frame glides to its new shape rather than jumping.
             val top by animateDpAsState(frame.top.dp, tween(FRAME_MS), label = "frameTop")
             val width by animateDpAsState(frame.width.dp, tween(FRAME_MS), label = "frameWidth")
             val height by animateDpAsState(frame.height.dp, tween(FRAME_MS), label = "frameHeight")
@@ -235,7 +237,6 @@ fun CameraScreen(
                         onModeChange = viewModel::setMode,
                         onCapture = viewModel::onShutter,
                         onSwitch = viewModel::switchCamera,
-                        translucent = aspect == AspectRatioSetting.FULL_SCREEN && !state.mode.isVideo,
                     )
                 }
             }
@@ -309,14 +310,8 @@ private fun PreviewArea(
         }
         if (state.cameraSettings.grid) GridOverlay(Modifier.fillMaxSize())
         if (state.cameraSettings.leveller) LevellerOverlay(Modifier.fillMaxSize())
-        // In full screen the preview runs under the top menu, so keep the badges below it.
-        val badgeTop = if (state.cameraSettings.aspectRatio == AspectRatioSetting.FULL_SCREEN && !state.mode.isVideo) {
-            WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding() + TOP_BAR_HEIGHT + 8.dp
-        } else {
-            12.dp
-        }
         Row(
-            Modifier.align(Alignment.TopCenter).padding(top = badgeTop),
+            Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (state.recording) RecordingBadge(state)
@@ -502,13 +497,12 @@ private fun BottomBar(
     onModeChange: (CaptureMode) -> Unit,
     onCapture: () -> Unit,
     onSwitch: () -> Unit,
-    translucent: Boolean,
 ) {
     val haptics = rememberHaptics()
     Column(
         Modifier
             .fillMaxWidth()
-            .then(if (translucent) Modifier.background(Glass.BottomScrim) else Modifier.background(Color.Black))
+            .background(Color.Black)
             .padding(top = 8.dp, bottom = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
