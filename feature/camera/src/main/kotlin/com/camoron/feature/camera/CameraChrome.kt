@@ -520,9 +520,15 @@ internal fun RecordingBadge(state: CameraUiState, modifier: Modifier = Modifier)
     }
 }
 
-/** Last photo or video Camoron saved; tapping opens it in the phone's gallery app. */
+/** Last photo or video Camoron saved. Tapping a photo opens Camoron's viewer; a video opens in the gallery app. */
 @Composable
-internal fun GalleryThumbnail(uri: String?, saving: Boolean = false, instant: ImageBitmap? = null, instantUri: String? = null) {
+internal fun GalleryThumbnail(
+    uri: String?,
+    saving: Boolean = false,
+    instant: ImageBitmap? = null,
+    instantUri: String? = null,
+    onOpenPhoto: (String) -> Unit = {},
+) {
     val context = LocalContext.current
     val bitmap by produceState<ImageBitmap?>(initialValue = null, uri) {
         value = uri?.let { withContext(Dispatchers.IO) { loadThumbnail(context, Uri.parse(it)) } }
@@ -535,7 +541,9 @@ internal fun GalleryThumbnail(uri: String?, saving: Boolean = false, instant: Im
             .border(2.dp, Color.White.copy(alpha = 0.85f), CircleShape)
             .background(Color.White.copy(alpha = 0.08f))
             // While the newest photo is still saving, wait for it rather than open the previous one.
-            .clickable(enabled = uri != null && !saving, onClickLabel = description) { uri?.let { openInGallery(context, it) } },
+            .clickable(enabled = uri != null && !saving, onClickLabel = description) {
+                uri?.let { if (Uri.parse(it).pathSegments.contains("video")) openInGallery(context, it) else onOpenPhoto(it) }
+            },
     ) {
         // The shot appears the moment it is taken; once it is optimised and saved, the saved photo's
         // own thumbnail takes over, so what shows here is the finished photo.
