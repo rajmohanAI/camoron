@@ -11,4 +11,7 @@ internal abstract class EditorModule {
     /** One scanner per editor, so its models are released when the editor closes. */
     @Binds
     abstract fun bindSceneScanner(impl: FaceScanner): SceneScanner
+
+    @Binds
+    abstract fun bindObjectPicker(impl: MagicTouchPicker): ObjectPicker
 }

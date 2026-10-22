@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.camoron.core.common.DiagnosticLog
+import com.camoron.core.imaging.ObjectEraser
 import com.camoron.core.imaging.TryOnPainter
 import com.camoron.domain.model.Adjustment
 import com.camoron.domain.model.CapturedImage
@@ -15,6 +16,7 @@ import com.camoron.domain.model.CropRectF
 import com.camoron.domain.model.EditColour
 import com.camoron.domain.model.EditCrop
 import com.camoron.domain.model.EditLook
+import com.camoron.domain.model.EraseMask
 import com.camoron.domain.model.FaceScene
 import com.camoron.domain.model.PhotoEdit
 import com.camoron.domain.model.TryOn
@@ -23,6 +25,8 @@ import com.camoron.domain.repository.PhotoLibrary
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,9 +39,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
-enum class EditorTab { LOOKS, ADJUST, CROP, TRY_ON }
+enum class EditorTab { LOOKS, ADJUST, CROP, ERASE, TRY_ON }
 
 enum class TryOnSection { GLASSES, MASKS, HAIR }
+
+/** How the magic eraser chooses what to remove: tap an object, or paint over it. */
+enum class EraseTool { TAP, BRUSH }
 
 data class EditorUiState(
     val loading: Boolean = true,
@@ -64,6 +71,20 @@ data class EditorUiState(
     val scanned: Boolean = false,
     val faceCount: Int = 0,
     val hairFound: Boolean = false,
+    /** On the Erase tab: the whole upright photo, as edited, that things are chosen on. */
+    val eraseView: ImageBitmap? = null,
+    val eraseTool: EraseTool = EraseTool.TAP,
+    /** Brush size, 0–1 from smallest to largest. */
+    val brushSize: Float = 0.4f,
+    /** What is chosen to be removed next, drawn as a tint over [eraseView]; null when nothing is. */
+    val selection: ImageBitmap? = null,
+    val hasSelection: Boolean = false,
+    /** Finding the object under a tap. */
+    val picking: Boolean = false,
+    /** Nothing was found under the last tap. */
+    val pickMissed: Boolean = false,
+    /** Filling in the background behind what was removed. */
+    val erasing: Boolean = false,
 ) {
     val hasChanges: Boolean get() = !edit.isIdentity
 }
@@ -77,6 +98,7 @@ class EditorViewModel @Inject constructor(
     private val library: PhotoLibrary,
     private val editor: PhotoEditor,
     private val scanner: SceneScanner,
+    private val picker: ObjectPicker,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(EditorUiState())
@@ -90,6 +112,13 @@ class EditorViewModel @Inject constructor(
     private var photo: CapturedImage? = null
     private var working: Bitmap? = null
     private var scene: FaceScene = FaceScene.EMPTY
+
+    /** The upright photo with the current erases, which taps pick objects from. */
+    @Volatile
+    private var erased: Bitmap? = null
+
+    /** What the eraser will remove next. */
+    private var selection: EraseMask? = null
 
     /** The crop rectangle when a straighten drag began, so repeated adjustments don't keep shrinking it. */
     private var straightenBase: CropRectF? = null
@@ -119,41 +148,58 @@ class EditorViewModel @Inject constructor(
     private fun startRendering(working: Bitmap) {
         // The edited preview: re-rendered for every change, dropping frames a newer change overtakes.
         viewModelScope.launch(Dispatchers.Default) {
-            var cutFor: Pair<EditCrop, TryOn>? = null
+            val stages = ErasedStages(working)
+            var cutFor: Pair<EditCrop, Bitmap>? = null
             var cut: Bitmap? = null
-            var frameFor: Pair<EditCrop, TryOn>? = null
+            var frameFor: Pair<EditCrop, Bitmap>? = null
             var frame: Bitmap? = null
-            var dressedFor: TryOn? = null
+            var dressedFor: Pair<TryOn, Bitmap>? = null
             var dressed: Bitmap = working
-            combine(edits, _state.map { it.tab == EditorTab.CROP }.distinctUntilChanged()) { edit, cropping -> edit to cropping }
-                .collectLatest { (edit, cropping) ->
+            combine(edits, _state.map { it.tab }.distinctUntilChanged()) { edit, tab -> edit to tab }
+                .collectLatest { (edit, tab) ->
                     val colour = EditColour.of(edit)
-                    // Try-ons are painted onto the upright photo once per change of what is tried on.
-                    if (dressedFor != edit.tryOn) {
-                        dressed = if (edit.tryOn.isNone) {
-                            working
-                        } else {
-                            working.copy(Bitmap.Config.ARGB_8888, true).also { TryOnPainter.paint(it, edit.tryOn, scene) }
-                        }
-                        dressedFor = edit.tryOn
-                    }
-                    if (cropping) {
-                        // The frame only depends on the turn, flip and straightening, not on the crop rectangle.
-                        val key = edit.crop.copy(left = 0f, top = 0f, right = 1f, bottom = 1f) to edit.tryOn
-                        val base = frame.takeIf { frameFor == key } ?: EditPreview.frame(dressed, edit.crop).also {
-                            frame = it
-                            frameFor = key
-                        }
-                        val shown = EditPreview.colour(base, colour)
-                        _state.update { it.copy(frame = shown.asImageBitmap()) }
+                    // Erases are filled in once each, in order, on the upright photo.
+                    val upright = if (stages.isCurrent(edit.erases)) {
+                        stages.latest
                     } else {
-                        val key = edit.crop to edit.tryOn
-                        val base = cut.takeIf { cutFor == key } ?: EditPreview.cut(dressed, edit.crop).also {
-                            cut = it
-                            cutFor = key
+                        _state.update { it.copy(erasing = true) }
+                        stages.upTo(edit.erases)
+                    }
+                    erased = upright
+                    // Try-ons are painted onto it once per change of what is tried on.
+                    val dressKey = edit.tryOn to upright
+                    if (dressedFor != dressKey) {
+                        dressed = if (edit.tryOn.isNone) {
+                            upright
+                        } else {
+                            upright.copy(Bitmap.Config.ARGB_8888, true).also { TryOnPainter.paint(it, edit.tryOn, scene) }
                         }
-                        val shown = EditPreview.colour(base, colour)
-                        _state.update { it.copy(preview = shown.asImageBitmap(), original = base.asImageBitmap()) }
+                        dressedFor = dressKey
+                    }
+                    when (tab) {
+                        EditorTab.CROP -> {
+                            // The frame only depends on the turn, flip and straightening, not on the crop rectangle.
+                            val key = edit.crop.copy(left = 0f, top = 0f, right = 1f, bottom = 1f) to dressed
+                            val base = frame.takeIf { frameFor == key } ?: EditPreview.frame(dressed, edit.crop).also {
+                                frame = it
+                                frameFor = key
+                            }
+                            val shown = EditPreview.colour(base, colour)
+                            _state.update { it.copy(frame = shown.asImageBitmap(), erasing = false) }
+                        }
+                        EditorTab.ERASE -> {
+                            val shown = EditPreview.colour(dressed, colour)
+                            _state.update { it.copy(eraseView = shown.asImageBitmap(), erasing = false) }
+                        }
+                        else -> {
+                            val key = edit.crop to dressed
+                            val base = cut.takeIf { cutFor == key } ?: EditPreview.cut(dressed, edit.crop).also {
+                                cut = it
+                                cutFor = key
+                            }
+                            val shown = EditPreview.colour(base, colour)
+                            _state.update { it.copy(preview = shown.asImageBitmap(), original = base.asImageBitmap(), erasing = false) }
+                        }
                     }
                 }
         }
@@ -172,6 +218,56 @@ class EditorViewModel @Inject constructor(
     fun selectTab(tab: EditorTab) {
         _state.update { it.copy(tab = tab) }
         if (tab == EditorTab.TRY_ON) scanOnce()
+    }
+
+    fun selectEraseTool(tool: EraseTool) = _state.update { it.copy(eraseTool = tool) }
+
+    fun setBrushSize(value: Float) = _state.update { it.copy(brushSize = value.coerceIn(0f, 1f)) }
+
+    /** Adds the object at ([x], [y]), 0–1 across the upright photo, to what will be removed. */
+    fun pickAt(x: Float, y: Float) {
+        val bitmap = erased ?: return
+        if (_state.value.picking || _state.value.erasing) return
+        _state.update { it.copy(picking = true, pickMissed = false) }
+        viewModelScope.launch {
+            val picked = withContext(Dispatchers.Default) { picker.pick(bitmap, x, y) }
+            if (picked == null) {
+                _state.update { it.copy(picking = false, pickMissed = true) }
+            } else {
+                select(emptySelection(bitmap).withSelection(picked.width, picked.height, picked.selected))
+                _state.update { it.copy(picking = false) }
+            }
+        }
+    }
+
+    fun pickMissShown() = _state.update { it.copy(pickMissed = false) }
+
+    /** Adds a brush stroke through [points] (x, y pairs, 0–1 across the upright photo) to what will be removed. */
+    fun brush(points: FloatArray) {
+        val bitmap = erased ?: return
+        if (_state.value.erasing) return
+        select(emptySelection(bitmap).withStroke(points, brushRadius(_state.value.brushSize)))
+    }
+
+    fun clearSelection() {
+        selection = null
+        _state.update { it.copy(selection = null, hasSelection = false) }
+    }
+
+    /** Removes what is selected, filling in the background behind it, as one undo step. */
+    fun eraseSelection() {
+        val mask = selection?.takeUnless { it.isEmpty } ?: return
+        clearSelection()
+        show(edits.value.copy(erases = edits.value.erases + mask))
+        commit()
+    }
+
+    /** The current selection, or a new empty one shaped like [bitmap]. */
+    private fun emptySelection(bitmap: Bitmap) = selection ?: EraseMask.empty(bitmap.width, bitmap.height)
+
+    private fun select(mask: EraseMask) {
+        selection = mask
+        _state.update { it.copy(selection = selectionTint(mask).asImageBitmap(), hasSelection = !mask.isEmpty) }
     }
 
     fun selectTryOnSection(section: TryOnSection) = _state.update { it.copy(tryOnSection = section) }
@@ -201,6 +297,7 @@ class EditorViewModel @Inject constructor(
 
     override fun onCleared() {
         scanner.close()
+        picker.close()
     }
 
     fun selectTool(tool: Adjustment) = _state.update { it.copy(tool = tool) }
@@ -341,5 +438,56 @@ class EditorViewModel @Inject constructor(
         const val PREVIEW_EDGE = 1600
         const val THUMBNAIL_EDGE = 180
         const val MAX_HISTORY = 60
+        const val SELECTION_TINT = 0x99FF3D7F.toInt()
+
+        fun selectionTint(mask: EraseMask): Bitmap {
+            val pixels = IntArray(mask.width * mask.height) { i -> if (mask[i % mask.width, i / mask.width]) SELECTION_TINT else 0 }
+            return Bitmap.createBitmap(pixels, mask.width, mask.height, Bitmap.Config.ARGB_8888)
+        }
+    }
+}
+
+/** Brush radius, as a fraction of the photo's longer side, for a 0–1 brush size. */
+internal fun brushRadius(size: Float) = 0.008f + 0.05f * size
+
+/**
+ * The working photo with a list of erases applied, kept stage by stage so adding an erase only
+ * fills in the new one and undoing one goes back to a kept stage instead of starting over.
+ */
+private class ErasedStages(private val working: Bitmap) {
+    private var applied: List<EraseMask> = emptyList()
+
+    /** stages[i] is the photo with applied[0..i] removed, or null where dropped to save memory. */
+    private val stages = mutableListOf<Bitmap?>()
+
+    val latest: Bitmap get() = stages.lastOrNull() ?: working
+
+    fun isCurrent(erases: List<EraseMask>) = erases == applied && (erases.isEmpty() || stages.lastOrNull() != null)
+
+    /** The photo with [erases] removed; cancellable between erases. */
+    suspend fun upTo(erases: List<EraseMask>): Bitmap {
+        var common = 0
+        while (common < erases.size && common < applied.size && erases[common] == applied[common]) common++
+        while (stages.size > common) stages.removeAt(stages.lastIndex)
+        applied = applied.subList(0, common).toList()
+        // Start from the latest kept stage.
+        var start = common
+        while (start > 0 && stages[start - 1] == null) start--
+        var bitmap = if (start == 0) working else stages[start - 1]!!
+        for (i in start until erases.size) {
+            currentCoroutineContext().ensureActive()
+            val next = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+            ObjectEraser.erase(next, erases[i])
+            if (i < stages.size) stages[i] = next else stages += next
+            applied = erases.subList(0, i + 1).toList()
+            if (i >= KEPT) stages[i - KEPT] = null
+            bitmap = next
+        }
+        return bitmap
+    }
+
+    private companion object {
+        /** Stages kept for undo; each is a screen-sized photo. */
+        const val KEPT = 4
     }
 }

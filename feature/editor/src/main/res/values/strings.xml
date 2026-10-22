@@ -82,6 +82,18 @@
     <string name="adjust_vignette">Vignette</string>
     <string name="adjust_grain">Grain</string>
 
+    <string name="tab_erase">Erase</string>
+    <string name="erase_tap">Tap</string>
+    <string name="erase_brush">Brush</string>
+    <string name="erase_tap_hint">Tap something to remove it</string>
+    <string name="erase_brush_hint">Paint over what to remove</string>
+    <string name="erase_ready">Add more, or tap Erase</string>
+    <string name="erase_clear">Clear</string>
+    <string name="erase_action">Erase</string>
+    <string name="picking">Finding the object…</string>
+    <string name="erasing">Filling in the background…</string>
+    <string name="pick_missed">Nothing found there. Try the brush.</string>
+
     <string name="aspect_free">Free</string>
     <string name="aspect_original">Original</string>
     <string name="aspect_square">1:1</string>

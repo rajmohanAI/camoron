@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.Crop
@@ -84,7 +85,7 @@ import com.camoron.domain.model.EditLook
 import java.util.Locale
 import kotlin.math.roundToInt
 
-/** The photo editor: looks, adjustments and crop, saved as a new copy beside the original. */
+/** The photo editor: looks, adjustments, crop, magic eraser and try-ons, saved as a new copy beside the original. */
 @Composable
 fun EditorScreen(
     uri: String,
@@ -108,6 +109,12 @@ fun EditorScreen(
         LaunchedEffect(saved) {
             Toast.makeText(context, R.string.saved_copy, Toast.LENGTH_SHORT).show()
             onSaved(saved)
+        }
+    }
+    if (state.pickMissed) {
+        LaunchedEffect(Unit) {
+            Toast.makeText(context, R.string.pick_missed, Toast.LENGTH_SHORT).show()
+            viewModel.pickMissShown()
         }
     }
     if (state.saveFailed) {
@@ -144,6 +151,17 @@ fun EditorScreen(
                             onDragEnd = viewModel::commit,
                         )
                     } ?: CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    state.tab == EditorTab.ERASE -> state.eraseView?.let { picture ->
+                        EraseEditor(
+                            picture = picture,
+                            selection = state.selection,
+                            tool = state.eraseTool,
+                            brushRadius = brushRadius(state.brushSize),
+                            enabled = !state.picking && !state.erasing,
+                            onTap = viewModel::pickAt,
+                            onStroke = viewModel::brush,
+                        )
+                    } ?: CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                     state.preview != null -> ComparablePhoto(state)
                     else -> CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                 }
@@ -154,6 +172,7 @@ fun EditorScreen(
                         EditorTab.LOOKS -> LooksControls(state, viewModel)
                         EditorTab.ADJUST -> AdjustControls(state, viewModel)
                         EditorTab.CROP -> CropControls(state, viewModel)
+                        EditorTab.ERASE -> EraseControls(state, viewModel)
                         EditorTab.TRY_ON -> TryOnControls(state, viewModel)
                     }
                 }
@@ -453,7 +472,7 @@ private fun Tabs(selected: EditorTab, onSelect: (EditorTab) -> Unit) {
                 modifier = Modifier
                     .clip(RoundedCornerShape(12.dp))
                     .clickable { onSelect(tab) }
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
             ) {
                 Icon(tab.icon(), contentDescription = null, tint = color)
                 Text(stringResource(tab.label()), color = color, fontSize = 12.sp)
@@ -488,6 +507,7 @@ private fun EditorTab.label() = when (this) {
     EditorTab.LOOKS -> R.string.tab_looks
     EditorTab.ADJUST -> R.string.tab_adjust
     EditorTab.CROP -> R.string.tab_crop
+    EditorTab.ERASE -> R.string.tab_erase
     EditorTab.TRY_ON -> R.string.tab_try_on
 }
 
@@ -495,6 +515,7 @@ private fun EditorTab.icon() = when (this) {
     EditorTab.LOOKS -> Icons.Filled.Palette
     EditorTab.ADJUST -> Icons.Filled.Tune
     EditorTab.CROP -> Icons.Filled.Crop
+    EditorTab.ERASE -> Icons.Filled.AutoFixHigh
     EditorTab.TRY_ON -> Icons.Filled.Face
 }
 

@@ -27,7 +27,11 @@ class EditorViewModelTest {
         override fun scan(bitmap: Bitmap): FaceScene = FaceScene.EMPTY
         override fun close() = Unit
     }
-    private val viewModel = EditorViewModel(library, editor, scanner)
+    private val picker = object : ObjectPicker {
+        override fun pick(bitmap: Bitmap, x: Float, y: Float): PickedObject? = null
+        override fun close() = Unit
+    }
+    private val viewModel = EditorViewModel(library, editor, scanner, picker)
 
     @Test
     fun `a slider drag is one undo step`() {
@@ -70,5 +74,16 @@ class EditorViewModelTest {
         viewModel.resetAdjustment(Adjustment.CONTRAST)
         assertThat(viewModel.state.value.edit.adjustments).isEmpty()
         assertThat(viewModel.state.value.hasChanges).isFalse()
+    }
+
+    @Test
+    fun `erasing with nothing selected changes nothing`() {
+        viewModel.eraseSelection()
+        assertThat(viewModel.state.value.hasChanges).isFalse()
+        assertThat(viewModel.state.value.canUndo).isFalse()
+        viewModel.selectEraseTool(EraseTool.BRUSH)
+        viewModel.setBrushSize(2f)
+        assertThat(viewModel.state.value.eraseTool).isEqualTo(EraseTool.BRUSH)
+        assertThat(viewModel.state.value.brushSize).isEqualTo(1f)
     }
 }
