@@ -1,5 +1,6 @@
 package com.camoron.data.processing
 
+import com.camoron.domain.repository.PhotoEditor
 import com.camoron.domain.repository.PhotoProcessor
 import dagger.Binds
 import dagger.Module
@@ -13,4 +14,8 @@ internal abstract class ProcessingModule {
     @Binds
     @Singleton
     abstract fun bindPhotoProcessor(impl: BitmapPhotoProcessor): PhotoProcessor
+
+    @Binds
+    @Singleton
+    abstract fun bindPhotoEditor(impl: BitmapPhotoEditor): PhotoEditor
 }
