@@ -160,28 +160,8 @@ class BitmapPhotoProcessor @Inject constructor(
         }
     }
 
-    /**
-     * ExifInterface can only save to a file, so round-trip through the app's cache. When [copyFrom]
-     * is given (the JPEG was re-encoded and lost its EXIF), the camera's tags are copied over first.
-     */
-    private fun writeExif(bytes: ByteArray, copyFrom: ExifInterface?, orientation: Int, size: PixelSize): ByteArray {
-        val file = File.createTempFile("adjust", ".jpg", context.cacheDir)
-        try {
-            file.writeBytes(bytes)
-            ExifInterface(file).apply {
-                copyFrom?.let { source ->
-                    COPIED_TAGS.forEach { tag -> source.getAttribute(tag)?.let { setAttribute(tag, it) } }
-                    setAttribute(ExifInterface.TAG_PIXEL_X_DIMENSION, size.width.toString())
-                    setAttribute(ExifInterface.TAG_PIXEL_Y_DIMENSION, size.height.toString())
-                }
-                setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
-                saveAttributes()
-            }
-            return file.readBytes()
-        } finally {
-            file.delete()
-        }
-    }
+    private fun writeExif(bytes: ByteArray, copyFrom: ExifInterface?, orientation: Int, size: PixelSize): ByteArray =
+        writeJpegExif(context, bytes, copyFrom, orientation, size)
 
     private companion object {
         const val TAG = "PhotoProcessor"
@@ -199,34 +179,6 @@ class BitmapPhotoProcessor @Inject constructor(
                 }, "CamoronPhoto").apply { isDaemon = true }
             }.asCoroutineDispatcher()
         }
-
-        val COPIED_TAGS = listOf(
-            ExifInterface.TAG_DATETIME,
-            ExifInterface.TAG_DATETIME_ORIGINAL,
-            ExifInterface.TAG_DATETIME_DIGITIZED,
-            ExifInterface.TAG_SUBSEC_TIME,
-            ExifInterface.TAG_SUBSEC_TIME_ORIGINAL,
-            ExifInterface.TAG_SUBSEC_TIME_DIGITIZED,
-            ExifInterface.TAG_OFFSET_TIME,
-            ExifInterface.TAG_OFFSET_TIME_ORIGINAL,
-            ExifInterface.TAG_OFFSET_TIME_DIGITIZED,
-            ExifInterface.TAG_MAKE,
-            ExifInterface.TAG_MODEL,
-            ExifInterface.TAG_F_NUMBER,
-            ExifInterface.TAG_APERTURE_VALUE,
-            ExifInterface.TAG_EXPOSURE_TIME,
-            ExifInterface.TAG_SHUTTER_SPEED_VALUE,
-            ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY,
-            ExifInterface.TAG_EXPOSURE_BIAS_VALUE,
-            ExifInterface.TAG_EXPOSURE_PROGRAM,
-            ExifInterface.TAG_EXPOSURE_MODE,
-            ExifInterface.TAG_METERING_MODE,
-            ExifInterface.TAG_FLASH,
-            ExifInterface.TAG_WHITE_BALANCE,
-            ExifInterface.TAG_FOCAL_LENGTH,
-            ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
-            ExifInterface.TAG_COLOR_SPACE,
-        )
     }
 }
 
@@ -245,3 +197,54 @@ internal fun decodeBounds(bytes: ByteArray): PixelSize {
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     return PixelSize(bounds.outWidth, bounds.outHeight)
 }
+
+/**
+ * ExifInterface can only save to a file, so round-trip through the app's cache. When [copyFrom]
+ * is given (the JPEG was re-encoded and lost its EXIF), the camera's tags are copied over first.
+ */
+internal fun writeJpegExif(context: Context, bytes: ByteArray, copyFrom: ExifInterface?, orientation: Int, size: PixelSize): ByteArray {
+    val file = File.createTempFile("adjust", ".jpg", context.cacheDir)
+    try {
+        file.writeBytes(bytes)
+        ExifInterface(file).apply {
+            copyFrom?.let { source ->
+                COPIED_TAGS.forEach { tag -> source.getAttribute(tag)?.let { setAttribute(tag, it) } }
+                setAttribute(ExifInterface.TAG_PIXEL_X_DIMENSION, size.width.toString())
+                setAttribute(ExifInterface.TAG_PIXEL_Y_DIMENSION, size.height.toString())
+            }
+            setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
+            saveAttributes()
+        }
+        return file.readBytes()
+    } finally {
+        file.delete()
+    }
+}
+
+private val COPIED_TAGS = listOf(
+    ExifInterface.TAG_DATETIME,
+    ExifInterface.TAG_DATETIME_ORIGINAL,
+    ExifInterface.TAG_DATETIME_DIGITIZED,
+    ExifInterface.TAG_SUBSEC_TIME,
+    ExifInterface.TAG_SUBSEC_TIME_ORIGINAL,
+    ExifInterface.TAG_SUBSEC_TIME_DIGITIZED,
+    ExifInterface.TAG_OFFSET_TIME,
+    ExifInterface.TAG_OFFSET_TIME_ORIGINAL,
+    ExifInterface.TAG_OFFSET_TIME_DIGITIZED,
+    ExifInterface.TAG_MAKE,
+    ExifInterface.TAG_MODEL,
+    ExifInterface.TAG_F_NUMBER,
+    ExifInterface.TAG_APERTURE_VALUE,
+    ExifInterface.TAG_EXPOSURE_TIME,
+    ExifInterface.TAG_SHUTTER_SPEED_VALUE,
+    ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY,
+    ExifInterface.TAG_EXPOSURE_BIAS_VALUE,
+    ExifInterface.TAG_EXPOSURE_PROGRAM,
+    ExifInterface.TAG_EXPOSURE_MODE,
+    ExifInterface.TAG_METERING_MODE,
+    ExifInterface.TAG_FLASH,
+    ExifInterface.TAG_WHITE_BALANCE,
+    ExifInterface.TAG_FOCAL_LENGTH,
+    ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
+    ExifInterface.TAG_COLOR_SPACE,
+)

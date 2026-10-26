@@ -53,6 +53,11 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // The face and hair models are memory-mapped straight from the APK, which needs them uncompressed.
+    androidResources {
+        noCompress += listOf("tflite", "task")
+    }
 }
 
 kotlin {
@@ -71,6 +76,7 @@ dependencies {
     implementation(projects.feature.onboarding)
     implementation(projects.feature.camera)
     implementation(projects.feature.settings)
+    implementation(projects.feature.editor)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
