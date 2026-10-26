@@ -43,6 +43,15 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
+        // A fast build for trying on a phone: optimised like a release (not debuggable, so the app
+        // runs at full speed) but signed with the shared debug key so it installs over CI builds.
+        create("fast") {
+            initWith(getByName("release"))
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+        }
     }
 
     compileOptions {
@@ -79,6 +88,8 @@ dependencies {
     implementation(projects.feature.editor)
 
     implementation(libs.androidx.core.ktx)
+    // Applies the libraries' start-up profiles (Compose and others), so screens are compiled ahead of time.
+    implementation(libs.androidx.profileinstaller)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.navigation.compose)

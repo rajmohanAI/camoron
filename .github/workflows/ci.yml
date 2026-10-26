@@ -28,8 +28,8 @@ jobs:
       - name: Unit tests
         run: ./gradlew testDebugUnitTest :domain:test --stacktrace
 
-      - name: Assemble debug APK
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Assemble debug and fast APKs
+        run: ./gradlew assembleDebug assembleFast --stacktrace
 
       - name: Android lint
         run: ./gradlew :app:lintDebug
@@ -47,7 +47,13 @@ jobs:
           name: camoron-debug-apk
           path: app/build/outputs/apk/debug/*.apk
 
-      # Every build of main replaces the "latest-dev" pre-release, so this link always serves the newest APK:
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camoron-apk
+          path: app/build/outputs/apk/fast/*.apk
+
+      # Every build of main replaces the "latest-dev" pre-release, so these links always serve the newest APKs:
+      # https://github.com/rajmohanAI/camoron/releases/download/latest-dev/camoron.apk (fast, for trying out)
       # https://github.com/rajmohanAI/camoron/releases/download/latest-dev/camoron-debug.apk
       - name: Publish APK to the latest-dev release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -55,7 +61,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk camoron-debug.apk
-          notes="Debug build of ${GITHUB_SHA::7} from main, for testing on Android devices."
+          cp app/build/outputs/apk/fast/app-fast.apk camoron.apk
+          notes="Builds of ${GITHUB_SHA::7} from main. camoron.apk is optimised for trying on a phone; camoron-debug.apk is for debugging."
           # Move the tag instead of deleting it: deleting a release's tag and recreating it straight
           # away can leave the new release as an untagged draft, whose download link is a 404.
           git tag -f latest-dev "$GITHUB_SHA"
@@ -64,12 +71,12 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.draft and .name == "Camoron latest dev build") | .id' |
             xargs -r -I{} gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/{}"
           if gh release view latest-dev > /dev/null 2>&1; then
-            gh release upload latest-dev camoron-debug.apk --clobber
+            gh release upload latest-dev camoron.apk camoron-debug.apk --clobber
             gh release edit latest-dev --draft=false --prerelease --title "Camoron latest dev build" --notes "$notes"
           else
-            gh release create latest-dev camoron-debug.apk --verify-tag --prerelease \
+            gh release create latest-dev camoron.apk camoron-debug.apk --verify-tag --prerelease \
               --title "Camoron latest dev build" --notes "$notes"
           fi
           # Fail the build if the link people use doesn't serve the APK.
           gh release view latest-dev --json isDraft,assets \
-            --jq 'if .isDraft or (.assets | map(.name) | index("camoron-debug.apk") | not) then error("latest-dev is not published") else "latest-dev published" end'
+            --jq 'if .isDraft or (.assets | map(.name) | (index("camoron-debug.apk") and index("camoron.apk")) | not) then error("latest-dev is not published") else "latest-dev published" end'
