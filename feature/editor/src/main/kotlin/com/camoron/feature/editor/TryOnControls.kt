@@ -34,6 +34,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.camoron.domain.model.BeardColour
+import com.camoron.domain.model.FacialHair
 import com.camoron.domain.model.FrameColour
 import com.camoron.domain.model.GlassesStyle
 import com.camoron.domain.model.HairColour
@@ -41,7 +43,7 @@ import com.camoron.domain.model.LensTint
 import com.camoron.domain.model.MaskStyle
 import kotlin.math.roundToInt
 
-/** The Try on tab: spectacles, masks and hair colour, drawn onto the faces found in the photo. */
+/** The Try on tab: spectacles, masks, beards and hair colour, drawn onto the faces found in the photo. */
 @Composable
 internal fun TryOnControls(state: EditorUiState, viewModel: EditorViewModel) {
     val tryOn = state.edit.tryOn
@@ -95,6 +97,28 @@ internal fun TryOnControls(state: EditorUiState, viewModel: EditorViewModel) {
                         label = { stringResource(it.label()) },
                         onSelect = { viewModel.setTryOn(tryOn.copy(mask = it)) },
                     )
+                    TryOnSection.BEARD -> {
+                        ChipRow(
+                            options = FacialHair.entries,
+                            selected = tryOn.facialHair,
+                            label = { stringResource(it.label()) },
+                            onSelect = { viewModel.setTryOn(tryOn.copy(facialHair = it)) },
+                        )
+                        if (tryOn.facialHair != FacialHair.NONE) {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(top = 6.dp),
+                            ) {
+                                items(BeardColour.entries) { colour ->
+                                    Swatch(Color(colour.argb), selected = colour == tryOn.beard) {
+                                        viewModel.setTryOn(tryOn.copy(beard = colour))
+                                    }
+                                }
+                            }
+                        }
+                    }
                     TryOnSection.HAIR -> {
                         if (tryOn.hair != HairColour.NONE) {
                             Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -226,6 +250,7 @@ private fun NoneSwatch(selected: Boolean, onClick: () -> Unit) {
 private fun TryOnSection.label() = when (this) {
     TryOnSection.GLASSES -> R.string.try_glasses
     TryOnSection.MASKS -> R.string.try_masks
+    TryOnSection.BEARD -> R.string.try_beard
     TryOnSection.HAIR -> R.string.try_hair
 }
 
@@ -254,4 +279,14 @@ private fun MaskStyle.label() = when (this) {
     MaskStyle.CLOTH -> R.string.mask_cloth
     MaskStyle.MASQUERADE -> R.string.mask_masquerade
     MaskStyle.HERO -> R.string.mask_hero
+}
+
+private fun FacialHair.label() = when (this) {
+    FacialHair.NONE -> R.string.none
+    FacialHair.STUBBLE -> R.string.beard_stubble
+    FacialHair.MOUSTACHE -> R.string.beard_moustache
+    FacialHair.GOATEE -> R.string.beard_goatee
+    FacialHair.CIRCLE -> R.string.beard_circle
+    FacialHair.SHORT_BEARD -> R.string.beard_short
+    FacialHair.FULL_BEARD -> R.string.beard_full
 }

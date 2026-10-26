@@ -42,6 +42,19 @@ enum class HairColour(val argb: Int) {
     SILVER(0xFFB8BCC2.toInt()),
 }
 
+/** Beards and moustaches, from a shadow of stubble to a full beard. */
+enum class FacialHair { NONE, STUBBLE, MOUSTACHE, GOATEE, CIRCLE, SHORT_BEARD, FULL_BEARD }
+
+/** Facial hair colours, as opaque ARGB. */
+enum class BeardColour(val argb: Int) {
+    BLACK(0xFF17130F.toInt()),
+    DARK_BROWN(0xFF34210F.toInt()),
+    BROWN(0xFF5C3A1E.toInt()),
+    GINGER(0xFF9A4A1E.toInt()),
+    BLONDE(0xFFB89662.toInt()),
+    GREY(0xFF9A9894.toInt()),
+}
+
 /** What the person is trying on. Everything off means the photo is unchanged. */
 data class TryOn(
     val glasses: GlassesStyle = GlassesStyle.NONE,
@@ -50,12 +63,14 @@ data class TryOn(
     val mask: MaskStyle = MaskStyle.NONE,
     val hair: HairColour = HairColour.NONE,
     val hairStrength: Float = 0.8f,
+    val facialHair: FacialHair = FacialHair.NONE,
+    val beard: BeardColour = BeardColour.DARK_BROWN,
 ) {
     val isNone: Boolean
-        get() = glasses == GlassesStyle.NONE && mask == MaskStyle.NONE && (hair == HairColour.NONE || hairStrength <= 0f)
+        get() = !needsFaces && (hair == HairColour.NONE || hairStrength <= 0f)
 
     /** Whether anything needs the face points (as opposed to only the hair outline). */
-    val needsFaces: Boolean get() = glasses != GlassesStyle.NONE || mask != MaskStyle.NONE
+    val needsFaces: Boolean get() = glasses != GlassesStyle.NONE || mask != MaskStyle.NONE || facialHair != FacialHair.NONE
 }
 
 /**

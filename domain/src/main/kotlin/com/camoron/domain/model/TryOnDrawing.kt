@@ -2,12 +2,14 @@ package com.camoron.domain.model
 
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.sign
 import kotlin.math.sin
+import kotlin.random.Random
 
 /** A colour ramp between two points, in pixels. */
 class Gradient(val x0: Float, val y0: Float, val x1: Float, val y1: Float, val from: Int, val to: Int)
@@ -37,9 +39,10 @@ object TryOnDrawing {
     fun shapes(tryOn: TryOn, scene: FaceScene, width: Int, height: Int): List<Shape2D> {
         if (!tryOn.needsFaces) return emptyList()
         val out = mutableListOf<Shape2D>()
-        for (face in scene.faces) {
-            if (face.count < FACE_POINTS) continue
+        scene.faces.forEachIndexed { index, face ->
+            if (face.count < FACE_POINTS) return@forEachIndexed
             val f = Face(face, width.toFloat(), height.toFloat())
+            if (tryOn.facialHair != FacialHair.NONE) facialHair(f, index, tryOn, out)
             when (tryOn.mask) {
                 MaskStyle.NONE -> Unit
                 MaskStyle.SURGICAL, MaskStyle.N95, MaskStyle.CLOTH -> faceMask(f, tryOn.mask, out)
@@ -174,6 +177,200 @@ object TryOnDrawing {
         LensTint.BLUE -> 0xB81F3F73.toInt() to null
     }
 
+    // --- Facial hair ------------------------------------------------------------------------
+
+    /**
+     * Beards and moustaches are drawn hair by hair: thousands of short strokes inside an outline
+     * taken from the face points, each growing the way facial hair does (down the cheeks and chin,
+     * out and down from the middle of the upper lip) and thinning out towards the edges, over a
+     * soft shadow that gives density. A fixed seed per face gives the same hairs in the preview
+     * and the saved photo, at any size.
+     */
+    private fun facialHair(face: Face, faceIndex: Int, tryOn: TryOn, out: MutableList<Shape2D>) {
+        val style = tryOn.facialHair
+        val frame = EyeFrame(face.mid(33, 133), face.mid(362, 263))
+        val unit = frame.unit
+        val region = beardOutline(face, frame, style)
+        val look = BeardLook.of(style)
+        val colour = tryOn.beard.argb
+
+        out += Shape2D(region.map { it.flat() }, fill = withAlpha(darken(colour, 0.75f), look.shadow), blur = unit * look.blur)
+
+        // Everything below is in eye units, so the hairs scale with the face.
+        val shapes = region.map { contour -> contour.map { frame.fromPhoto(it) } }
+        val area = abs(shapes.sumOf { signedArea(it).toDouble() }).toFloat()
+        val count = (look.coverage * area / (look.length * look.width)).toInt().coerceIn(0, MAX_HAIRS)
+        val mouth = frame.fromPhoto(face.mid(61, 291))
+        val mouthHalf = abs(frame.fromPhoto(face.pt(291)).x - frame.fromPhoto(face.pt(61)).x) / 2f
+        val noseLine = frame.fromPhoto(face.pt(164)).y
+        val lipLine = frame.fromPhoto(face.pt(0)).y
+        val minX = shapes.minOf { c -> c.minOf { it.x } }
+        val maxX = shapes.maxOf { c -> c.maxOf { it.x } }
+        val minY = shapes.minOf { c -> c.minOf { it.y } }
+        val maxY = shapes.maxOf { c -> c.maxOf { it.y } }
+
+        val random = Random(HAIR_SEED + faceIndex * 7919 + style.ordinal)
+        val groups = List(3) { mutableListOf<FloatArray>() }
+        var attempts = 0
+        while (groups.sumOf { it.size } < count && attempts < count * 6) {
+            attempts++
+            val p = Pt(minX + random.nextFloat() * (maxX - minX), minY + random.nextFloat() * (maxY - minY))
+            if (!inside(shapes, p)) continue
+            // Fewer hairs towards the outline, for a soft, natural edge.
+            val t = (edgeDistance(shapes, p) / look.fade).coerceIn(0f, 1f)
+            if (random.nextFloat() > t * t * (3f - 2f * t)) continue
+
+            val dx = p.x - mouth.x
+            val overLip = p.y > noseLine - 0.08f && p.y < lipLine + 0.04f && abs(dx) < mouthHalf + 0.18f
+            var angle = if (overLip) {
+                // Moustache hair parts at the middle and sweeps out and down.
+                atan2(0.75f, sign(dx) * 1f)
+            } else {
+                // Down the chin, slightly outwards on the cheeks.
+                atan2(1f, dx * 0.3f)
+            }
+            angle += (random.nextFloat() - 0.5f) * 0.6f
+            val length = look.length * (0.6f + 0.8f * random.nextFloat())
+            val dir = Pt(cos(angle), sin(angle))
+            val bend = Pt(-dir.y, dir.x) * (length * 0.18f * (random.nextFloat() - 0.5f))
+            val strand = listOf(p, p + dir * (length * 0.5f) + bend, p + dir * length)
+            val group = when (random.nextFloat()) {
+                in 0f..0.4f -> 0
+                in 0.4f..0.85f -> 1
+                else -> 2
+            }
+            groups[group] += frame.toPhoto(strand).flat()
+        }
+        val tones = listOf(
+            withAlpha(darken(colour, 0.6f), 0.85f * look.opacity) to 1.15f,
+            withAlpha(colour, 0.8f * look.opacity) to 1f,
+            withAlpha(mix(colour, 0xFFFFFFFF.toInt(), 0.35f), 0.6f * look.opacity) to 0.8f,
+        )
+        groups.forEachIndexed { i, strands ->
+            if (strands.isNotEmpty()) {
+                out += Shape2D(strands, closed = false, stroke = tones[i].first, strokeWidth = unit * look.width * tones[i].second)
+            }
+        }
+    }
+
+    /** How each style looks, in eye units: hair length and thickness, how densely it covers, its shadow. */
+    private class BeardLook(
+        val length: Float,
+        val width: Float,
+        val coverage: Float,
+        val shadow: Float,
+        val blur: Float,
+        val fade: Float,
+        val opacity: Float = 1f,
+    ) {
+        companion object {
+            fun of(style: FacialHair) = when (style) {
+                FacialHair.STUBBLE -> BeardLook(0.022f, 0.005f, 0.45f, 0.2f, 0.12f, 0.18f, opacity = 0.6f)
+                FacialHair.MOUSTACHE -> BeardLook(0.1f, 0.01f, 3f, 0.42f, 0.06f, 0.06f)
+                FacialHair.GOATEE, FacialHair.CIRCLE -> BeardLook(0.12f, 0.01f, 3f, 0.42f, 0.06f, 0.08f)
+                FacialHair.SHORT_BEARD -> BeardLook(0.09f, 0.01f, 2.6f, 0.4f, 0.08f, 0.14f)
+                FacialHair.FULL_BEARD -> BeardLook(0.19f, 0.011f, 3f, 0.5f, 0.08f, 0.14f)
+                FacialHair.NONE -> BeardLook(0f, 1f, 0f, 0f, 0f, 1f)
+            }
+        }
+    }
+
+    /** The outline (photo pixels) each style fills, with the mouth cut out where it is surrounded. */
+    private fun beardOutline(face: Face, frame: EyeFrame, style: FacialHair): List<List<Pt>> {
+        val mouthCentre = face.mid(61, 291)
+        val mouthHole = smoothClosed(LIPS_OUTER.map { face.pt(it).awayFrom(mouthCentre, 1.12f) })
+        val upperLip = UPPER_LIP.map { face.pt(it) }
+        val lowerLip = LOWER_LIP.map { face.pt(it) }
+        val noseBase = NOSE_BASE.map { face.pt(it) }
+        // Out from each mouth corner, in eye units across and down the face.
+        fun corner(index: Int, side: Float, across: Float, down: Float) =
+            face.pt(index) + frame.vector(side * across, down)
+
+        val moustache = smoothClosed(
+            listOf(corner(61, -1f, 0.1f, 0.06f)) +
+                noseBase.map { it.lerp(face.pt(0), 0.12f) } +
+                listOf(corner(291, 1f, 0.1f, 0.06f)) +
+                upperLip.reversed().map { it + frame.vector(0f, -0.025f) },
+        )
+        // A goatee narrows from the lip to the point of the chin.
+        val chinNarrow = CHIN.map { face.pt(it) }.let { points ->
+            val point = face.pt(152)
+            points.map { it.lerp(point, 0.55f).awayFrom(mouthCentre, 1.04f) }
+        }
+        return when (style) {
+            FacialHair.MOUSTACHE -> listOf(moustache)
+            FacialHair.GOATEE -> listOf(
+                smoothClosed(lowerLip.subList(3, lowerLip.size - 3).map { it + frame.vector(0f, 0.03f) } + chinNarrow),
+            )
+            FacialHair.CIRCLE -> listOf(
+                smoothClosed(
+                    noseBase.map { it.lerp(face.pt(0), 0.12f) } +
+                        listOf(corner(291, 1f, 0.12f, 0.05f), corner(291, 1f, 0.06f, 0.3f)) +
+                        CHIN.map { face.pt(it).lerp(face.pt(152), 0.3f).awayFrom(mouthCentre, 1.05f) } +
+                        listOf(corner(61, -1f, 0.06f, 0.3f), corner(61, -1f, 0.12f, 0.05f)),
+                ),
+                mouthHole,
+            )
+            FacialHair.STUBBLE, FacialHair.SHORT_BEARD, FacialHair.FULL_BEARD -> {
+                val centre = face.pt(NOSE_TIP)
+                // Full beards grow out past the jaw, most at the chin.
+                val jaw = JAW.mapIndexed { i, index ->
+                    val chinWeight = 1f - abs(i - JAW.size / 2f) / (JAW.size / 2f)
+                    val grow = when (style) {
+                        FacialHair.FULL_BEARD -> 1.04f + 0.12f * chinWeight
+                        FacialHair.SHORT_BEARD -> 1.01f + 0.03f * chinWeight
+                        else -> 1f
+                    }
+                    face.pt(index).awayFrom(centre, grow)
+                }
+                val top = BEARD_CHEEK_LEFT.map { face.pt(it) } +
+                    noseBase.map { it.lerp(face.pt(0), 0.12f) } +
+                    BEARD_CHEEK_RIGHT.map { face.pt(it) }
+                listOf(smoothClosed(top + jaw.subList(1, jaw.size - 1).reversed()), mouthHole)
+            }
+            FacialHair.NONE -> emptyList()
+        }
+    }
+
+    /** Whether [p] is inside [contours] by the even-odd rule. */
+    private fun inside(contours: List<List<Pt>>, p: Pt): Boolean {
+        var crossings = 0
+        for (c in contours) {
+            for (i in c.indices) {
+                val a = c[i]
+                val b = c[(i + 1) % c.size]
+                if ((a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x)) crossings++
+            }
+        }
+        return crossings % 2 == 1
+    }
+
+    /** Distance from [p] to the nearest edge of [contours]. */
+    private fun edgeDistance(contours: List<List<Pt>>, p: Pt): Float {
+        var best = Float.MAX_VALUE
+        for (c in contours) {
+            for (i in c.indices) {
+                val a = c[i]
+                val ab = c[(i + 1) % c.size] - a
+                val len2 = ab.x * ab.x + ab.y * ab.y
+                val t = if (len2 > 0f) (((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len2).coerceIn(0f, 1f) else 0f
+                val d = p - (a + ab * t)
+                best = minOf(best, hypot(d.x, d.y))
+            }
+        }
+        return best
+    }
+
+    private fun signedArea(c: List<Pt>): Float {
+        var sum = 0f
+        for (i in c.indices) {
+            val a = c[i]
+            val b = c[(i + 1) % c.size]
+            sum += a.x * b.y - b.x * a.y
+        }
+        return sum / 2f
+    }
+
     // --- Face masks -------------------------------------------------------------------------
 
     /** A mask over the nose, mouth and chin, from the cheeks under the eyes down past the jaw. */
@@ -288,6 +485,16 @@ object TryOnDrawing {
 
         fun toPhoto(p: Pt) = origin + u * p.x + v * p.y
         fun toPhoto(points: List<Pt>) = points.map(::toPhoto)
+
+        /** A photo point in eye units. */
+        fun fromPhoto(p: Pt): Pt {
+            val d = p - origin
+            val len2 = unit * unit
+            return Pt((d.x * u.x + d.y * u.y) / len2, (d.x * v.x + d.y * v.y) / len2)
+        }
+
+        /** A step of ([across], [down]) eye units, in photo pixels. */
+        fun vector(across: Float, down: Float) = u * across + v * down
         fun down(amount: Float) = v * amount
     }
 
@@ -391,6 +598,23 @@ object TryOnDrawing {
     private const val LENS_SCALE = 1.08f
     private const val LENS_Y = 0.08f
     private const val NOSE_TIP = 1
+    private const val MAX_HAIRS = 9000
+    private const val HAIR_SEED = 20261026
+
+    /** Outer edge of the lips, round from the left corner (in the photo) over the top. */
+    private val LIPS_OUTER = listOf(61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146)
+    private val UPPER_LIP = listOf(61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291)
+    private val LOWER_LIP = listOf(61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291)
+
+    /** Under the nose, from beside the left nostril to beside the right. */
+    private val NOSE_BASE = listOf(92, 165, 167, 164, 393, 391, 322)
+
+    /** Under the lower lip round the point of the chin, right (in the photo) to left. */
+    private val CHIN = listOf(378, 400, 377, 152, 148, 176, 149)
+
+    /** Where a beard starts on the cheeks: sideburn down to beside the mouth, and back up. */
+    private val BEARD_CHEEK_LEFT = listOf(234, 213, 192, 214, 212, 57)
+    private val BEARD_CHEEK_RIGHT = listOf(287, 432, 434, 416, 433, 454)
 
     /** Mask top edge, from the face's left side (in the photo) over the nose to its right side. */
     private val MASK_TOP = listOf(234, 116, 197, 345, 454)

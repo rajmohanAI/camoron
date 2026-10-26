@@ -41,7 +41,7 @@ import javax.inject.Inject
 
 enum class EditorTab { LOOKS, ADJUST, CROP, ERASE, TRY_ON }
 
-enum class TryOnSection { GLASSES, MASKS, HAIR }
+enum class TryOnSection { GLASSES, MASKS, BEARD, HAIR }
 
 /** How the magic eraser chooses what to remove: tap an object, or paint over it. */
 enum class EraseTool { TAP, BRUSH }
