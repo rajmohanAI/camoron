@@ -285,14 +285,15 @@ object TryOnDrawing {
         val maxY = shapes.maxOf { c -> c.maxOf { it.y } }
 
         val random = Random(HAIR_SEED + faceIndex * 7919 + style.ordinal)
+        val grid = RegionGrid(shapes)
         val groups = List(3) { mutableListOf<FloatArray>() }
         var attempts = 0
         while (groups.sumOf { it.size } < count && attempts < count * 6) {
             attempts++
             val p = Pt(minX + random.nextFloat() * (maxX - minX), minY + random.nextFloat() * (maxY - minY))
-            if (!inside(shapes, p)) continue
+            if (!grid.inside(p)) continue
             // Fewer hairs towards the outline, for a soft, natural edge.
-            val t = (edgeDistance(shapes, p) / look.fade).coerceIn(0f, 1f)
+            val t = (grid.edgeDistance(p) / look.fade).coerceIn(0f, 1f)
             if (random.nextFloat() > t * t * (3f - 2f * t)) continue
 
             val dx = p.x - mouth.x
@@ -550,6 +551,8 @@ object TryOnDrawing {
         val maxX = piece.outline.maxOf { it.x }
         val minY = piece.outline.minOf { it.y }
         val maxY = piece.outline.maxOf { it.y }
+        val grid = RegionGrid(region)
+        val faceGrid = if (piece.face.isNotEmpty()) RegionGrid(listOf(piece.face)) else null
         val groups = List(3) { mutableListOf<FloatArray>() }
         var made = 0
         var attempts = 0
@@ -569,8 +572,8 @@ object TryOnDrawing {
                 lockLeft = 2 * CLUMP
             }
             val p = lock + Pt(random.nextFloat() - 0.5f, random.nextFloat() - 0.5f) * LOCK_SIZE
-            if (!inside(region, p)) continue
-            val t = (edgeDistance(region, p) / HAIR_FADE).coerceIn(0f, 1f)
+            if (!grid.inside(p)) continue
+            val t = (grid.edgeDistance(p) / HAIR_FADE).coerceIn(0f, 1f)
             if (random.nextFloat() > 0.25f + 0.75f * t * t * (3f - 2f * t)) continue
 
             val length = look.length * (0.5f + random.nextFloat())
@@ -590,10 +593,10 @@ object TryOnDrawing {
                 val angle = atan2(d.y, d.x) + bias + turn + look.wave * sin(s * step * 4f + phase)
                 q += Pt(cos(angle), sin(angle)) * step
                 // Strands may stray a little past the outer edge, for a soft outline, but never onto the face.
-                if (!inside(region, q)) {
+                if (!grid.inside(q)) {
                     // Ends falling past the bottom straggle further, so the cut isn't a straight line.
                     val limit = if (d.y > 0.8f && q.y > maxY0 - 0.4f) END_STRAY_STEPS else STRAY_STEPS
-                    if (++outside > limit || (q.y > -0.6f && piece.face.isNotEmpty() && inside(listOf(piece.face), q))) break
+                    if (++outside > limit || (q.y > -0.6f && faceGrid != null && faceGrid.inside(q))) break
                 }
                 strand += q
             }
@@ -636,17 +639,72 @@ object TryOnDrawing {
         return line.last().y
     }
 
-    /** Whether [p] is inside [contours] by the even-odd rule. */
-    private fun inside(contours: List<List<Pt>>, p: Pt): Boolean {
-        var crossings = 0
-        for (c in contours) {
-            for (i in c.indices) {
-                val a = c[i]
-                val b = c[(i + 1) % c.size]
-                if ((a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x)) crossings++
+    /**
+     * [contours] (even-odd) as a fine grid, for fast "is this point inside, and how far from the
+     * edge" questions while placing thousands of hairs: one lookup instead of a walk round the
+     * outline each time.
+     */
+    private class RegionGrid(contours: List<List<Pt>>, cells: Int = GRID_CELLS) {
+        private val minX = contours.minOf { c -> c.minOf { it.x } }
+        private val minY = contours.minOf { c -> c.minOf { it.y } }
+        private val cell = max(contours.maxOf { c -> c.maxOf { it.x } } - minX, contours.maxOf { c -> c.maxOf { it.y } } - minY)
+            .coerceAtLeast(1e-4f) / (cells - 2)
+        private val w = ((contours.maxOf { c -> c.maxOf { it.x } } - minX) / cell).toInt() + 3
+        private val h = ((contours.maxOf { c -> c.maxOf { it.y } } - minY) / cell).toInt() + 3
+        private val cellsIn = BooleanArray(w * h)
+
+        /** Distance in cells from each inside cell to the nearest outside one. */
+        private val distance = FloatArray(w * h)
+
+        init {
+            // Even-odd fill along each row of cell centres.
+            val crossings = FloatArray(contours.sumOf { it.size })
+            for (y in 0 until h) {
+                val cy = minY + (y - 0.5f) * cell
+                var k = 0
+                for (c in contours) {
+                    for (i in c.indices) {
+                        val a = c[i]
+                        val b = c[(i + 1) % c.size]
+                        if ((a.y <= cy) != (b.y <= cy)) crossings[k++] = a.x + (cy - a.y) / (b.y - a.y) * (b.x - a.x)
+                    }
+                }
+                crossings.sort(0, k)
+                var j = 0
+                while (j + 1 < k) {
+                    val from = max(0, kotlin.math.ceil((crossings[j] - minX) / cell + 0.5f).toInt())
+                    val to = minOf(w - 1, kotlin.math.floor((crossings[j + 1] - minX) / cell + 0.5f).toInt())
+                    for (x in from..to) cellsIn[y * w + x] = true
+                    j += 2
+                }
+            }
+            // Two-pass chamfer distance (1 along, 1.414 diagonal), close enough for fading.
+            val far = (w + h).toFloat()
+            for (i in distance.indices) distance[i] = if (cellsIn[i]) far else 0f
+            for (y in 1 until h) for (x in 1 until w - 1) {
+                val i = y * w + x
+                if (cellsIn[i]) distance[i] = minOf(distance[i], distance[i - 1] + 1f, distance[i - w] + 1f, distance[i - w - 1] + DIAGONAL, distance[i - w + 1] + DIAGONAL)
+            }
+            for (y in h - 2 downTo 0) for (x in w - 2 downTo 1) {
+                val i = y * w + x
+                if (cellsIn[i]) distance[i] = minOf(distance[i], distance[i + 1] + 1f, distance[i + w] + 1f, distance[i + w + 1] + DIAGONAL, distance[i + w - 1] + DIAGONAL)
             }
         }
-        return crossings % 2 == 1
+
+        private fun index(p: Pt): Int {
+            val x = ((p.x - minX) / cell + 0.5f).toInt()
+            val y = ((p.y - minY) / cell + 0.5f).toInt()
+            return if (x < 0 || y < 0 || x >= w || y >= h) -1 else y * w + x
+        }
+
+        fun inside(p: Pt): Boolean = index(p).let { it >= 0 && cellsIn[it] }
+
+        /** Roughly how far [p] (inside) is from the edge, in the outline's units. */
+        fun edgeDistance(p: Pt): Float = index(p).let { if (it < 0) 0f else max(0f, distance[it] - 0.5f) * cell }
+
+        private companion object {
+            const val DIAGONAL = 1.4142f
+        }
     }
 
     /** Distance from [p] to the nearest edge of [contours]. */
@@ -909,6 +967,7 @@ object TryOnDrawing {
     private const val MAX_HAIRS = 9000
     private const val HAIR_SEED = 20261026
     private const val MAX_STRANDS = 7000
+    private const val GRID_CELLS = 320
     private const val DEFAULT_HAIR = 0xFF3B2416.toInt()
 
     // Hairstyle geometry, in eye units: the skull as an ellipse round a centre just above the eye line.

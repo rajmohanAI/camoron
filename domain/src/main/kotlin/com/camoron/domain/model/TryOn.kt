@@ -105,6 +105,36 @@ class HairMask(val width: Int, val height: Int, val alpha: ByteArray) {
         return (a + (b - a) * dy) / 255f
     }
 
+    /**
+     * The box round everything at least [threshold] (0..1) likely to be hair, as (left, top,
+     * right, bottom) fractions of the photo, or null if there is none.
+     */
+    fun bounds(threshold: Float): FloatArray? {
+        val limit = (threshold * 255f).toInt()
+        var x0 = width
+        var y0 = height
+        var x1 = -1
+        var y1 = -1
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                if (value(x, y) >= limit) {
+                    if (x < x0) x0 = x
+                    if (x > x1) x1 = x
+                    if (y < y0) y0 = y
+                    if (y > y1) y1 = y
+                }
+            }
+        }
+        if (x1 < 0) return null
+        // One mask cell of slack each way, for the smooth interpolation between cells.
+        return floatArrayOf(
+            maxOf(0, x0 - 1).toFloat() / width,
+            maxOf(0, y0 - 1).toFloat() / height,
+            minOf(width, x1 + 2).toFloat() / width,
+            minOf(height, y1 + 2).toFloat() / height,
+        )
+    }
+
     private fun value(x: Int, y: Int) = alpha[y * width + x].toInt() and 0xFF
 }
 
@@ -147,7 +177,8 @@ object HairTint {
         return t * t * (3f - 2f * t)
     }
 
-    private const val EDGE_LOW = 0.35f
+    /** Hair likelihoods below this are never recoloured. */
+    const val EDGE_LOW = 0.35f
     private const val EDGE_HIGH = 0.85f
     private const val SHADE_BASE = 0.45f
     private const val SHADE_SLOPE = 1.25f
