@@ -32,6 +32,9 @@ dependencies {
     implementation(projects.core.common)
     implementation(projects.core.imaging)
     implementation(libs.androidx.exifinterface)
+    implementation(libs.litert)
+    implementation(libs.litert.gpu)
+    implementation(libs.litert.gpu.api)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 

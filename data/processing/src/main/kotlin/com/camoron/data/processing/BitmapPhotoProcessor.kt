@@ -29,12 +29,13 @@ import javax.inject.Inject
 
 /**
  * Finishes the camera's photo to match the preview: centre crop for the taller aspect ratios, the
- * gentle on-device optimisation ([Enhancer]), the chosen colour look, and a mirror flag for selfies.
+ * gentle on-device optimisation ([Enhancer], with [ZoomEnhancer] for digitally zoomed shots), the chosen colour look, and a mirror flag for selfies.
  * Mirroring only rewrites the EXIF orientation, so it costs no quality. Cropping, optimising or a
  * look re-encodes the pixels and carries the camera's EXIF across. Also merges night bursts.
  */
 class BitmapPhotoProcessor @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val zoomEnhancer: ZoomEnhancer,
 ) : PhotoProcessor {
 
     private val processing: CoroutineDispatcher get() = pool
@@ -143,6 +144,7 @@ class BitmapPhotoProcessor @Inject constructor(
 
     /** Optimisation, colour look and JPEG encoding. */
     private suspend fun finishPixels(bitmap: Bitmap, look: FloatArray?, enhance: Boolean, zoom: Float): ByteArray {
+        if (enhance && zoomEnhancer.worthwhile(zoom)) zoomEnhancer.enhance(bitmap, zoom)
         if (enhance) Enhancer.enhance(bitmap, zoom)
         if (look != null) applyLook(bitmap, look)
         return DiagnosticLog.timed(TAG, "Encoding ${bitmap.width}x${bitmap.height}") {
