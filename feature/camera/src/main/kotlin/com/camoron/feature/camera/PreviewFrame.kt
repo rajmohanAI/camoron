@@ -6,22 +6,22 @@ package com.camoron.feature.camera
  */
 internal data class PreviewFrame(val top: Float, val width: Float, val height: Float) {
     companion object {
-        /** The camera's full picture is 3:4 (height over width 4/3) when the phone is upright. */
-        private const val SENSOR_RATIO = 4f / 3
-
         /**
          * The frame for a portrait photo shape of [ratio] (height over width) on a [screenWidth] x
-         * [screenHeight] screen, between [topInset] and [bottomInset]. Every photo shape shows the
-         * camera's picture at the same size and place, so changing shape never zooms or stretches
-         * it: the full 3:4 picture fills the width, and taller shapes (9:16, full screen) are its
-         * middle part at the same height, with dark sides. Narrower than the screen only where the
-         * screen is too short for the 3:4 picture.
+         * [screenHeight] screen, like the phone's own camera: every shape fills the screen's width,
+         * so taller shapes (9:16, full screen) show a bigger picture rather than a narrower one.
+         * The frame starts below the top bar when it fits between [topInset] and [bottomInset];
+         * taller ones run behind the controls, and full screen covers the whole screen.
          */
         fun photo(ratio: Float, screenWidth: Float, screenHeight: Float, topInset: Float, bottomInset: Float): PreviewFrame {
             val room = (screenHeight - topInset - bottomInset).coerceAtLeast(0f)
-            val pictureWidth = minOf(screenWidth, room / SENSOR_RATIO)
-            val height = pictureWidth * SENSOR_RATIO
-            return PreviewFrame(topInset, minOf(pictureWidth, height / ratio), height)
+            val height = screenWidth * ratio
+            return when {
+                height <= room -> PreviewFrame(topInset, screenWidth, height)
+                height <= screenHeight -> PreviewFrame(minOf(topInset, (screenHeight - height) / 2f), screenWidth, height)
+                // Only on unusually short screens: as tall as the screen, keeping the shape.
+                else -> PreviewFrame(0f, screenHeight / ratio, screenHeight)
+            }
         }
 
         /**

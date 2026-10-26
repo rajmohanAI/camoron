@@ -82,6 +82,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -159,9 +160,9 @@ fun CameraScreen(
                 .onSizeChanged { if (it.height > 0) viewModel.onDisplayAspect(it.width.toFloat() / it.height) },
         ) {
             val aspect = state.cameraSettings.aspectRatio
-            // Changing photo shape keeps the picture exactly as it is and only changes the frame, so
-            // nothing ever zooms or stretches. Video is always 16:9, so its preview shows exactly the
-            // frame being recorded.
+            // Every photo shape fills the width, like the phone's own camera: taller shapes show a
+            // bigger picture, and full screen runs behind the controls. The preview always shows
+            // exactly the frame being saved. Video is always 16:9.
             val insets = WindowInsets.safeDrawing.asPaddingValues()
             val topInset = (insets.calculateTopPadding() + TOP_BAR_HEIGHT).value
             val bottomInset = insets.calculateBottomPadding().value
@@ -505,7 +506,8 @@ private fun BottomBar(
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Color.Black)
+            // See-through, so a full-screen preview carries on behind the shutter like the phone's own camera.
+            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f))))
             .padding(top = 8.dp, bottom = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),

@@ -14,15 +14,27 @@ class PreviewFrameTest {
     }
 
     @Test
-    fun `taller photo shapes keep the picture's size and narrow the frame instead`() {
-        val photo = PreviewFrame.photo(4f / 3, 400f, 900f, topInset = 90f, bottomInset = 20f)
+    fun `taller photo shapes fill the width and grow taller`() {
         val tall = PreviewFrame.photo(16f / 9, 400f, 900f, topInset = 90f, bottomInset = 20f)
+        assertThat(tall.top).isEqualTo(90f)
+        assertThat(tall.width).isEqualTo(400f)
+        assertThat(tall.height).isWithin(0.01f).of(711.11f)
+    }
+
+    @Test
+    fun `full screen covers the whole screen`() {
         val full = PreviewFrame.photo(900f / 400, 400f, 900f, topInset = 90f, bottomInset = 20f)
-        assertThat(tall.top).isEqualTo(photo.top)
-        assertThat(tall.height).isEqualTo(photo.height)
-        assertThat(tall.width).isWithin(0.01f).of(300f)
-        assertThat(full.height).isEqualTo(photo.height)
-        assertThat(full.height / full.width).isWithin(0.001f).of(900f / 400)
+        assertThat(full.top).isEqualTo(0f)
+        assertThat(full.width).isEqualTo(400f)
+        assertThat(full.height).isWithin(0.01f).of(900f)
+    }
+
+    @Test
+    fun `a shape too tall for the space under the top bar runs behind the controls`() {
+        val tall = PreviewFrame.photo(16f / 9, 400f, 760f, topInset = 90f, bottomInset = 20f)
+        assertThat(tall.width).isEqualTo(400f)
+        assertThat(tall.top + tall.height).isAtMost(760f)
+        assertThat(tall.top).isAtLeast(0f)
     }
 
     @Test
