@@ -27,6 +27,10 @@
     <string name="tab_crop">Crop</string>
     <string name="tab_try_on">Try on</string>
     <string name="try_glasses">Glasses</string>
+    <string name="try_makeup">Makeup</string>
+    <string name="makeup_lips">Lips</string>
+    <string name="makeup_blush">Blush</string>
+    <string name="makeup_eyes">Eyes</string>
     <string name="try_masks">Masks</string>
     <string name="try_beard">Beard</string>
     <string name="try_hair">Hair</string>

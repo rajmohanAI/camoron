@@ -1,5 +1,7 @@
 package com.camoron.domain
 
+import com.camoron.domain.model.Blush
+import com.camoron.domain.model.EyeColour
 import com.camoron.domain.model.FaceScene
 import com.camoron.domain.model.FacialHair
 import com.camoron.domain.model.FaceShape
@@ -7,6 +9,9 @@ import com.camoron.domain.model.GlassesStyle
 import com.camoron.domain.model.HairColour
 import com.camoron.domain.model.HairMask
 import com.camoron.domain.model.HairTint
+import com.camoron.domain.model.Lipstick
+import com.camoron.domain.model.MakeupKind
+import com.camoron.domain.model.MakeupTint
 import com.camoron.domain.model.Hairstyle
 import com.camoron.domain.model.MaskStyle
 import com.camoron.domain.model.PhotoEdit
@@ -199,5 +204,49 @@ class TryOnTest {
         assertThat(at(1)).isFalse() // nose tip
         assertThat(at(13)).isFalse() // mouth
         assertThat(hole[(h - 1) * w]).isTrue() // hair down at the shoulder, gone with a pixie cut
+    }
+
+    @Test
+    fun `makeup goes on the lips, cheeks and irises`() {
+        val scene = FaceScene(listOf(portrait), null)
+        assertThat(TryOnDrawing.makeup(TryOn(), scene, 880, 1040)).isEmpty()
+        val all = TryOn(lipstick = Lipstick.RED, blush = Blush.PINK, eyes = EyeColour.GREEN)
+        assertThat(all.needsFaces).isTrue()
+        assertThat(PhotoEdit(tryOn = all).isIdentity).isFalse()
+        val areas = TryOnDrawing.makeup(all, scene, 880, 1040)
+        assertThat(areas.count { it.kind == MakeupKind.LIPS }).isEqualTo(1)
+        assertThat(areas.count { it.kind == MakeupKind.BLUSH }).isEqualTo(2)
+        val eyes = areas.filter { it.kind == MakeupKind.EYES }
+        assertThat(eyes).hasSize(2)
+        // Each iris is only coloured where the eye is open, and sits on its eye.
+        eyes.forEach { assertThat(it.clip).isNotNull() }
+        val lips = areas.first { it.kind == MakeupKind.LIPS }
+        assertThat(lips.contours).hasSize(2) // the outer edge, with the mouth opening cut out
+        val c = lips.contours[0]
+        val cx = (c.indices step 2).map { c[it] }.average()
+        assertThat(cx).isWithin(40.0).of(portrait.x(13) * 880.0)
+    }
+
+    @Test
+    fun `makeup keeps the light and shade underneath`() {
+        val lipDark = 0xFF7A4038.toInt()
+        val lipLight = 0xFFC08070.toInt()
+        val red = Lipstick.RED.argb
+        assertThat(MakeupTint.lips(lipDark, red, 0f)).isEqualTo(lipDark)
+        val a = MakeupTint.lips(lipDark, red, 1f)
+        val b = MakeupTint.lips(lipLight, red, 1f)
+        assertThat((a shr 16) and 0xFF).isLessThan((b shr 16) and 0xFF)
+        // The pupil stays dark and the catchlight stays bright.
+        val pupil = 0xFF0A0A0A.toInt()
+        val glint = 0xFFF4F4F4.toInt()
+        assertThat(MakeupTint.eyes(pupil, EyeColour.BLUE.argb, 1f)).isEqualTo(pupil)
+        assertThat(MakeupTint.eyes(glint, EyeColour.BLUE.argb, 1f)).isEqualTo(glint)
+        val iris = MakeupTint.eyes(0xFF5A3A20.toInt(), EyeColour.BLUE.argb, 1f)
+        assertThat(iris and 0xFF).isGreaterThan((iris shr 16) and 0xFF)
+        // Blush warms the skin a little, never paints over it.
+        val skin = 0xFFD8B8A0.toInt()
+        val blushed = MakeupTint.blush(skin, Blush.ROSE.argb, 1f)
+        assertThat(blushed).isNotEqualTo(skin)
+        assertThat(kotlin.math.abs(((blushed shr 16) and 0xFF) - 0xD8)).isLessThan(40)
     }
 }

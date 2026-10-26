@@ -58,6 +58,37 @@ enum class BeardColour(val argb: Int) {
     GREY(0xFF9A9894.toInt()),
 }
 
+/** Lipstick shades, as opaque ARGB. */
+enum class Lipstick(val argb: Int) {
+    NONE(0),
+    NUDE(0xFFB8786A.toInt()),
+    PINK(0xFFD9577E.toInt()),
+    CORAL(0xFFE5604E.toInt()),
+    RED(0xFFC0182A.toInt()),
+    BERRY(0xFF8E1F4A.toInt()),
+    PLUM(0xFF5E2240.toInt()),
+}
+
+/** Blush shades, as opaque ARGB. */
+enum class Blush(val argb: Int) {
+    NONE(0),
+    PEACH(0xFFF0A07A.toInt()),
+    PINK(0xFFEE8AA0.toInt()),
+    ROSE(0xFFD0607A.toInt()),
+    BRONZE(0xFFB0704A.toInt()),
+}
+
+/** Eye colours to try, as opaque ARGB. */
+enum class EyeColour(val argb: Int) {
+    NONE(0),
+    BLUE(0xFF3F7FD0.toInt()),
+    GREEN(0xFF4E9A5A.toInt()),
+    HAZEL(0xFF8A6A30.toInt()),
+    GREY(0xFF8C979E.toInt()),
+    AMBER(0xFFC08A2A.toInt()),
+    VIOLET(0xFF7A5AC0.toInt()),
+}
+
 /** What the person is trying on. Everything off means the photo is unchanged. */
 data class TryOn(
     val glasses: GlassesStyle = GlassesStyle.NONE,
@@ -69,13 +100,19 @@ data class TryOn(
     val facialHair: FacialHair = FacialHair.NONE,
     val beard: BeardColour = BeardColour.DARK_BROWN,
     val hairstyle: Hairstyle = Hairstyle.NONE,
+    val lipstick: Lipstick = Lipstick.NONE,
+    val blush: Blush = Blush.NONE,
+    val eyes: EyeColour = EyeColour.NONE,
 ) {
     val isNone: Boolean
         get() = !needsFaces && (hair == HairColour.NONE || hairStrength <= 0f)
 
     /** Whether anything needs the face points (as opposed to only the hair outline). */
     val needsFaces: Boolean get() = glasses != GlassesStyle.NONE || mask != MaskStyle.NONE ||
-            facialHair != FacialHair.NONE || hairstyle != Hairstyle.NONE
+            facialHair != FacialHair.NONE || hairstyle != Hairstyle.NONE || hasMakeup
+
+    /** Whether any makeup (lipstick, blush, eye colour) is on. */
+    val hasMakeup: Boolean get() = lipstick != Lipstick.NONE || blush != Blush.NONE || eyes != EyeColour.NONE
 }
 
 /**
@@ -182,4 +219,53 @@ object HairTint {
     private const val EDGE_HIGH = 0.85f
     private const val SHADE_BASE = 0.45f
     private const val SHADE_SLOPE = 1.25f
+}
+
+/**
+ * Makeup colours laid onto skin, lips and eyes so their own light, shade and texture show through,
+ * rather than painted over them.
+ */
+object MakeupTint {
+    /** Lipstick: the lips take the shade, keeping their highlights and creases; [amount] 0..1. */
+    fun lips(argb: Int, target: Int, amount: Float): Int = HairTint.apply(argb, target, amount * LIPS)
+
+    /**
+     * Eye colour: the iris takes the colour with its own pattern; the dark pupil and the bright
+     * catchlight are left alone. [amount] 0..1.
+     */
+    fun eyes(argb: Int, target: Int, amount: Float): Int {
+        val luma = luma(argb)
+        // Fade out over the darkest (pupil) and brightest (catchlight) pixels.
+        val keep = smooth(luma, PUPIL_LOW, PUPIL_HIGH) * (1f - smooth(luma, GLINT_LOW, GLINT_HIGH))
+        return HairTint.apply(argb, target, amount * EYES * keep)
+    }
+
+    /** Blush: a soft-light wash of the shade over the skin; [amount] 0..1. */
+    fun blush(argb: Int, target: Int, amount: Float): Int {
+        val a = (amount * BLUSH).coerceIn(0f, 1f)
+        if (a <= 0f) return argb
+        fun ch(shift: Int): Int {
+            val base = ((argb shr shift) and 0xFF) / 255f
+            val blend = ((target shr shift) and 0xFF) / 255f
+            val soft = (1f - 2f * blend) * base * base + 2f * blend * base
+            return ((base + (soft - base) * a) * 255f + 0.5f).toInt().coerceIn(0, 255)
+        }
+        return (argb and 0xFF000000.toInt()) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+    }
+
+    private fun luma(argb: Int) =
+        (0.2126f * ((argb shr 16) and 0xFF) + 0.7152f * ((argb shr 8) and 0xFF) + 0.0722f * (argb and 0xFF)) / 255f
+
+    private fun smooth(x: Float, low: Float, high: Float): Float {
+        val t = ((x - low) / (high - low)).coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
+    }
+
+    private const val LIPS = 0.72f
+    private const val EYES = 0.7f
+    private const val BLUSH = 0.7f
+    private const val PUPIL_LOW = 0.06f
+    private const val PUPIL_HIGH = 0.16f
+    private const val GLINT_LOW = 0.7f
+    private const val GLINT_HIGH = 0.85f
 }

@@ -13,6 +13,9 @@ import com.camoron.domain.model.HairMask
 import com.camoron.domain.model.HairTint
 import com.camoron.domain.model.Hairstyle
 import com.camoron.domain.model.Inpaint
+import com.camoron.domain.model.MakeupArea
+import com.camoron.domain.model.MakeupKind
+import com.camoron.domain.model.MakeupTint
 import com.camoron.domain.model.Shape2D
 import com.camoron.domain.model.TryOn
 import com.camoron.domain.model.TryOnDrawing
@@ -56,6 +59,7 @@ object TryOnPainter {
         if (tryOn.isNone) return
         val hair = scene.hair
         if (tryOn.hair != HairColour.NONE && hair != null && tryOn.hairStrength > 0f) recolourHair(bitmap, tryOn, hair, cleared.removed)
+        for (area in TryOnDrawing.makeup(tryOn, scene, bitmap.width, bitmap.height)) applyMakeup(bitmap, area)
         // A new hairstyle with no colour chosen takes the person's own hair colour.
         val shapes = TryOnDrawing.shapes(tryOn, scene, bitmap.width, bitmap.height, cleared.ownHair)
         if (shapes.isNotEmpty()) {
@@ -128,6 +132,71 @@ object TryOnPainter {
             }
         }
         bitmap.setPixels(pixels, 0, w, x0, y0, w, h)
+    }
+
+    /** Lays [area]'s colour into the photo through a soft-edged mask of its outline. */
+    private fun applyMakeup(bitmap: Bitmap, area: MakeupArea) {
+        val margin = area.feather * 2f + 2f
+        var minX = Float.MAX_VALUE
+        var minY = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE
+        var maxY = -Float.MAX_VALUE
+        for (c in area.contours) {
+            for (i in c.indices step 2) {
+                minX = minOf(minX, c[i])
+                maxX = maxOf(maxX, c[i])
+                minY = minOf(minY, c[i + 1])
+                maxY = maxOf(maxY, c[i + 1])
+            }
+        }
+        val x0 = (minX - margin).toInt().coerceIn(0, bitmap.width)
+        val y0 = (minY - margin).toInt().coerceIn(0, bitmap.height)
+        val x1 = (maxX + margin).toInt().coerceIn(x0, bitmap.width)
+        val y1 = (maxY + margin).toInt().coerceIn(y0, bitmap.height)
+        val w = x1 - x0
+        val h = y1 - y0
+        if (w <= 0 || h <= 0) return
+        val mask = mask(area.contours, x0, y0, w, h, area.feather)
+        val clip = area.clip?.let { mask(it, x0, y0, w, h, area.feather * 0.5f) }
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, x0, y0, w, h)
+        for (i in pixels.indices) {
+            var amount = (mask[i].toInt() and 0xFF) / 255f
+            if (clip != null) amount *= (clip[i].toInt() and 0xFF) / 255f
+            if (amount <= 0f) continue
+            pixels[i] = when (area.kind) {
+                MakeupKind.LIPS -> MakeupTint.lips(pixels[i], area.colour, amount)
+                MakeupKind.BLUSH -> MakeupTint.blush(pixels[i], area.colour, amount)
+                MakeupKind.EYES -> MakeupTint.eyes(pixels[i], area.colour, amount)
+            }
+        }
+        bitmap.setPixels(pixels, 0, w, x0, y0, w, h)
+    }
+
+    /** [contours] (even-odd) filled into a [w] x [h] coverage mask at ([x0], [y0]), edges blurred by [feather] pixels. */
+    private fun mask(contours: List<FloatArray>, x0: Int, y0: Int, w: Int, h: Int, feather: Float): ByteArray {
+        val alpha = Bitmap.createBitmap(w, h, Bitmap.Config.ALPHA_8)
+        val path = Path().apply { fillType = Path.FillType.EVEN_ODD }
+        for (c in contours) {
+            if (c.size < 6) continue
+            path.moveTo(c[0] - x0, c[1] - y0)
+            for (i in 2 until c.size step 2) path.lineTo(c[i] - x0, c[i + 1] - y0)
+            path.close()
+        }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            if (feather >= 0.5f) maskFilter = BlurMaskFilter(feather, BlurMaskFilter.Blur.NORMAL)
+        }
+        Canvas(alpha).drawPath(path, paint)
+        // Rows may be padded, so read them as stored and pack them.
+        val stride = alpha.rowBytes
+        val raw = ByteArray(stride * h)
+        alpha.copyPixelsToBuffer(java.nio.ByteBuffer.wrap(raw))
+        alpha.recycle()
+        if (stride == w) return raw
+        val out = ByteArray(w * h)
+        for (y in 0 until h) System.arraycopy(raw, y * stride, out, y * w, w)
+        return out
     }
 
     private const val SURE_HAIR = 0.9f
