@@ -176,7 +176,12 @@ fun EditorScreen(
             }
             if (!state.failed) {
                 // Each tab's tools fade in over the last, rather than snapping.
-                Crossfade(state.tab, tween(TAB_FADE_MS), label = "editor tools", modifier = Modifier.fillMaxWidth().height(CONTROLS_HEIGHT)) { tab ->
+                Crossfade(
+                    targetState = state.tab,
+                    modifier = Modifier.fillMaxWidth().height(CONTROLS_HEIGHT),
+                    animationSpec = tween(TAB_FADE_MS),
+                    label = "editor tools",
+                ) { tab ->
                     Box(Modifier.fillMaxSize()) {
                         when (tab) {
                             EditorTab.LOOKS -> LooksControls(state, viewModel)
