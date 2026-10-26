@@ -107,22 +107,27 @@ object TryOnPainter {
     private fun recolourHair(bitmap: Bitmap, tryOn: TryOn, hair: HairMask, removed: BooleanArray?) {
         val width = bitmap.width
         val height = bitmap.height
-        val row = IntArray(width)
+        // Only the part of the photo where there is hair to recolour, read and written in one go.
+        val box = hair.bounds(HairTint.EDGE_LOW) ?: return
+        val x0 = (box[0] * width).toInt().coerceIn(0, width)
+        val y0 = (box[1] * height).toInt().coerceIn(0, height)
+        val x1 = kotlin.math.ceil(box[2] * width).toInt().coerceIn(x0, width)
+        val y1 = kotlin.math.ceil(box[3] * height).toInt().coerceIn(y0, height)
+        val w = x1 - x0
+        val h = y1 - y0
+        if (w == 0 || h == 0) return
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, x0, y0, w, h)
         val target = tryOn.hair.argb
-        for (y in 0 until height) {
-            bitmap.getPixels(row, 0, width, 0, y, width, 1)
-            val ny = (y + 0.5f) / height
-            var changed = false
-            for (x in 0 until width) {
-                if (removed != null && removed[y * width + x]) continue
-                val amount = HairTint.weight(hair.at((x + 0.5f) / width, ny)) * tryOn.hairStrength
-                if (amount > 0f) {
-                    row[x] = HairTint.apply(row[x], target, amount)
-                    changed = true
-                }
+        for (y in 0 until h) {
+            val ny = (y0 + y + 0.5f) / height
+            for (x in 0 until w) {
+                if (removed != null && removed[(y0 + y) * width + x0 + x]) continue
+                val amount = HairTint.weight(hair.at((x0 + x + 0.5f) / width, ny)) * tryOn.hairStrength
+                if (amount > 0f) pixels[y * w + x] = HairTint.apply(pixels[y * w + x], target, amount)
             }
-            if (changed) bitmap.setPixels(row, 0, width, 0, y, width, 1)
         }
+        bitmap.setPixels(pixels, 0, w, x0, y0, w, h)
     }
 
     private const val SURE_HAIR = 0.9f

@@ -165,6 +165,14 @@ fun EditorScreen(
                     state.preview != null -> ComparablePhoto(state)
                     else -> CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                 }
+                // A try-on being drawn: a small spinner, so a tap never looks ignored.
+                if (state.dressing && state.preview != null) {
+                    CircularProgressIndicator(
+                        Modifier.align(Alignment.TopEnd).padding(12.dp).size(22.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                    )
+                }
             }
             if (!state.failed) {
                 Box(Modifier.fillMaxWidth().height(CONTROLS_HEIGHT)) {

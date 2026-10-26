@@ -86,6 +86,8 @@ data class EditorUiState(
     val pickMissed: Boolean = false,
     /** Filling in the background behind what was removed. */
     val erasing: Boolean = false,
+    /** A try-on is being drawn onto the preview. */
+    val dressing: Boolean = false,
 ) {
     val hasChanges: Boolean get() = !edit.isIdentity
 }
@@ -136,7 +138,8 @@ class EditorViewModel @Inject constructor(
                 working = bitmap
                 _state.update { it.copy(loading = false) }
                 startRendering(bitmap)
-                if (_state.value.tab == EditorTab.TRY_ON) scanOnce()
+                // Faces are found straight away, so Try on is ready by the time it is opened.
+                scanOnce()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -173,6 +176,7 @@ class EditorViewModel @Inject constructor(
                     // Try-ons are painted onto it once per change of what is tried on.
                     val dressKey = edit.tryOn to upright
                     if (dressedFor != dressKey) {
+                        if (!edit.tryOn.isNone) _state.update { it.copy(dressing = true) }
                         // The old hair under a new hairstyle is painted out once per style, as that is slow.
                         val clearKey = Triple(edit.tryOn.hairstyle, upright, scene)
                         if (clearedFor != clearKey) {
@@ -202,11 +206,11 @@ class EditorViewModel @Inject constructor(
                                 frameFor = key
                             }
                             val shown = EditPreview.colour(base, colour)
-                            _state.update { it.copy(frame = shown.asImageBitmap(), erasing = false) }
+                            _state.update { it.copy(frame = shown.asImageBitmap(), erasing = false, dressing = false) }
                         }
                         EditorTab.ERASE -> {
                             val shown = EditPreview.colour(dressed, colour)
-                            _state.update { it.copy(eraseView = shown.asImageBitmap(), erasing = false) }
+                            _state.update { it.copy(eraseView = shown.asImageBitmap(), erasing = false, dressing = false) }
                         }
                         else -> {
                             val key = edit.crop to dressed
@@ -215,7 +219,7 @@ class EditorViewModel @Inject constructor(
                                 cutFor = key
                             }
                             val shown = EditPreview.colour(base, colour)
-                            _state.update { it.copy(preview = shown.asImageBitmap(), original = base.asImageBitmap(), erasing = false) }
+                            _state.update { it.copy(preview = shown.asImageBitmap(), original = base.asImageBitmap(), erasing = false, dressing = false) }
                         }
                     }
                 }
