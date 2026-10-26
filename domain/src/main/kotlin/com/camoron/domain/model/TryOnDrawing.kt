@@ -30,6 +30,21 @@ class Shape2D(
     val blur: Float = 0f,
 )
 
+/** Which way a [MakeupArea] is coloured. */
+enum class MakeupKind { LIPS, BLUSH, EYES }
+
+/**
+ * Where makeup goes: [contours] (pixels of the upright photo, even-odd), optionally only where
+ * they overlap [clip] too, with edges softened by [feather] pixels, coloured [colour].
+ */
+class MakeupArea(
+    val kind: MakeupKind,
+    val contours: List<FloatArray>,
+    val clip: List<FloatArray>?,
+    val colour: Int,
+    val feather: Float,
+)
+
 /**
  * Turns try-on choices and the face tracker's points into shapes to draw. Pure geometry, so the
  * preview, the saved photo and the tests all get the same drawing; an Android canvas just fills
@@ -126,6 +141,44 @@ object TryOnDrawing {
                 j += 2
             }
         }
+    }
+
+    /** Where each face's makeup goes, for [tryOn] on a [width] x [height] photo. */
+    fun makeup(tryOn: TryOn, scene: FaceScene, width: Int, height: Int): List<MakeupArea> {
+        if (!tryOn.hasMakeup) return emptyList()
+        val out = mutableListOf<MakeupArea>()
+        for (shape in scene.faces) {
+            if (shape.count < FACE_POINTS) continue
+            val face = Face(shape, width.toFloat(), height.toFloat())
+            val frame = EyeFrame(face.mid(33, 133), face.mid(362, 263))
+            val unit = frame.unit
+            if (tryOn.blush != Blush.NONE) {
+                // A soft round wash on the apple of each cheek, below the outer eye.
+                for ((cheek, side) in listOf(BLUSH_LEFT to -1f, BLUSH_RIGHT to 1f)) {
+                    val centre = face.pt(cheek) + frame.vector(side * 0.12f, -0.05f)
+                    val oval = ellipse(0.62f, 0.42f, rotation = side * -0.35f).map { centre + frame.vector(it.x, it.y) }
+                    out += MakeupArea(MakeupKind.BLUSH, listOf(oval.flat()), null, tryOn.blush.argb, unit * 0.35f)
+                }
+            }
+            if (tryOn.lipstick != Lipstick.NONE) {
+                val outer = smoothClosed(LIPS_OUTER.map { face.pt(it) }, steps = 4)
+                val inner = smoothClosed(LIPS_INNER.map { face.pt(it) }, steps = 4)
+                out += MakeupArea(MakeupKind.LIPS, listOf(outer.flat(), inner.flat()), null, tryOn.lipstick.argb, unit * 0.025f)
+            }
+            if (tryOn.eyes != EyeColour.NONE && shape.count >= IRIS_POINTS) {
+                // The iris circle, only where the eye is open.
+                for ((centre, ring, lids) in listOf(Triple(468, 469..472, LEFT_EYE), Triple(473, 474..477, RIGHT_EYE))) {
+                    val c = face.pt(centre)
+                    val radius = ring.map { face.dist(it, centre) }.average().toFloat() * IRIS_GROW
+                    val iris = (0 until 32).map { i ->
+                        val t = 2 * PI.toFloat() * i / 32
+                        Pt(c.x + radius * cos(t), c.y + radius * sin(t))
+                    }
+                    out += MakeupArea(MakeupKind.EYES, listOf(iris.flat()), listOf(lids.map { face.pt(it) }.flat()), tryOn.eyes.argb, radius * 0.12f)
+                }
+            }
+        }
+        return out
     }
 
     // --- Spectacles -------------------------------------------------------------------------
@@ -959,6 +1012,8 @@ object TryOnDrawing {
     }
 
     private const val FACE_POINTS = 468
+    private const val IRIS_POINTS = 478
+    private const val IRIS_GROW = 1.04f
     private const val LENS_POINTS = 64
     private const val LENS_X = 1f
     private const val LENS_SCALE = 1.08f
@@ -989,6 +1044,13 @@ object TryOnDrawing {
 
     /** Outer edge of the lips, round from the left corner (in the photo) over the top. */
     private val LIPS_OUTER = listOf(61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146)
+    /** Inner edge of the lips (the mouth opening), from the left corner over the top. */
+    private val LIPS_INNER = listOf(78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95)
+
+    /** The apple of each cheek, below the outer corner of the eye. */
+    private const val BLUSH_LEFT = 205
+    private const val BLUSH_RIGHT = 425
+
     private val UPPER_LIP = listOf(61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291)
     private val LOWER_LIP = listOf(61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291)
 

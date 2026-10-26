@@ -26,6 +26,10 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,16 +39,19 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.camoron.domain.model.BeardColour
+import com.camoron.domain.model.Blush
+import com.camoron.domain.model.EyeColour
 import com.camoron.domain.model.FacialHair
 import com.camoron.domain.model.FrameColour
 import com.camoron.domain.model.GlassesStyle
 import com.camoron.domain.model.HairColour
 import com.camoron.domain.model.Hairstyle
 import com.camoron.domain.model.LensTint
+import com.camoron.domain.model.Lipstick
 import com.camoron.domain.model.MaskStyle
 import kotlin.math.roundToInt
 
-/** The Try on tab: spectacles, masks, beards, hairstyles and hair colour, drawn onto the faces found in the photo. */
+/** The Try on tab: spectacles, makeup, hairstyles and hair colour, beards and masks, drawn onto the faces found in the photo. */
 @Composable
 internal fun TryOnControls(state: EditorUiState, viewModel: EditorViewModel) {
     val tryOn = state.edit.tryOn
@@ -92,6 +99,7 @@ internal fun TryOnControls(state: EditorUiState, viewModel: EditorViewModel) {
                             }
                         }
                     }
+                    TryOnSection.MAKEUP -> MakeupControls(state, viewModel)
                     TryOnSection.MASKS -> ChipRow(
                         options = MaskStyle.entries,
                         selected = tryOn.mask,
@@ -177,6 +185,57 @@ internal fun TryOnControls(state: EditorUiState, viewModel: EditorViewModel) {
     }
 }
 
+private enum class MakeupPart { LIPS, BLUSH, EYES }
+
+/** Lipstick, blush and eye colour: pick the part, then its shade. */
+@Composable
+private fun MakeupControls(state: EditorUiState, viewModel: EditorViewModel) {
+    val tryOn = state.edit.tryOn
+    var part by rememberSaveable { mutableStateOf(MakeupPart.LIPS) }
+    ChipRow(
+        options = MakeupPart.entries,
+        selected = part,
+        label = { stringResource(it.label()) },
+        onSelect = { part = it },
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        when (part) {
+            MakeupPart.LIPS -> items(Lipstick.entries) { shade ->
+                if (shade == Lipstick.NONE) {
+                    NoneSwatch(selected = tryOn.lipstick == shade) { viewModel.setTryOn(tryOn.copy(lipstick = shade)) }
+                } else {
+                    Swatch(Color(shade.argb), selected = tryOn.lipstick == shade, size = 36) { viewModel.setTryOn(tryOn.copy(lipstick = shade)) }
+                }
+            }
+            MakeupPart.BLUSH -> items(Blush.entries) { shade ->
+                if (shade == Blush.NONE) {
+                    NoneSwatch(selected = tryOn.blush == shade) { viewModel.setTryOn(tryOn.copy(blush = shade)) }
+                } else {
+                    Swatch(Color(shade.argb), selected = tryOn.blush == shade, size = 36) { viewModel.setTryOn(tryOn.copy(blush = shade)) }
+                }
+            }
+            MakeupPart.EYES -> items(EyeColour.entries) { shade ->
+                if (shade == EyeColour.NONE) {
+                    NoneSwatch(selected = tryOn.eyes == shade) { viewModel.setTryOn(tryOn.copy(eyes = shade)) }
+                } else {
+                    Swatch(Color(shade.argb), selected = tryOn.eyes == shade, size = 36) { viewModel.setTryOn(tryOn.copy(eyes = shade)) }
+                }
+            }
+        }
+    }
+}
+
+private fun MakeupPart.label() = when (this) {
+    MakeupPart.LIPS -> R.string.makeup_lips
+    MakeupPart.BLUSH -> R.string.makeup_blush
+    MakeupPart.EYES -> R.string.makeup_eyes
+}
+
 @Composable
 private fun Message(text: String, modifier: Modifier) {
     Box(modifier.fillMaxWidth().padding(horizontal = 24.dp), contentAlignment = Alignment.Center) {
@@ -259,6 +318,7 @@ private fun NoneSwatch(selected: Boolean, onClick: () -> Unit) {
 
 private fun TryOnSection.label() = when (this) {
     TryOnSection.GLASSES -> R.string.try_glasses
+    TryOnSection.MAKEUP -> R.string.try_makeup
     TryOnSection.MASKS -> R.string.try_masks
     TryOnSection.BEARD -> R.string.try_beard
     TryOnSection.HAIR -> R.string.try_hair
