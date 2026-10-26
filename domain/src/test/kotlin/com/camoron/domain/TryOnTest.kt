@@ -1,11 +1,13 @@
 package com.camoron.domain
 
 import com.camoron.domain.model.FaceScene
+import com.camoron.domain.model.FacialHair
 import com.camoron.domain.model.FaceShape
 import com.camoron.domain.model.GlassesStyle
 import com.camoron.domain.model.HairColour
 import com.camoron.domain.model.HairMask
 import com.camoron.domain.model.HairTint
+import com.camoron.domain.model.Hairstyle
 import com.camoron.domain.model.MaskStyle
 import com.camoron.domain.model.PhotoEdit
 import com.camoron.domain.model.TryOn
@@ -113,5 +115,89 @@ class TryOnTest {
         assertThat(mask.at(0.25f, 0.5f)).isWithin(0.01f).of(0f)
         assertThat(mask.at(0.5f, 0.5f)).isWithin(0.01f).of(0.5f)
         assertThat(mask.at(0.75f, 0.5f)).isWithin(0.01f).of(1f)
+    }
+
+    /** A real face's points (a portrait photo, 880 x 1040), from the face tracker. */
+    private val portrait: FaceShape by lazy {
+        val text = javaClass.getResource("/face-points.txt")!!.readText()
+        FaceShape(text.split(Regex("\\s+")).filter { it.isNotEmpty() }.map { it.toFloat() }.toFloatArray())
+    }
+
+    private fun strandPoints(style: FacialHair): List<Pair<Float, Float>> =
+        TryOnDrawing.shapes(TryOn(facialHair = style), FaceScene(listOf(portrait), null), 880, 1040)
+            .filter { !it.closed }
+            .flatMap { shape -> shape.contours.flatMap { c -> (c.indices step 2).map { c[it] to c[it + 1] } } }
+
+    @Test
+    fun `facial hair needs a face and is drawn hair by hair`() {
+        val beard = TryOn(facialHair = FacialHair.FULL_BEARD)
+        assertThat(beard.needsFaces).isTrue()
+        assertThat(beard.isNone).isFalse()
+        assertThat(TryOnDrawing.shapes(beard, FaceScene.EMPTY, 880, 1040)).isEmpty()
+        for (style in FacialHair.entries - FacialHair.NONE) {
+            assertThat(strandPoints(style)).isNotEmpty()
+        }
+    }
+
+    @Test
+    fun `facial hair is the same every time it is drawn`() {
+        val scene = FaceScene(listOf(portrait), null)
+        val a = TryOnDrawing.shapes(TryOn(facialHair = FacialHair.GOATEE), scene, 880, 1040)
+        val b = TryOnDrawing.shapes(TryOn(facialHair = FacialHair.GOATEE), scene, 880, 1040)
+        assertThat(a.size).isEqualTo(b.size)
+        a.zip(b).forEach { (x, y) -> x.contours.zip(y.contours).forEach { (p, q) -> assertThat(p.contentEquals(q)).isTrue() } }
+    }
+
+    @Test
+    fun `beards grow on the lower face and moustaches over the lip`() {
+        fun px(i: Int) = portrait.x(i) * 880
+        fun py(i: Int) = portrait.y(i) * 1040
+        val left = px(234) - 20f
+        val right = px(454) + 20f
+        val noseTip = py(1)
+        for ((x, y) in strandPoints(FacialHair.FULL_BEARD)) {
+            assertThat(x).isIn(com.google.common.collect.Range.closed(left, right))
+            assertThat(y).isGreaterThan(py(33))
+        }
+        val lipTop = minOf(py(0), py(37), py(267))
+        for ((x, y) in strandPoints(FacialHair.MOUSTACHE)) {
+            assertThat(y).isIn(com.google.common.collect.Range.closed(noseTip, py(17)))
+            assertThat(x).isIn(com.google.common.collect.Range.closed(px(61) - 60f, px(291) + 60f))
+        }
+        assertThat(lipTop).isGreaterThan(noseTip)
+    }
+
+    @Test
+    fun `every hairstyle is drawn round the head, in the chosen colour`() {
+        val scene = FaceScene(listOf(portrait), null)
+        for (style in Hairstyle.entries - Hairstyle.NONE) {
+            val tryOn = TryOn(hairstyle = style, hair = HairColour.BLONDE)
+            assertThat(tryOn.needsFaces).isTrue()
+            val shapes = TryOnDrawing.shapes(tryOn, scene, 880, 1040)
+            assertThat(shapes.count { !it.closed }).isGreaterThan(0)
+            // The strands are drawn in shades of the chosen colour.
+            val main = shapes.first { !it.closed && it.stroke != null && (it.stroke!! and 0xFFFFFF) == (HairColour.BLONDE.argb and 0xFFFFFF) }
+            assertThat(main.contours).isNotEmpty()
+        }
+        // The same every time.
+        val a = TryOnDrawing.shapes(TryOn(hairstyle = Hairstyle.BOB), scene, 880, 1040, ownHair = 0xFF553311.toInt())
+        val b = TryOnDrawing.shapes(TryOn(hairstyle = Hairstyle.BOB), scene, 880, 1040, ownHair = 0xFF553311.toInt())
+        assertThat(a.flatMap { it.contours }.zip(b.flatMap { it.contours }).all { (p, q) -> p.contentEquals(q) }).isTrue()
+    }
+
+    @Test
+    fun `new hairstyles paint out the old hair but keep the face`() {
+        val w = 220
+        val h = 260
+        val allHair = HairMask(4, 4, ByteArray(16) { 255.toByte() })
+        val withHair = FaceScene(listOf(portrait), allHair)
+        assertThat(TryOnDrawing.hairToRemove(TryOn(hairstyle = Hairstyle.PIXIE), FaceScene(listOf(portrait), null), w, h)).isNull()
+        assertThat(TryOnDrawing.hairToRemove(TryOn(hairstyle = Hairstyle.BANGS), withHair, w, h)).isNull()
+        assertThat(TryOnDrawing.hairToRemove(TryOn(), withHair, w, h)).isNull()
+        val hole = TryOnDrawing.hairToRemove(TryOn(hairstyle = Hairstyle.PIXIE), withHair, w, h)!!
+        fun at(i: Int) = hole[(portrait.y(i) * h).toInt() * w + (portrait.x(i) * w).toInt()]
+        assertThat(at(1)).isFalse() // nose tip
+        assertThat(at(13)).isFalse() // mouth
+        assertThat(hole[(h - 1) * w]).isTrue() // hair down at the shoulder, gone with a pixie cut
     }
 }

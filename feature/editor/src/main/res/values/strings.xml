@@ -28,6 +28,7 @@
     <string name="tab_try_on">Try on</string>
     <string name="try_glasses">Glasses</string>
     <string name="try_masks">Masks</string>
+    <string name="try_beard">Beard</string>
     <string name="try_hair">Hair</string>
     <string name="finding_faces">Finding faces…</string>
     <string name="no_face">No face found in this photo. Try one where the face is clear and facing the camera.</string>
@@ -51,6 +52,19 @@
     <string name="mask_cloth">Cloth</string>
     <string name="mask_masquerade">Masquerade</string>
     <string name="mask_hero">Hero</string>
+    <string name="beard_stubble">Stubble</string>
+    <string name="beard_moustache">Moustache</string>
+    <string name="beard_goatee">Goatee</string>
+    <string name="beard_circle">Circle beard</string>
+    <string name="beard_short">Short beard</string>
+    <string name="beard_full">Full beard</string>
+    <string name="hairstyle_own">Own hair</string>
+    <string name="hairstyle_pixie">Pixie</string>
+    <string name="hairstyle_bob">Bob</string>
+    <string name="hairstyle_long">Long</string>
+    <string name="hairstyle_curly">Curly</string>
+    <string name="hairstyle_bun">Bun</string>
+    <string name="hairstyle_bangs">Bangs</string>
     <string name="strength">Strength</string>
     <string name="reset">Reset</string>
     <string name="rotate">Rotate</string>

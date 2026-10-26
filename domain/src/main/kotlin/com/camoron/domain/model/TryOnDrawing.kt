@@ -2,12 +2,15 @@ package com.camoron.domain.model
 
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.sign
 import kotlin.math.sin
+import kotlin.random.Random
 
 /** A colour ramp between two points, in pixels. */
 class Gradient(val x0: Float, val y0: Float, val x1: Float, val y1: Float, val from: Int, val to: Int)
@@ -34,12 +37,21 @@ class Shape2D(
  */
 object TryOnDrawing {
 
-    fun shapes(tryOn: TryOn, scene: FaceScene, width: Int, height: Int): List<Shape2D> {
+    /**
+     * The shapes for [tryOn] on a [width] x [height] photo. [ownHair] is the person's own hair
+     * colour, if known, for a new hairstyle when no hair colour is chosen.
+     */
+    fun shapes(tryOn: TryOn, scene: FaceScene, width: Int, height: Int, ownHair: Int? = null): List<Shape2D> {
         if (!tryOn.needsFaces) return emptyList()
         val out = mutableListOf<Shape2D>()
-        for (face in scene.faces) {
-            if (face.count < FACE_POINTS) continue
+        scene.faces.forEachIndexed { index, face ->
+            if (face.count < FACE_POINTS) return@forEachIndexed
             val f = Face(face, width.toFloat(), height.toFloat())
+            if (tryOn.hairstyle != Hairstyle.NONE) {
+                val colour = if (tryOn.hair != HairColour.NONE) tryOn.hair.argb else ownHair ?: DEFAULT_HAIR
+                hairstyle(f, index, tryOn.hairstyle, colour or 0xFF000000.toInt(), out)
+            }
+            if (tryOn.facialHair != FacialHair.NONE) facialHair(f, index, tryOn, out)
             when (tryOn.mask) {
                 MaskStyle.NONE -> Unit
                 MaskStyle.SURGICAL, MaskStyle.N95, MaskStyle.CLOTH -> faceMask(f, tryOn.mask, out)
@@ -48,6 +60,72 @@ object TryOnDrawing {
             if (tryOn.glasses != GlassesStyle.NONE) glasses(f, tryOn, out)
         }
         return out
+    }
+
+    /**
+     * The person's own hair that a new hairstyle doesn't cover, plus what it does cover, to paint
+     * out with matching background before the new hair is drawn, so short styles don't show the
+     * old hair round them. True for each pixel of a [width] x [height] photo to rebuild; the face
+     * itself is kept. Null when nothing needs removing.
+     */
+    fun hairToRemove(tryOn: TryOn, scene: FaceScene, width: Int, height: Int): BooleanArray? {
+        val hair = scene.hair ?: return null
+        if (tryOn.hairstyle == Hairstyle.NONE || tryOn.hairstyle == Hairstyle.BANGS) return null
+        val covered = BooleanArray(width * height)
+        val faces = BooleanArray(width * height)
+        var any = false
+        for (shape in scene.faces) {
+            if (shape.count < FACE_POINTS) continue
+            val face = Face(shape, width.toFloat(), height.toFloat())
+            val frame = EyeFrame(face.mid(33, 133), face.mid(362, 263))
+            val look = HairLook.of(tryOn.hairstyle)
+            for (piece in hairPieces(face, frame, tryOn.hairstyle, look)) {
+                rasterise(frame.toPhoto(piece.outline), width, height, covered)
+                if (piece.face.isNotEmpty()) rasterise(frame.toPhoto(piece.face), width, height, faces)
+            }
+            any = true
+        }
+        if (!any) return null
+        val own = BooleanArray(width * height)
+        for (y in 0 until height) {
+            val ny = (y + 0.5f) / height
+            for (x in 0 until width) {
+                if (hair.at((x + 0.5f) / width, ny) > REMOVE_HAIR_ABOVE) own[y * width + x] = true
+            }
+        }
+        // Grow the hair a little so its soft edge goes too.
+        val grown = Inpaint.dilate(own, width, height, max(2, (max(width, height) * 0.008f).toInt()))
+        var count = 0
+        val hole = BooleanArray(width * height) { i ->
+            ((grown[i] || covered[i]) && !faces[i]).also { if (it) count++ }
+        }
+        return hole.takeIf { count > 0 }
+    }
+
+    /** Sets [mask] true inside [outline] (photo pixels), by the even-odd rule, one row at a time. */
+    private fun rasterise(outline: List<Pt>, width: Int, height: Int, mask: BooleanArray) {
+        val n = outline.size
+        if (n < 3) return
+        val crossings = FloatArray(n)
+        val yStart = max(0, outline.minOf { it.y }.toInt())
+        val yEnd = minOf(height - 1, outline.maxOf { it.y }.toInt() + 1)
+        for (y in yStart..yEnd) {
+            val sy = y + 0.5f
+            var k = 0
+            for (i in 0 until n) {
+                val a = outline[i]
+                val b = outline[(i + 1) % n]
+                if ((a.y <= sy) != (b.y <= sy)) crossings[k++] = a.x + (sy - a.y) / (b.y - a.y) * (b.x - a.x)
+            }
+            crossings.sort(0, k)
+            var j = 0
+            while (j + 1 < k) {
+                val from = max(0, kotlin.math.ceil(crossings[j] - 0.5f).toInt())
+                val to = minOf(width - 1, kotlin.math.floor(crossings[j + 1] - 0.5f).toInt())
+                for (x in from..to) mask[y * width + x] = true
+                j += 2
+            }
+        }
     }
 
     // --- Spectacles -------------------------------------------------------------------------
@@ -174,6 +252,429 @@ object TryOnDrawing {
         LensTint.BLUE -> 0xB81F3F73.toInt() to null
     }
 
+    // --- Facial hair ------------------------------------------------------------------------
+
+    /**
+     * Beards and moustaches are drawn hair by hair: thousands of short strokes inside an outline
+     * taken from the face points, each growing the way facial hair does (down the cheeks and chin,
+     * out and down from the middle of the upper lip) and thinning out towards the edges, over a
+     * soft shadow that gives density. A fixed seed per face gives the same hairs in the preview
+     * and the saved photo, at any size.
+     */
+    private fun facialHair(face: Face, faceIndex: Int, tryOn: TryOn, out: MutableList<Shape2D>) {
+        val style = tryOn.facialHair
+        val frame = EyeFrame(face.mid(33, 133), face.mid(362, 263))
+        val unit = frame.unit
+        val region = beardOutline(face, frame, style)
+        val look = BeardLook.of(style)
+        val colour = tryOn.beard.argb
+
+        out += Shape2D(region.map { it.flat() }, fill = withAlpha(darken(colour, 0.75f), look.shadow), blur = unit * look.blur)
+
+        // Everything below is in eye units, so the hairs scale with the face.
+        val shapes = region.map { contour -> contour.map { frame.fromPhoto(it) } }
+        val area = abs(shapes.sumOf { signedArea(it).toDouble() }).toFloat()
+        val count = (look.coverage * area / (look.length * look.width)).toInt().coerceIn(0, MAX_HAIRS)
+        val mouth = frame.fromPhoto(face.mid(61, 291))
+        val mouthHalf = abs(frame.fromPhoto(face.pt(291)).x - frame.fromPhoto(face.pt(61)).x) / 2f
+        val noseLine = frame.fromPhoto(face.pt(164)).y
+        val lipLine = frame.fromPhoto(face.pt(0)).y
+        val minX = shapes.minOf { c -> c.minOf { it.x } }
+        val maxX = shapes.maxOf { c -> c.maxOf { it.x } }
+        val minY = shapes.minOf { c -> c.minOf { it.y } }
+        val maxY = shapes.maxOf { c -> c.maxOf { it.y } }
+
+        val random = Random(HAIR_SEED + faceIndex * 7919 + style.ordinal)
+        val groups = List(3) { mutableListOf<FloatArray>() }
+        var attempts = 0
+        while (groups.sumOf { it.size } < count && attempts < count * 6) {
+            attempts++
+            val p = Pt(minX + random.nextFloat() * (maxX - minX), minY + random.nextFloat() * (maxY - minY))
+            if (!inside(shapes, p)) continue
+            // Fewer hairs towards the outline, for a soft, natural edge.
+            val t = (edgeDistance(shapes, p) / look.fade).coerceIn(0f, 1f)
+            if (random.nextFloat() > t * t * (3f - 2f * t)) continue
+
+            val dx = p.x - mouth.x
+            val overLip = p.y > noseLine - 0.08f && p.y < lipLine + 0.04f && abs(dx) < mouthHalf + 0.18f
+            var angle = if (overLip) {
+                // Moustache hair parts at the middle and sweeps out and down.
+                atan2(0.75f, sign(dx) * 1f)
+            } else {
+                // Down the chin, slightly outwards on the cheeks.
+                atan2(1f, dx * 0.3f)
+            }
+            angle += (random.nextFloat() - 0.5f) * 0.6f
+            val length = look.length * (0.6f + 0.8f * random.nextFloat())
+            val dir = Pt(cos(angle), sin(angle))
+            val bend = Pt(-dir.y, dir.x) * (length * 0.18f * (random.nextFloat() - 0.5f))
+            val strand = listOf(p, p + dir * (length * 0.5f) + bend, p + dir * length)
+            val group = when (random.nextFloat()) {
+                in 0f..0.4f -> 0
+                in 0.4f..0.85f -> 1
+                else -> 2
+            }
+            groups[group] += frame.toPhoto(strand).flat()
+        }
+        val tones = listOf(
+            withAlpha(darken(colour, 0.6f), 0.85f * look.opacity) to 1.15f,
+            withAlpha(colour, 0.8f * look.opacity) to 1f,
+            withAlpha(mix(colour, 0xFFFFFFFF.toInt(), 0.35f), 0.6f * look.opacity) to 0.8f,
+        )
+        groups.forEachIndexed { i, strands ->
+            if (strands.isNotEmpty()) {
+                out += Shape2D(strands, closed = false, stroke = tones[i].first, strokeWidth = unit * look.width * tones[i].second)
+            }
+        }
+    }
+
+    /** How each style looks, in eye units: hair length and thickness, how densely it covers, its shadow. */
+    private class BeardLook(
+        val length: Float,
+        val width: Float,
+        val coverage: Float,
+        val shadow: Float,
+        val blur: Float,
+        val fade: Float,
+        val opacity: Float = 1f,
+    ) {
+        companion object {
+            fun of(style: FacialHair) = when (style) {
+                FacialHair.STUBBLE -> BeardLook(0.022f, 0.005f, 0.45f, 0.2f, 0.12f, 0.18f, opacity = 0.6f)
+                FacialHair.MOUSTACHE -> BeardLook(0.1f, 0.01f, 3f, 0.42f, 0.06f, 0.06f)
+                FacialHair.GOATEE, FacialHair.CIRCLE -> BeardLook(0.12f, 0.01f, 3f, 0.42f, 0.06f, 0.08f)
+                FacialHair.SHORT_BEARD -> BeardLook(0.09f, 0.01f, 2.6f, 0.4f, 0.08f, 0.14f)
+                FacialHair.FULL_BEARD -> BeardLook(0.19f, 0.011f, 3f, 0.5f, 0.08f, 0.14f)
+                FacialHair.NONE -> BeardLook(0f, 1f, 0f, 0f, 0f, 1f)
+            }
+        }
+    }
+
+    /** The outline (photo pixels) each style fills, with the mouth cut out where it is surrounded. */
+    private fun beardOutline(face: Face, frame: EyeFrame, style: FacialHair): List<List<Pt>> {
+        val mouthCentre = face.mid(61, 291)
+        val mouthHole = smoothClosed(LIPS_OUTER.map { face.pt(it).awayFrom(mouthCentre, 1.12f) })
+        val upperLip = UPPER_LIP.map { face.pt(it) }
+        val lowerLip = LOWER_LIP.map { face.pt(it) }
+        val noseBase = NOSE_BASE.map { face.pt(it) }
+        // Out from each mouth corner, in eye units across and down the face.
+        fun corner(index: Int, side: Float, across: Float, down: Float) =
+            face.pt(index) + frame.vector(side * across, down)
+
+        val moustache = smoothClosed(
+            listOf(corner(61, -1f, 0.1f, 0.06f)) +
+                noseBase.map { it.lerp(face.pt(0), 0.12f) } +
+                listOf(corner(291, 1f, 0.1f, 0.06f)) +
+                upperLip.reversed().map { it + frame.vector(0f, -0.025f) },
+        )
+        // A goatee narrows from the lip to the point of the chin.
+        val chinNarrow = CHIN.map { face.pt(it) }.let { points ->
+            val point = face.pt(152)
+            points.map { it.lerp(point, 0.55f).awayFrom(mouthCentre, 1.04f) }
+        }
+        return when (style) {
+            FacialHair.MOUSTACHE -> listOf(moustache)
+            FacialHair.GOATEE -> listOf(
+                smoothClosed(lowerLip.subList(3, lowerLip.size - 3).map { it + frame.vector(0f, 0.03f) } + chinNarrow),
+            )
+            FacialHair.CIRCLE -> listOf(
+                smoothClosed(
+                    noseBase.map { it.lerp(face.pt(0), 0.12f) } +
+                        listOf(corner(291, 1f, 0.12f, 0.05f), corner(291, 1f, 0.06f, 0.3f)) +
+                        CHIN.map { face.pt(it).lerp(face.pt(152), 0.3f).awayFrom(mouthCentre, 1.05f) } +
+                        listOf(corner(61, -1f, 0.06f, 0.3f), corner(61, -1f, 0.12f, 0.05f)),
+                ),
+                mouthHole,
+            )
+            FacialHair.STUBBLE, FacialHair.SHORT_BEARD, FacialHair.FULL_BEARD -> {
+                val centre = face.pt(NOSE_TIP)
+                // Full beards grow out past the jaw, most at the chin.
+                val jaw = JAW.mapIndexed { i, index ->
+                    val chinWeight = 1f - abs(i - JAW.size / 2f) / (JAW.size / 2f)
+                    val grow = when (style) {
+                        FacialHair.FULL_BEARD -> 1.04f + 0.12f * chinWeight
+                        FacialHair.SHORT_BEARD -> 1.01f + 0.03f * chinWeight
+                        else -> 1f
+                    }
+                    face.pt(index).awayFrom(centre, grow)
+                }
+                val top = BEARD_CHEEK_LEFT.map { face.pt(it) } +
+                    noseBase.map { it.lerp(face.pt(0), 0.12f) } +
+                    BEARD_CHEEK_RIGHT.map { face.pt(it) }
+                listOf(smoothClosed(top + jaw.subList(1, jaw.size - 1).reversed()), mouthHole)
+            }
+            FacialHair.NONE -> emptyList()
+        }
+    }
+
+    // --- Hairstyles -------------------------------------------------------------------------
+
+    /**
+     * New hairstyles are drawn like the beards, strand by strand, but each strand is a long line
+     * that follows the way hair falls: out from the crown over the top of the head, then down the
+     * sides. The shape is built round the face in eye units, so it fits any head, over a dense
+     * base layer that hides what is behind. Hair outside the new shape is left as it is.
+     */
+    private fun hairstyle(face: Face, faceIndex: Int, style: Hairstyle, colour: Int, out: MutableList<Shape2D>) {
+        val frame = EyeFrame(face.mid(33, 133), face.mid(362, 263))
+        val look = HairLook.of(style)
+        val random = Random(HAIR_SEED + faceIndex * 7919 + 101 * (style.ordinal + 1))
+        for (piece in hairPieces(face, frame, style, look)) drawHair(piece, frame, look, colour, random, out)
+    }
+
+    /** One part of a hairstyle: its outline in eye units, and which way the hair grows at each point. */
+    private class HairPiece(val outline: List<Pt>, val face: List<Pt>, val flow: (Pt) -> Pt)
+
+    /** How each hairstyle is shaped and drawn, in eye units (the pupils are 2 apart). */
+    private class HairLook(
+        /** How far the hair stands off the skull. */
+        val volume: Float,
+        /** How far down the sides the hair reaches, and how wide it is there. */
+        val bottom: Float,
+        val endWidth: Float,
+        /** Extra fullness half way down the sides. */
+        val bulge: Float,
+        /** Where a fringe ends on the forehead, or null for none. */
+        val fringe: Float?,
+        /** Strand length and thickness, and how densely they cover. */
+        val length: Float,
+        val width: Float,
+        val coverage: Float,
+        /** Gentle waves, or tight curls (turn per unit length). */
+        val wave: Float = 0f,
+        val curl: Float = 0f,
+        /** How much the ends turn in under the jaw. */
+        val curlIn: Float = 0f,
+    ) {
+        companion object {
+            fun of(style: Hairstyle) = when (style) {
+                Hairstyle.PIXIE -> HairLook(0.15f, 0.75f, 2.2f, 0f, -1.05f, 0.45f, 0.013f, 2.4f, wave = 0.12f)
+                Hairstyle.BOB -> HairLook(0.3f, 2.45f, 2.6f, 0.16f, -0.82f, 0.9f, 0.013f, 2.6f, curlIn = 0.5f)
+                Hairstyle.LONG -> HairLook(0.28f, 5.6f, 2.95f, 0.28f, null, 1.7f, 0.013f, 2.8f, wave = 0.18f)
+                Hairstyle.CURLY -> HairLook(0.75f, 1.7f, 2.7f, 0.45f, -1.15f, 0.7f, 0.014f, 3.6f, curl = 7f)
+                Hairstyle.BUN -> HairLook(0.06f, 0.6f, 2.2f, 0f, null, 0.6f, 0.012f, 2.4f)
+                Hairstyle.BANGS -> HairLook(0f, 0f, 0f, 0f, -0.8f, 0.45f, 0.012f, 2.6f)
+                Hairstyle.NONE -> HairLook(0f, 0f, 0f, 0f, null, 1f, 1f, 0f)
+            }
+        }
+    }
+
+    private fun hairPieces(face: Face, frame: EyeFrame, style: Hairstyle, look: HairLook): List<HairPiece> {
+        fun e(i: Int) = frame.fromPhoto(face.pt(i))
+        val forehead = FOREHEAD.map(::e).sortedBy { it.x }
+        val xl = forehead.first().x
+        val xr = forehead.last().x
+        fun natural(x: Float) = sampleY(forehead, x) - HAIRLINE_RAISE
+        fun fringe(x: Float, at: Float) = at + 0.09f * x * x
+        val faceOval = forehead.reversed() + FACE_LEFT.map(::e) + FACE_RIGHT.map(::e).reversed()
+        // The crown is over the top of the head, out of sight: hair falls forward and out from
+        // it, and more and more straight down lower on the head.
+        val crown = Pt(0.35f, -3.9f)
+        val fall: (Pt) -> Pt = { p ->
+            val r = (p - crown).unit()
+            var d = r + Pt(0f, ((p.y + 3f) * 0.7f).coerceIn(0f, 3f))
+            if (look.curlIn > 0f && p.y > look.bottom - 0.7f) d += Pt(-sign(p.x) * look.curlIn, 0f)
+            d.unit()
+        }
+
+        if (style == Hairstyle.BANGS) {
+            // Only a fringe, from the hairline down over the forehead.
+            val at = look.fringe ?: return emptyList()
+            val n = 16
+            val from = xl * 0.86f
+            val to = xr * 0.86f
+            val top = (0..n).map { i -> from + (to - from) * i / n }.map { x -> Pt(x, natural(x) - 0.12f) }
+            val bottom = top.reversed().map { p -> Pt(p.x, max(natural(p.x) + 0.05f, fringe(p.x, at))) }
+            return listOf(HairPiece(smoothClosed(top + bottom, steps = 2), emptyList(), fall))
+        }
+
+        // The inner edge: the hairline (lowered to a fringe where the style has one), then down
+        // the sides of the face to where the hair ends, or down beside the neck for long hair.
+        val hairline = (0..16).map { i ->
+            val x = xl + (xr - xl) * i / 16f
+            val y = natural(x)
+            Pt(x, look.fringe?.let { max(y, fringe(x, it)) } ?: y)
+        }
+        fun side(edge: List<Pt>): List<Pt> {
+            val kept = edge.filter { it.y < look.bottom && abs(it.x) > NECK }.map { Pt(it.x * FACE_INSET, it.y) }
+            val last = kept.lastOrNull() ?: return emptyList()
+            return kept + Pt(last.x, look.bottom)
+        }
+        val innerRight = side(FACE_RIGHT.map(::e))
+        val innerLeft = side(FACE_LEFT.map(::e))
+
+        // The outer edge: round over the skull, then down the sides to the ends.
+        val a = SKULL_HALF_WIDTH + look.volume
+        val b = SKULL_HALF_HEIGHT + look.volume
+        val arc = (0..24).map { i ->
+            val t = PI.toFloat() * i / 24
+            Pt(a * cos(t), SKULL_CENTRE - b * sin(t))
+        }
+        fun outerSide(s: Float) = (1..10).map { k ->
+            val t = k / 10f
+            Pt(s * (a + (look.endWidth - a) * t + look.bulge * sin(PI.toFloat() * t)), SKULL_CENTRE + (look.bottom - SKULL_CENTRE) * t)
+        }
+        val outline = outerSide(1f).reversed() + arc + outerSide(-1f) +
+            innerLeft.reversed() + hairline + innerRight
+        val pieces = mutableListOf(HairPiece(outline, faceOval, fall))
+        if (style == Hairstyle.BUN) {
+            val centre = Pt(0f, SKULL_CENTRE - b - BUN_RADIUS * 0.55f)
+            // Combed up to the bun, which is wound round itself.
+            pieces[0] = HairPiece(outline, faceOval) { p -> (centre - p).unit() }
+            val bun = (0 until 32).map { i ->
+                val t = 2 * PI.toFloat() * i / 32
+                Pt(centre.x + BUN_RADIUS * 1.15f * cos(t), centre.y + BUN_RADIUS * sin(t))
+            }
+            pieces += HairPiece(bun, emptyList()) { p -> ((p - centre).let { Pt(-it.y, it.x) }.unit() + (centre - p) * 0.4f).unit() }
+        }
+        return pieces
+    }
+
+    private fun drawHair(piece: HairPiece, frame: EyeFrame, look: HairLook, colour: Int, random: Random, out: MutableList<Shape2D>) {
+        val unit = frame.unit
+        val region = listOf(piece.outline)
+        val minY0 = piece.outline.minOf { it.y }
+        val maxY0 = piece.outline.maxOf { it.y }
+        val top = frame.toPhoto(Pt(0f, minY0))
+        val bottom = frame.toPhoto(Pt(0f, maxY0))
+        // A dense layer under the strands, lit from above.
+        out += Shape2D(
+            listOf(frame.toPhoto(piece.outline).flat()),
+            gradient = Gradient(top.x, top.y, bottom.x, bottom.y, withAlpha(darken(colour, 0.85f), 0.94f), withAlpha(darken(colour, 0.5f), 0.94f)),
+            blur = unit * 0.07f,
+        )
+
+        val area = abs(signedArea(piece.outline))
+        val count = (look.coverage * area / (look.length * look.width)).toInt().coerceIn(0, MAX_STRANDS)
+        val minX = piece.outline.minOf { it.x }
+        val maxX = piece.outline.maxOf { it.x }
+        val minY = piece.outline.minOf { it.y }
+        val maxY = piece.outline.maxOf { it.y }
+        val groups = List(3) { mutableListOf<FloatArray>() }
+        var made = 0
+        var attempts = 0
+        // Hair lies in locks: strands start near each other and share a direction, wave and shade.
+        var lockLeft = 0
+        var lock = Pt(0f, 0f)
+        var lockBias = 0f
+        var lockPhase = 0f
+        var lockShade = 0f
+        while (made < count && attempts < count * 6) {
+            attempts++
+            if (lockLeft-- <= 0) {
+                lock = Pt(minX + random.nextFloat() * (maxX - minX), minY + random.nextFloat() * (maxY - minY))
+                lockBias = (random.nextFloat() - 0.5f) * 0.35f
+                lockPhase = random.nextFloat() * 2 * PI.toFloat()
+                lockShade = random.nextFloat() - 0.5f
+                lockLeft = 2 * CLUMP
+            }
+            val p = lock + Pt(random.nextFloat() - 0.5f, random.nextFloat() - 0.5f) * LOCK_SIZE
+            if (!inside(region, p)) continue
+            val t = (edgeDistance(region, p) / HAIR_FADE).coerceIn(0f, 1f)
+            if (random.nextFloat() > 0.25f + 0.75f * t * t * (3f - 2f * t)) continue
+
+            val length = look.length * (0.5f + random.nextFloat())
+            val steps = max(2, (length / STRAND_STEP).toInt())
+            val step = length / steps
+            val bias = lockBias + (random.nextFloat() - 0.5f) * 0.12f
+            val phase = lockPhase + random.nextFloat() * 0.6f
+            val turnRate = look.curl * step * (if (random.nextBoolean()) 1f else -1f) * (0.7f + 0.6f * random.nextFloat())
+            val strand = ArrayList<Pt>(steps + 1)
+            strand += p
+            var q = p
+            var turn = 0f
+            var outside = 0
+            for (s in 1..steps) {
+                val d = piece.flow(q)
+                turn += turnRate
+                val angle = atan2(d.y, d.x) + bias + turn + look.wave * sin(s * step * 4f + phase)
+                q += Pt(cos(angle), sin(angle)) * step
+                // Strands may stray a little past the outer edge, for a soft outline, but never onto the face.
+                if (!inside(region, q)) {
+                    // Ends falling past the bottom straggle further, so the cut isn't a straight line.
+                    val limit = if (d.y > 0.8f && q.y > maxY0 - 0.4f) END_STRAY_STEPS else STRAY_STEPS
+                    if (++outside > limit || (q.y > -0.6f && piece.face.isNotEmpty() && inside(listOf(piece.face), q))) break
+                }
+                strand += q
+            }
+            if (strand.size < 2) continue
+            made++
+            // Lighter strands where the light catches the top of the head.
+            val sheen = exp(-((p.y - SHEEN_Y) / 0.6f).let { it * it })
+            // Darker deeper down, where less light reaches.
+            val depth = ((p.y - minY0) / max(1e-3f, maxY0 - minY0)).coerceIn(0f, 1f)
+            val r = (random.nextFloat() + 0.2f * lockShade).coerceIn(0f, 1f)
+            val group = when {
+                r < 0.25f + 0.25f * depth - 0.18f * sheen -> 0
+                r < 0.82f - 0.2f * sheen -> 1
+                else -> 2
+            }
+            groups[group] += frame.toPhoto(strand).flat()
+        }
+        val tones = listOf(
+            withAlpha(darken(colour, 0.55f), 0.9f) to 1.2f,
+            withAlpha(colour, 0.85f) to 1f,
+            withAlpha(mix(colour, 0xFFFFFFFF.toInt(), 0.28f), 0.55f) to 0.85f,
+        )
+        groups.forEachIndexed { i, strands ->
+            if (strands.isNotEmpty()) {
+                out += Shape2D(strands, closed = false, stroke = tones[i].first, strokeWidth = unit * look.width * tones[i].second)
+            }
+        }
+    }
+
+    /** The y of [line] (sorted by x) at [x], held flat past its ends. */
+    private fun sampleY(line: List<Pt>, x: Float): Float {
+        if (x <= line.first().x) return line.first().y
+        for (i in 1 until line.size) {
+            if (x <= line[i].x) {
+                val a = line[i - 1]
+                val b = line[i]
+                return a.y + (b.y - a.y) * (x - a.x) / max(1e-4f, b.x - a.x)
+            }
+        }
+        return line.last().y
+    }
+
+    /** Whether [p] is inside [contours] by the even-odd rule. */
+    private fun inside(contours: List<List<Pt>>, p: Pt): Boolean {
+        var crossings = 0
+        for (c in contours) {
+            for (i in c.indices) {
+                val a = c[i]
+                val b = c[(i + 1) % c.size]
+                if ((a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x)) crossings++
+            }
+        }
+        return crossings % 2 == 1
+    }
+
+    /** Distance from [p] to the nearest edge of [contours]. */
+    private fun edgeDistance(contours: List<List<Pt>>, p: Pt): Float {
+        var best = Float.MAX_VALUE
+        for (c in contours) {
+            for (i in c.indices) {
+                val a = c[i]
+                val ab = c[(i + 1) % c.size] - a
+                val len2 = ab.x * ab.x + ab.y * ab.y
+                val t = if (len2 > 0f) (((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len2).coerceIn(0f, 1f) else 0f
+                val d = p - (a + ab * t)
+                best = minOf(best, hypot(d.x, d.y))
+            }
+        }
+        return best
+    }
+
+    private fun signedArea(c: List<Pt>): Float {
+        var sum = 0f
+        for (i in c.indices) {
+            val a = c[i]
+            val b = c[(i + 1) % c.size]
+            sum += a.x * b.y - b.x * a.y
+        }
+        return sum / 2f
+    }
+
     // --- Face masks -------------------------------------------------------------------------
 
     /** A mask over the nose, mouth and chin, from the cheeks under the eyes down past the jaw. */
@@ -261,6 +762,10 @@ object TryOnDrawing {
         operator fun times(k: Float) = Pt(x * k, y * k)
         fun lerp(o: Pt, t: Float) = Pt(x + (o.x - x) * t, y + (o.y - y) * t)
         fun awayFrom(c: Pt, k: Float) = Pt(c.x + (x - c.x) * k, c.y + (y - c.y) * k)
+        fun unit(): Pt {
+            val len = hypot(x, y)
+            return if (len < 1e-6f) Pt(0f, 1f) else Pt(x / len, y / len)
+        }
     }
 
     private class Face(val shape: FaceShape, val width: Float, val height: Float) {
@@ -288,6 +793,16 @@ object TryOnDrawing {
 
         fun toPhoto(p: Pt) = origin + u * p.x + v * p.y
         fun toPhoto(points: List<Pt>) = points.map(::toPhoto)
+
+        /** A photo point in eye units. */
+        fun fromPhoto(p: Pt): Pt {
+            val d = p - origin
+            val len2 = unit * unit
+            return Pt((d.x * u.x + d.y * u.y) / len2, (d.x * v.x + d.y * v.y) / len2)
+        }
+
+        /** A step of ([across], [down]) eye units, in photo pixels. */
+        fun vector(across: Float, down: Float) = u * across + v * down
         fun down(amount: Float) = v * amount
     }
 
@@ -391,12 +906,55 @@ object TryOnDrawing {
     private const val LENS_SCALE = 1.08f
     private const val LENS_Y = 0.08f
     private const val NOSE_TIP = 1
+    private const val MAX_HAIRS = 9000
+    private const val HAIR_SEED = 20261026
+    private const val MAX_STRANDS = 7000
+    private const val DEFAULT_HAIR = 0xFF3B2416.toInt()
+
+    // Hairstyle geometry, in eye units: the skull as an ellipse round a centre just above the eye line.
+    private const val SKULL_CENTRE = -0.45f
+    private const val SKULL_HALF_WIDTH = 2.62f
+    private const val SKULL_HALF_HEIGHT = 3.15f
+    private const val HAIRLINE_RAISE = 0.12f
+    private const val FACE_INSET = 0.97f
+    private const val NECK = 1.5f
+    private const val BUN_RADIUS = 0.85f
+    private const val HAIR_FADE = 0.12f
+    private const val STRAND_STEP = 0.05f
+    private const val STRAY_STEPS = 3
+    private const val END_STRAY_STEPS = 7
+    private const val REMOVE_HAIR_ABOVE = 0.3f
+    private const val CLUMP = 24
+    private const val LOCK_SIZE = 0.24f
+    private const val SHEEN_Y = -2.2f
+
+    /** Outer edge of the lips, round from the left corner (in the photo) over the top. */
+    private val LIPS_OUTER = listOf(61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146)
+    private val UPPER_LIP = listOf(61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291)
+    private val LOWER_LIP = listOf(61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291)
+
+    /** Under the nose, from beside the left nostril to beside the right. */
+    private val NOSE_BASE = listOf(92, 165, 167, 164, 393, 391, 322)
+
+    /** Under the lower lip round the point of the chin, right (in the photo) to left. */
+    private val CHIN = listOf(378, 400, 377, 152, 148, 176, 149)
+
+    /** Where a beard starts on the cheeks: sideburn down to beside the mouth, and back up. */
+    private val BEARD_CHEEK_LEFT = listOf(234, 213, 192, 214, 212, 57)
+    private val BEARD_CHEEK_RIGHT = listOf(287, 432, 434, 416, 433, 454)
 
     /** Mask top edge, from the face's left side (in the photo) over the nose to its right side. */
     private val MASK_TOP = listOf(234, 116, 197, 345, 454)
 
     /** The jaw line from the left of the face (in the photo) round the chin to the right. */
     private val JAW = listOf(234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454)
+
+    /** Top of the face oval, over the forehead from the left temple (in the photo) to the right. */
+    private val FOREHEAD = listOf(162, 21, 54, 103, 67, 109, 10, 338, 297, 332, 284, 251, 389)
+
+    /** Sides of the face oval, from each temple down to the chin. */
+    private val FACE_RIGHT = listOf(356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152)
+    private val FACE_LEFT = listOf(127, 234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 152)
 
     /** Eye-mask outline: temple, along the brows over the bridge, temple, under the eyes over the nose. */
     private val EYE_MASK = listOf(

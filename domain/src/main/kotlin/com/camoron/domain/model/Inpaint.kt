@@ -81,7 +81,8 @@ object Inpaint {
     }
 
     /** Smallest box (left, top, right, bottom exclusive) around the hole, or null if there is none. */
-    internal fun bounds(hole: BooleanArray, width: Int, height: Int): IntArray? {
+    /** The box (left, top, right, bottom exclusive) round the true cells of [hole], or null if there are none. */
+    fun bounds(hole: BooleanArray, width: Int, height: Int): IntArray? {
         var x0 = width
         var y0 = height
         var x1 = -1
