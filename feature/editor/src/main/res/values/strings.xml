@@ -58,6 +58,13 @@
     <string name="beard_circle">Circle beard</string>
     <string name="beard_short">Short beard</string>
     <string name="beard_full">Full beard</string>
+    <string name="hairstyle_own">Own hair</string>
+    <string name="hairstyle_pixie">Pixie</string>
+    <string name="hairstyle_bob">Bob</string>
+    <string name="hairstyle_long">Long</string>
+    <string name="hairstyle_curly">Curly</string>
+    <string name="hairstyle_bun">Bun</string>
+    <string name="hairstyle_bangs">Bangs</string>
     <string name="strength">Strength</string>
     <string name="reset">Reset</string>
     <string name="rotate">Rotate</string>

@@ -45,6 +45,9 @@ enum class HairColour(val argb: Int) {
 /** Beards and moustaches, from a shadow of stubble to a full beard. */
 enum class FacialHair { NONE, STUBBLE, MOUSTACHE, GOATEE, CIRCLE, SHORT_BEARD, FULL_BEARD }
 
+/** New hairstyles drawn over the head. [BANGS] adds only a fringe to the person's own hair. */
+enum class Hairstyle { NONE, PIXIE, BOB, LONG, CURLY, BUN, BANGS }
+
 /** Facial hair colours, as opaque ARGB. */
 enum class BeardColour(val argb: Int) {
     BLACK(0xFF17130F.toInt()),
@@ -65,12 +68,14 @@ data class TryOn(
     val hairStrength: Float = 0.8f,
     val facialHair: FacialHair = FacialHair.NONE,
     val beard: BeardColour = BeardColour.DARK_BROWN,
+    val hairstyle: Hairstyle = Hairstyle.NONE,
 ) {
     val isNone: Boolean
         get() = !needsFaces && (hair == HairColour.NONE || hairStrength <= 0f)
 
     /** Whether anything needs the face points (as opposed to only the hair outline). */
-    val needsFaces: Boolean get() = glasses != GlassesStyle.NONE || mask != MaskStyle.NONE || facialHair != FacialHair.NONE
+    val needsFaces: Boolean get() = glasses != GlassesStyle.NONE || mask != MaskStyle.NONE ||
+            facialHair != FacialHair.NONE || hairstyle != Hairstyle.NONE
 }
 
 /**

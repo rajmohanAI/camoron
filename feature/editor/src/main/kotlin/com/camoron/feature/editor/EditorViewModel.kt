@@ -18,6 +18,7 @@ import com.camoron.domain.model.EditCrop
 import com.camoron.domain.model.EditLook
 import com.camoron.domain.model.EraseMask
 import com.camoron.domain.model.FaceScene
+import com.camoron.domain.model.Hairstyle
 import com.camoron.domain.model.PhotoEdit
 import com.camoron.domain.model.TryOn
 import com.camoron.domain.repository.PhotoEditor
@@ -155,6 +156,9 @@ class EditorViewModel @Inject constructor(
             var frame: Bitmap? = null
             var dressedFor: Pair<TryOn, Bitmap>? = null
             var dressed: Bitmap = working
+            var clearedFor: Triple<Hairstyle, Bitmap, FaceScene>? = null
+            var cleared: Bitmap = working
+            var clearedHair = TryOnPainter.ClearedHair.NONE
             combine(edits, _state.map { it.tab }.distinctUntilChanged()) { edit, tab -> edit to tab }
                 .collectLatest { (edit, tab) ->
                     val colour = EditColour.of(edit)
@@ -169,10 +173,23 @@ class EditorViewModel @Inject constructor(
                     // Try-ons are painted onto it once per change of what is tried on.
                     val dressKey = edit.tryOn to upright
                     if (dressedFor != dressKey) {
+                        // The old hair under a new hairstyle is painted out once per style, as that is slow.
+                        val clearKey = Triple(edit.tryOn.hairstyle, upright, scene)
+                        if (clearedFor != clearKey) {
+                            if (edit.tryOn.hairstyle == Hairstyle.NONE) {
+                                cleared = upright
+                                clearedHair = TryOnPainter.ClearedHair.NONE
+                            } else {
+                                val copy = upright.copy(Bitmap.Config.ARGB_8888, true)
+                                clearedHair = TryOnPainter.clearHair(copy, edit.tryOn.hairstyle, scene)
+                                cleared = copy
+                            }
+                            clearedFor = clearKey
+                        }
                         dressed = if (edit.tryOn.isNone) {
                             upright
                         } else {
-                            upright.copy(Bitmap.Config.ARGB_8888, true).also { TryOnPainter.paint(it, edit.tryOn, scene) }
+                            cleared.copy(Bitmap.Config.ARGB_8888, true).also { TryOnPainter.paint(it, edit.tryOn, scene, clearedHair) }
                         }
                         dressedFor = dressKey
                     }

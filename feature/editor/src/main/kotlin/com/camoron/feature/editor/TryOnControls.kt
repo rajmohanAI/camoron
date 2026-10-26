@@ -39,11 +39,12 @@ import com.camoron.domain.model.FacialHair
 import com.camoron.domain.model.FrameColour
 import com.camoron.domain.model.GlassesStyle
 import com.camoron.domain.model.HairColour
+import com.camoron.domain.model.Hairstyle
 import com.camoron.domain.model.LensTint
 import com.camoron.domain.model.MaskStyle
 import kotlin.math.roundToInt
 
-/** The Try on tab: spectacles, masks, beards and hair colour, drawn onto the faces found in the photo. */
+/** The Try on tab: spectacles, masks, beards, hairstyles and hair colour, drawn onto the faces found in the photo. */
 @Composable
 internal fun TryOnControls(state: EditorUiState, viewModel: EditorViewModel) {
     val tryOn = state.edit.tryOn
@@ -57,7 +58,7 @@ internal fun TryOnControls(state: EditorUiState, viewModel: EditorViewModel) {
                 CircularProgressIndicator(Modifier.size(20.dp), color = MaterialTheme.colorScheme.primary, strokeWidth = 2.dp)
                 Text(stringResource(R.string.finding_faces), color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))
             }
-            state.tryOnSection == TryOnSection.HAIR && !state.hairFound -> Message(stringResource(R.string.no_hair), Modifier.weight(1f))
+            state.tryOnSection == TryOnSection.HAIR && !state.hairFound && state.faceCount == 0 -> Message(stringResource(R.string.no_hair), Modifier.weight(1f))
             state.tryOnSection != TryOnSection.HAIR && state.faceCount == 0 -> Message(stringResource(R.string.no_face), Modifier.weight(1f))
             else -> Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.Bottom) {
                 when (state.tryOnSection) {
@@ -120,7 +121,16 @@ internal fun TryOnControls(state: EditorUiState, viewModel: EditorViewModel) {
                         }
                     }
                     TryOnSection.HAIR -> {
-                        if (tryOn.hair != HairColour.NONE) {
+                        if (state.faceCount > 0) {
+                            ChipRow(
+                                options = Hairstyle.entries,
+                                selected = tryOn.hairstyle,
+                                label = { stringResource(it.label()) },
+                                onSelect = { viewModel.setTryOn(tryOn.copy(hairstyle = it)) },
+                                modifier = Modifier.padding(bottom = 6.dp),
+                            )
+                        }
+                        if (tryOn.hair != HairColour.NONE && state.hairFound) {
                             Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text(stringResource(R.string.strength), color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
                                 Text("${(tryOn.hairStrength * 100).roundToInt()}", color = Color.White.copy(alpha = 0.75f), fontSize = 13.sp)
@@ -289,4 +299,14 @@ private fun FacialHair.label() = when (this) {
     FacialHair.CIRCLE -> R.string.beard_circle
     FacialHair.SHORT_BEARD -> R.string.beard_short
     FacialHair.FULL_BEARD -> R.string.beard_full
+}
+
+private fun Hairstyle.label() = when (this) {
+    Hairstyle.NONE -> R.string.hairstyle_own
+    Hairstyle.PIXIE -> R.string.hairstyle_pixie
+    Hairstyle.BOB -> R.string.hairstyle_bob
+    Hairstyle.LONG -> R.string.hairstyle_long
+    Hairstyle.CURLY -> R.string.hairstyle_curly
+    Hairstyle.BUN -> R.string.hairstyle_bun
+    Hairstyle.BANGS -> R.string.hairstyle_bangs
 }
