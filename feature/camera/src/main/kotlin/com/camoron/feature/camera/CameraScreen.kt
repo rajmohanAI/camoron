@@ -806,7 +806,7 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
-internal val TOP_BAR_HEIGHT = 60.dp
+internal val TOP_BAR_HEIGHT = 56.dp
 private const val BUSY_TURN_MS = 900
 private const val BLINK_MS = 280
 private const val FRAME_MS = 280

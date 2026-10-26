@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
@@ -52,19 +53,16 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FlashlightOff
 import androidx.compose.material.icons.filled.FlashlightOn
-import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.LocalFlorist
 import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.TimerOff
 import androidx.compose.material3.CircularProgressIndicator
@@ -81,6 +79,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -89,7 +88,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.camoron.domain.model.AspectRatioSetting
@@ -106,7 +108,9 @@ import kotlinx.coroutines.withContext
 
 /**
  * Flash, timer, aspect ratio, Night, Enhance and settings; in video, the light, resolution or
- * timelapse speed, and Enhance. Each button cycles through its options.
+ * timelapse speed, and Enhance. Each button cycles through its options. Like the phone makers' own
+ * cameras the bar is a plain row of icons over a soft shade: each icon shows its current setting
+ * (a crossed-out flash, a timer with its seconds, a frame with its shape), and yellow means on.
  */
 @Composable
 internal fun TopMenu(
@@ -122,76 +126,80 @@ internal fun TopMenu(
     modifier: Modifier = Modifier,
 ) {
     val settings = state.cameraSettings
-    // A floating glass bar over the preview, not a black band across it.
     Row(
         modifier
             .fillMaxWidth()
             .height(TOP_BAR_HEIGHT)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .glass(RoundedCornerShape(22.dp)),
+            .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.45f), Color.Transparent)))
+            .padding(horizontal = 8.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (!state.recording) {
+            TopMenuButton(stringResource(R.string.cd_settings), onSettings) {
+                MenuIcon(Icons.Filled.Settings, Color.White)
+            }
+        }
         if (state.showFlashControl && state.mode.isVideo) {
             val on = settings.flash == FlashMode.ON
-            TopMenuButton(
-                if (on) Icons.Filled.FlashlightOn else Icons.Filled.FlashlightOff,
-                stringResource(if (on) R.string.option_on else R.string.option_off),
-                stringResource(R.string.cd_light),
-                onFlash,
-                tint = if (on) MODE_SELECTED else Color.White,
-            )
+            TopMenuButton(stringResource(R.string.cd_light), onFlash, stringResource(if (on) R.string.option_on else R.string.option_off)) {
+                MenuIcon(if (on) Icons.Filled.FlashlightOn else Icons.Filled.FlashlightOff, if (on) MODE_SELECTED else Color.White)
+            }
         } else if (state.showFlashControl) {
             val (icon, label) = when (settings.flash) {
                 FlashMode.OFF -> Icons.Filled.FlashOff to R.string.option_off
                 FlashMode.AUTO -> Icons.Filled.FlashAuto to R.string.option_auto
                 FlashMode.ON -> Icons.Filled.FlashOn to R.string.option_on
             }
-            TopMenuButton(icon, stringResource(label), stringResource(R.string.cd_flash), onFlash)
+            TopMenuButton(stringResource(R.string.cd_flash), onFlash, stringResource(label)) {
+                MenuIcon(icon, if (settings.flash == FlashMode.ON) MODE_SELECTED else Color.White)
+            }
         }
         if (state.showPhotoControls) {
-            val timerLabel = when (settings.timer) {
-                TimerSetting.OFF -> R.string.option_off
-                TimerSetting.THREE -> R.string.timer_3s
-                TimerSetting.FIVE -> R.string.timer_5s
+            val (seconds, timerLabel) = when (settings.timer) {
+                TimerSetting.OFF -> null to R.string.option_off
+                TimerSetting.THREE -> "3" to R.string.timer_3s
+                TimerSetting.FIVE -> "5" to R.string.timer_5s
             }
-            TopMenuButton(
-                if (settings.timer == TimerSetting.OFF) Icons.Filled.TimerOff else Icons.Filled.Timer,
-                stringResource(timerLabel),
-                stringResource(R.string.cd_timer),
-                onTimer,
-            )
-            val ratioLabel = when (settings.aspectRatio) {
-                AspectRatioSetting.RATIO_3_4 -> R.string.ratio_3_4
-                AspectRatioSetting.RATIO_9_16 -> R.string.ratio_9_16
-                AspectRatioSetting.FULL_SCREEN -> R.string.ratio_full
+            TopMenuButton(stringResource(R.string.cd_timer), onTimer, stringResource(timerLabel)) {
+                if (seconds == null) {
+                    MenuIcon(Icons.Filled.TimerOff, Color.White)
+                } else {
+                    Box {
+                        MenuIcon(Icons.Filled.Timer, MODE_SELECTED)
+                        Text(
+                            seconds,
+                            color = MODE_SELECTED,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.align(Alignment.BottomEnd).offset(x = 6.dp, y = 4.dp),
+                        )
+                    }
+                }
             }
-            TopMenuButton(
-                Icons.Filled.AspectRatio,
-                stringResource(ratioLabel),
-                stringResource(R.string.cd_aspect_ratio),
-                onAspectRatio,
-            )
+            val (ratioLabel, frameShape) = when (settings.aspectRatio) {
+                AspectRatioSetting.RATIO_3_4 -> R.string.ratio_3_4 to (18.dp to 24.dp)
+                AspectRatioSetting.RATIO_9_16 -> R.string.ratio_9_16 to (16.dp to 28.dp)
+                AspectRatioSetting.FULL_SCREEN -> R.string.ratio_full to (15.dp to 30.dp)
+            }
+            val ratioText = stringResource(ratioLabel)
+            TopMenuButton(stringResource(R.string.cd_aspect_ratio), onAspectRatio, ratioText) {
+                FrameGlyph(ratioText, frameShape.first, frameShape.second)
+            }
         }
         // Changing these reopens the camera, so they wait until a recording ends.
         if (state.showResolutionControl && state.mode != CaptureMode.TIMELAPSE && !state.recording) {
-            TopMenuButton(
-                Icons.Filled.HighQuality,
-                stringResource(
-                    if (settings.videoResolution == VideoResolution.UHD) R.string.resolution_uhd else R.string.resolution_fhd,
-                ),
-                stringResource(R.string.cd_resolution),
-                onResolution,
-                tint = if (settings.videoResolution == VideoResolution.UHD) MODE_SELECTED else Color.White,
-            )
+            val uhd = settings.videoResolution == VideoResolution.UHD
+            val label = stringResource(if (uhd) R.string.resolution_uhd else R.string.resolution_fhd)
+            TopMenuButton(stringResource(R.string.cd_resolution), onResolution, label) {
+                TextGlyph(label, if (uhd) MODE_SELECTED else Color.White)
+            }
         }
         if (state.mode == CaptureMode.TIMELAPSE && !state.recording) {
-            TopMenuButton(
-                Icons.Filled.Speed,
-                stringResource(R.string.timelapse_speed, settings.timelapseSpeed.factor),
-                stringResource(R.string.cd_timelapse_speed),
-                onTimelapseSpeed,
-            )
+            val label = stringResource(R.string.timelapse_speed, settings.timelapseSpeed.factor)
+            TopMenuButton(stringResource(R.string.cd_timelapse_speed), onTimelapseSpeed, label) {
+                TextGlyph(label, Color.White)
+            }
         }
         if (state.showNightControl) {
             val nightLabel = when (settings.night) {
@@ -199,55 +207,92 @@ internal fun TopMenu(
                 NightSetting.AUTO -> R.string.option_auto
                 NightSetting.ON -> R.string.option_on
             }
-            TopMenuButton(
-                Icons.Filled.NightsStay,
-                stringResource(nightLabel),
-                stringResource(R.string.cd_night),
-                onNight,
-                tint = if (state.nightActive) MODE_SELECTED else Color.White,
-            )
+            TopMenuButton(stringResource(R.string.cd_night), onNight, stringResource(nightLabel)) {
+                Box {
+                    MenuIcon(Icons.Filled.NightsStay, if (state.nightActive) MODE_SELECTED else Color.White)
+                    if (settings.night == NightSetting.AUTO) {
+                        Text(
+                            "A",
+                            color = if (state.nightActive) MODE_SELECTED else Color.White,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.align(Alignment.BottomEnd).offset(x = 5.dp, y = 4.dp),
+                        )
+                    }
+                }
+            }
         }
         TopMenuButton(
-            Icons.Filled.AutoAwesome,
-            stringResource(if (settings.enhance) R.string.option_on else R.string.option_off),
             stringResource(R.string.cd_enhance),
             onEnhance,
-            tint = if (settings.enhance) MODE_SELECTED else Color.White,
-        )
-        if (!state.recording) {
-            TopMenuButton(Icons.Filled.Settings, null, stringResource(R.string.cd_settings), onSettings)
+            stringResource(if (settings.enhance) R.string.option_on else R.string.option_off),
+        ) {
+            MenuIcon(Icons.Filled.AutoAwesome, if (settings.enhance) MODE_SELECTED else Color.White)
         }
     }
 }
 
+/** A 48 dp touch target with no label; the setting is read out with the description, e.g. "Flash, Auto". */
 @Composable
 private fun TopMenuButton(
-    icon: ImageVector,
-    label: String?,
     description: String,
     onClick: () -> Unit,
-    tint: Color = Color.White,
+    value: String? = null,
+    content: @Composable () -> Unit,
 ) {
     val haptics = rememberHaptics()
-    val colour by animateColorAsState(tint, label = "menu tint")
-    Column(
+    Box(
         Modifier
-            .clip(RoundedCornerShape(14.dp))
+            .size(48.dp)
+            .clip(CircleShape)
             .clickable(role = Role.Button, onClickLabel = description) {
                 haptics.tick()
                 onClick()
             }
-            .padding(horizontal = 10.dp, vertical = 2.dp)
+            .semantics(mergeDescendants = true) {
+                contentDescription = if (value == null) description else "$description, $value"
+            }
             .upright(),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        contentAlignment = Alignment.Center,
     ) {
-        // The label is read with the description, e.g. "Flash, Auto".
-        Icon(icon, contentDescription = description, tint = colour, modifier = Modifier.size(22.dp))
-        if (label != null) {
-            Text(label, color = if (tint == Color.White) Color.White.copy(alpha = 0.8f) else colour, fontSize = 10.sp, fontWeight = FontWeight.Medium)
-        }
+        content()
     }
 }
+
+@Composable
+private fun MenuIcon(icon: ImageVector, tint: Color) {
+    val colour by animateColorAsState(tint, label = "menu tint")
+    Icon(icon, contentDescription = null, tint = colour, modifier = Modifier.size(24.dp))
+}
+
+/** The photo's shape drawn as a small frame with its name inside, the way phone cameras show it. */
+@Composable
+private fun FrameGlyph(text: String, width: Dp, height: Dp) {
+    val w by animateDpAsState(width, tween(FRAME_GLYPH_MS), label = "glyph width")
+    val h by animateDpAsState(height, tween(FRAME_GLYPH_MS), label = "glyph height")
+    Box(
+        Modifier.size(w, h).border(1.5.dp, Color.White, RoundedCornerShape(3.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = Color.White, fontSize = 6.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+    }
+}
+
+/** A short setting such as 4K or 10× in a thin box, in place of an icon. */
+@Composable
+private fun TextGlyph(text: String, tint: Color) {
+    val colour by animateColorAsState(tint, label = "glyph tint")
+    Text(
+        text,
+        color = colour,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        modifier = Modifier.border(1.5.dp, colour, RoundedCornerShape(4.dp)).padding(horizontal = 4.dp, vertical = 1.dp),
+    )
+}
+
+private const val FRAME_GLYPH_MS = 200
 
 /**
  * Layer 1: Macro, the zoom buttons and shot modes (looks). Macro and zoom buttons appear only when

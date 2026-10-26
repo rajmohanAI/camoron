@@ -2,6 +2,9 @@ package com.camoron.feature.editor
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -22,31 +25,26 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.AutoFixHigh
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Contrast
-import androidx.compose.material.icons.filled.Crop
-import androidx.compose.material.icons.filled.Face
-import androidx.compose.material.icons.filled.Flip
-import androidx.compose.material.icons.filled.Grain
-import androidx.compose.material.icons.filled.Opacity
-import androidx.compose.material.icons.filled.Palette
-import androidx.compose.material.icons.filled.Rotate90DegreesCw
-import androidx.compose.material.icons.filled.RestartAlt
-import androidx.compose.material.icons.filled.Thermostat
-import androidx.compose.material.icons.filled.Tonality
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Vignette
-import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.Brightness5
 import androidx.compose.material.icons.filled.Brightness6
+import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.Grain
 import androidx.compose.material.icons.filled.InvertColors
+import androidx.compose.material.icons.filled.Opacity
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Rotate90DegreesCw
+import androidx.compose.material.icons.filled.Thermostat
+import androidx.compose.material.icons.filled.Tonality
+import androidx.compose.material.icons.filled.Vignette
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -73,6 +71,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -175,13 +175,16 @@ fun EditorScreen(
                 }
             }
             if (!state.failed) {
-                Box(Modifier.fillMaxWidth().height(CONTROLS_HEIGHT)) {
-                    when (state.tab) {
-                        EditorTab.LOOKS -> LooksControls(state, viewModel)
-                        EditorTab.ADJUST -> AdjustControls(state, viewModel)
-                        EditorTab.CROP -> CropControls(state, viewModel)
-                        EditorTab.ERASE -> EraseControls(state, viewModel)
-                        EditorTab.TRY_ON -> TryOnControls(state, viewModel)
+                // Each tab's tools fade in over the last, rather than snapping.
+                Crossfade(state.tab, tween(TAB_FADE_MS), label = "editor tools", modifier = Modifier.fillMaxWidth().height(CONTROLS_HEIGHT)) { tab ->
+                    Box(Modifier.fillMaxSize()) {
+                        when (tab) {
+                            EditorTab.LOOKS -> LooksControls(state, viewModel)
+                            EditorTab.ADJUST -> AdjustControls(state, viewModel)
+                            EditorTab.CROP -> CropControls(state, viewModel)
+                            EditorTab.ERASE -> EraseControls(state, viewModel)
+                            EditorTab.TRY_ON -> TryOnControls(state, viewModel)
+                        }
                     }
                 }
                 Tabs(selected = state.tab, onSelect = viewModel::selectTab)
@@ -222,8 +225,8 @@ private fun TopBar(
         Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onClick = onClose) {
-            Icon(Icons.Filled.Close, stringResource(R.string.cd_close_editor), tint = Color.White)
+        TextButton(onClick = onClose) {
+            Text(stringResource(R.string.cancel), color = Color.White, fontSize = 15.sp)
         }
         Spacer(Modifier.weight(1f))
         IconButton(onClick = onUndo, enabled = canUndo) {
@@ -240,8 +243,9 @@ private fun TopBar(
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
             ),
-            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
-        ) { Text(stringResource(R.string.save_copy), fontSize = 15.sp) }
+            shape = CircleShape,
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+        ) { Text(stringResource(R.string.save_copy), fontSize = 15.sp, fontWeight = FontWeight.Medium) }
         Spacer(Modifier.width(8.dp))
     }
 }
@@ -417,7 +421,7 @@ private fun ValueSlider(
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(28.dp)) {
-            Text(label, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            Text(label, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
             if (onReset != null) {
                 Text(
                     stringResource(R.string.reset),
@@ -466,25 +470,36 @@ private fun ToolButton(icon: ImageVector, label: String, selected: Boolean, chan
     }
 }
 
+/** Text tabs along the bottom, the chosen one in a soft pill, as in Google Photos. */
 @Composable
 private fun Tabs(selected: EditorTab, onSelect: (EditorTab) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         for (tab in EditorTab.entries) {
             val on = tab == selected
-            val color = if (on) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.7f)
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
+            val background by animateColorAsState(
+                if (on) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f) else Color.Transparent,
+                label = "tab pill",
+            )
+            val color by animateColorAsState(
+                if (on) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.75f),
+                label = "tab text",
+            )
+            Text(
+                stringResource(tab.label()),
+                color = color,
+                fontSize = 14.sp,
+                fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onSelect(tab) }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-            ) {
-                Icon(tab.icon(), contentDescription = null, tint = color)
-                Text(stringResource(tab.label()), color = color, fontSize = 12.sp)
-            }
+                    .clip(CircleShape)
+                    .background(background)
+                    .selectable(selected = on, role = Role.Tab) { onSelect(tab) }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            )
         }
     }
 }
@@ -517,14 +532,6 @@ private fun EditorTab.label() = when (this) {
     EditorTab.CROP -> R.string.tab_crop
     EditorTab.ERASE -> R.string.tab_erase
     EditorTab.TRY_ON -> R.string.tab_try_on
-}
-
-private fun EditorTab.icon() = when (this) {
-    EditorTab.LOOKS -> Icons.Filled.Palette
-    EditorTab.ADJUST -> Icons.Filled.Tune
-    EditorTab.CROP -> Icons.Filled.Crop
-    EditorTab.ERASE -> Icons.Filled.AutoFixHigh
-    EditorTab.TRY_ON -> Icons.Filled.Face
 }
 
 private fun EditLook.label() = when (this) {
@@ -580,3 +587,4 @@ private fun CropAspect.label() = when (this) {
 }
 
 private val CONTROLS_HEIGHT = 168.dp
+private const val TAB_FADE_MS = 150
