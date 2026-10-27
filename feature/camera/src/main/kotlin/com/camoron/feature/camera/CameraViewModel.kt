@@ -171,7 +171,8 @@ data class CameraUiState(
         get() = showNightControl && !flashForced && when (cameraSettings.night) {
             NightSetting.OFF -> false
             NightSetting.ON -> true
-            NightSetting.AUTO -> nightExtensionActive || lowLight
+            // Flash on Auto means the user wants the flash in the dark, so Night on Auto steps aside.
+            NightSetting.AUTO -> cameraSettings.flash != FlashMode.AUTO && (nightExtensionActive || lowLight)
         }
 
     /**
@@ -808,5 +809,8 @@ class CameraViewModel @Inject constructor(
 
 private const val ZOOM_EPSILON = 0.01f
 
-/** ISO times shutter seconds at which Night on Auto kicks in, e.g. ISO 1600 at 1/40 s. */
-private const val LOW_LIGHT_EXPOSURE = 40.0
+/**
+ * ISO times shutter seconds at which Night on Auto kicks in, e.g. ISO 400 at 1/33 s or ISO 800 at
+ * 1/66 s: ordinary indoor light, where a single frame is already visibly grainy.
+ */
+private const val LOW_LIGHT_EXPOSURE = 12.0

@@ -43,6 +43,13 @@ class StoredCameraSettingsTest {
     }
 
     @Test
+    fun `night saved as off before auto became the default moves to auto once`() {
+        assertThat(StoredCameraSettings(night = "OFF").toDomain().night).isEqualTo(NightSetting.AUTO)
+        val chosenSince = StoredCameraSettings.from(CameraSettings(night = NightSetting.OFF))
+        assertThat(chosenSince.toDomain().night).isEqualTo(NightSetting.OFF)
+    }
+
+    @Test
     fun `empty record is the defaults`() {
         assertThat(StoredCameraSettings().toDomain()).isEqualTo(CameraSettings())
     }

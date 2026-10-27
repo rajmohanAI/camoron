@@ -29,7 +29,8 @@ data class CameraSettings(
     val autoFocusTracking: Boolean = true,
     val grid: Boolean = false,
     val leveller: Boolean = false,
-    val night: NightSetting = NightSetting.OFF,
+    /** Auto by default, so indoor and evening shots get a merged burst without anyone asking. */
+    val night: NightSetting = NightSetting.AUTO,
     val look: ShotLook = ShotLook.NORMAL,
     /** Scene-adaptive tone, colour and detail, live on the preview and on the photo. */
     val enhance: Boolean = true,

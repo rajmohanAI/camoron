@@ -10,13 +10,17 @@ import java.io.ByteArrayOutputStream
 /**
  * Merges a handheld night burst into one cleaner photo, entirely on the device.
  *
- * Every frame is aligned to the first one (a coarse search on small previews, then a fine search
- * on a full resolution centre crop), frames that are too blurred or shifted are dropped, and the
- * rest are averaged pixel by pixel. A pixel that differs too much from the reference (something
- * moved) is left out, so moving subjects stay sharp instead of ghosting. The work is done in bands
- * so only a strip of each frame is decoded at a time.
+ * The sharpest frame of the burst is the reference. Every other frame is aligned to it as a whole
+ * (a coarse search on small previews, then a fine search on a full resolution centre crop), frames
+ * that are too blurred or shifted are dropped, and the rest are aligned again tile by tile, since
+ * hand shake also turns the phone slightly. Pixels are then averaged with a weight that fades out
+ * anything that differs by more than noise does, so moving subjects stay sharp instead of ghosting
+ * ([MergeMath.BandMerge]). The work is done in bands so only a strip of each frame is decoded at a time.
  */
-internal class NightMerger(private val frames: List<ByteArray>) {
+internal class NightMerger(burst: List<ByteArray>) {
+
+    /** The burst with its sharpest frame first, as the reference. */
+    private val frames: List<ByteArray> = sharpestFirst(burst)
 
     private data class Shift(val dx: Int, val dy: Int)
 
@@ -106,50 +110,28 @@ internal class NightMerger(private val frames: List<ByteArray>) {
         decoders: Map<Int, BitmapRegionDecoder>,
     ) {
         val width = size.width
-        val sumR = IntArray(width * BAND)
-        val sumG = IntArray(width * BAND)
-        val sumB = IntArray(width * BAND)
-        val count = IntArray(width * BAND)
-        val result = IntArray(width * BAND)
-
+        val margin = MergeMath.LOCAL_RADIUS
         var top = 0
         while (top < size.height) {
             val bandHeight = minOf(BAND, size.height - top)
-            val bandPixels = width * bandHeight
             val reference = decodeRegion(decoders.getValue(0), Rect(0, top, width, top + bandHeight))
                 ?: error("Could not decode the reference frame")
-            for (i in 0 until bandPixels) {
-                val px = reference.pixels[i]
-                sumR[i] = (px shr 16) and 0xFF
-                sumG[i] = (px shr 8) and 0xFF
-                sumB[i] = px and 0xFF
-                count[i] = 1
-            }
-
+            val merge = MergeMath.BandMerge(reference.pixels, width, bandHeight)
             for ((index, shift) in shifts) {
                 if (index == 0) continue
-                val area = Rect(shift.dx, top + shift.dy, width + shift.dx, top + bandHeight + shift.dy)
+                // The frame's matching strip, with room for each tile to move a little on its own.
+                val area = Rect(
+                    shift.dx - margin,
+                    top + shift.dy - margin,
+                    width + shift.dx + margin,
+                    top + bandHeight + shift.dy + margin,
+                )
                 if (!area.intersect(0, 0, width, size.height)) continue
                 val strip = decodeRegion(decoders.getValue(index), area) ?: continue
-                for (y in 0 until bandHeight) {
-                    val fy = top + y + shift.dy - area.top
-                    if (fy !in 0 until strip.height) continue
-                    for (x in 0 until width) {
-                        val fx = x + shift.dx - area.left
-                        if (fx !in 0 until strip.width) continue
-                        val i = y * width + x
-                        val px = strip.pixels[fy * strip.width + fx]
-                        if (!MergeMath.similar(reference.pixels[i], px)) continue
-                        sumR[i] += (px shr 16) and 0xFF
-                        sumG[i] += (px shr 8) and 0xFF
-                        sumB[i] += px and 0xFF
-                        count[i]++
-                    }
-                }
+                merge.add(MergeMath.Strip(strip.pixels, strip.width, strip.height, shift.dx - area.left, top + shift.dy - area.top))
             }
-
-            for (i in 0 until bandPixels) result[i] = MergeMath.average(sumR[i], sumG[i], sumB[i], count[i])
-            output.setPixels(result, 0, width, 0, top, width, bandHeight)
+            val merged = merge.result()
+            output.setPixels(merged, 0, width, 0, top, width, bandHeight)
             top += bandHeight
         }
     }
@@ -181,6 +163,23 @@ internal class NightMerger(private val frames: List<ByteArray>) {
     }
 
     private companion object {
+        /** Puts the burst's sharpest frame (least hand shake) first; the first stays first on a tie. */
+        fun sharpestFirst(burst: List<ByteArray>): List<ByteArray> {
+            if (burst.size < 2) return burst
+            val scores = burst.map { bytes ->
+                val options = BitmapFactory.Options().apply { inSampleSize = SHARPNESS_SAMPLE }
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return@map -1f
+                val pixels = IntArray(bitmap.width * bitmap.height)
+                bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+                for (i in pixels.indices) pixels[i] = MergeMath.luma(pixels[i])
+                MergeMath.sharpness(pixels, bitmap.width, bitmap.height).also { bitmap.recycle() }
+            }
+            val best = scores.indices.maxByOrNull { scores[it] } ?: 0
+            if (best == 0) return burst
+            return listOf(burst[best]) + burst.filterIndexed { i, _ -> i != best }
+        }
+
+        const val SHARPNESS_SAMPLE = 4
         const val COARSE_SAMPLE = 8
         const val COARSE_RADIUS = 8
         const val FINE_CROP = 768
