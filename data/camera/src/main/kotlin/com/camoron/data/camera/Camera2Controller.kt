@@ -10,6 +10,7 @@ import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
@@ -62,6 +63,7 @@ import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.StillAspect
+import com.camoron.domain.model.VideoKind
 import com.camoron.domain.model.VideoMath
 import com.camoron.domain.model.VideoResolution
 import com.camoron.domain.model.VideoSpec
@@ -288,6 +290,8 @@ class Camera2Controller @Inject constructor(
         val turned: Boolean,
         val renderer: VideoRenderer,
         val stabilization: Boolean,
+        /** A constrained high-speed session (slow motion): burst requests only, and few controls. */
+        val highSpeed: Boolean = false,
     )
 
     /** A recording in progress. Kept apart from the session so it can be finished if the camera is lost. */
@@ -545,8 +549,20 @@ class Camera2Controller @Inject constructor(
 
     override suspend fun videoPreviewSize(cameraId: String, spec: VideoSpec): PixelSize = withContext(processing) {
         val characteristics = manager.getCameraCharacteristics(cameraId)
-        val size = videoSize(characteristics, spec.resolution)
+        val size = highSpeedFor(cameraId, spec)?.first ?: videoSize(characteristics, spec.resolution)
         VideoMath.previewSize(size, isTurned(characteristics))
+    }
+
+    /** The high-speed size and frame rate for a slow-motion [spec], or null to film it normally. */
+    private fun highSpeedFor(cameraId: String, spec: VideoSpec): Pair<PixelSize, IntRange>? {
+        if (spec.kind != VideoKind.SLOW_MOTION || !capabilitiesOf(cameraId).supportsHighSpeedVideo) return null
+        val streams = characteristicsOf(cameraId).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
+        val options = runCatching {
+            streams.highSpeedVideoSizes.flatMap { size ->
+                streams.getHighSpeedVideoFpsRangesFor(size).map { PixelSize(size.width, size.height) to it.lower..it.upper }
+            }
+        }.getOrDefault(emptyList())
+        return VideoMath.chooseHighSpeed(options)
     }
 
     override suspend fun openVideo(cameraId: String, target: PreviewTarget, spec: VideoSpec) {
@@ -566,9 +582,10 @@ class Camera2Controller @Inject constructor(
             val characteristics = characteristicsOf(cameraId)
             val caps = withVideoEncoderLimits(capabilitiesOf(cameraId))
             val resolution = spec.resolution.takeIf { it in caps.videoResolutions } ?: VideoResolution.FHD
-            val size = videoSize(characteristics, resolution)
+            var highSpeed = highSpeedFor(cameraId, spec)
+            val size = highSpeed?.first ?: videoSize(characteristics, resolution)
             val turned = isTurned(characteristics)
-            val fpsRange = VideoMath.chooseFpsRange(
+            val normalFps = VideoMath.chooseFpsRange(
                 characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
                     ?.map { it.lower..it.upper }.orEmpty(),
                 spec.kind,
@@ -585,9 +602,10 @@ class Camera2Controller @Inject constructor(
             device = reused ?: openDevice(cameraId)
 
             // The analysis stream feeds the histogram (for Enhance) and subject tracking. If the
-            // camera can't add it next to a large video stream, film without it.
+            // camera can't add it next to a large video stream, film without it. A high-speed
+            // session takes the camera's one stream only.
             val streams = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            analysisReader = streams?.getOutputSizes(AndroidImageFormat.YUV_420_888)
+            analysisReader = streams?.takeIf { highSpeed == null }?.getOutputSizes(AndroidImageFormat.YUV_420_888)
                 ?.map { PixelSize(it.width, it.height) }
                 ?.let(CameraMath::chooseAnalysisSize)
                 ?.let {
@@ -595,7 +613,18 @@ class Camera2Controller @Inject constructor(
                         .apply { setOnImageAvailableListener(::onAnalysisFrame, handler) }
                 }
             val cameraSurface = videoRenderer.second
-            val session = try {
+            val session = if (highSpeed != null) {
+                try {
+                    createHighSpeedSession(device, cameraSurface)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Film at the camera's fastest normal rate instead.
+                    DiagnosticLog.record(TAG, "High-speed session didn't start; filming slow motion at the normal rate", e)
+                    highSpeed = null
+                    createSession(device, listOf(cameraSurface))
+                }
+            } else try {
                 createSession(device, listOfNotNull(cameraSurface, analysisReader?.surface))
             } catch (e: IllegalStateException) {
                 if (analysisReader == null) throw e
@@ -604,7 +633,19 @@ class Camera2Controller @Inject constructor(
                 analysisReader = null
                 createSession(device, listOf(cameraSurface))
             }
-            val video = VideoSession(spec.copy(resolution = resolution), size, fpsRange, turned, videoRenderer.first, stabilization)
+            val fpsRange = highSpeed?.second ?: normalFps
+            val video = VideoSession(
+                spec.copy(resolution = resolution),
+                size,
+                fpsRange,
+                turned,
+                videoRenderer.first,
+                stabilization = stabilization && highSpeed == null,
+                highSpeed = highSpeed != null,
+            )
+            if (highSpeed != null) {
+                DiagnosticLog.info(TAG, "Slow motion on camera $cameraId at ${size.width}x${size.height}, ${fpsRange?.last} fps")
+            }
             val camera = ActiveCamera(caps, characteristics, device, session, cameraSurface, null, null, analysisReader, video)
             active = camera
             startRepeating(camera)
@@ -978,6 +1019,8 @@ class Camera2Controller @Inject constructor(
 
     /** Starts a one-shot focus scan (AUTO and MACRO modes only scan when triggered). */
     private fun triggerFocus(camera: ActiveCamera) {
+        // A high-speed session takes only its own bursts; its repeating request carries the focus region.
+        if (camera.video?.highSpeed == true) return
         val trigger = previewRequest(camera).apply {
             set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
         }
@@ -1382,8 +1425,46 @@ class Camera2Controller @Inject constructor(
         }
 
     private fun startRepeating(camera: ActiveCamera) {
+        if (camera.video?.highSpeed == true) {
+            val session = camera.session as CameraConstrainedHighSpeedCaptureSession
+            session.setRepeatingBurst(session.createHighSpeedRequestList(highSpeedRequest(camera)), previewCallback, handler)
+            return
+        }
         camera.session.setRepeatingRequest(previewRequest(camera).build(), previewCallback, handler)
     }
+
+    /**
+     * The request a high-speed session repeats: it honours only the frame rate and a few 3A
+     * controls, so the rest of [applyControls] is left out.
+     */
+    private fun highSpeedRequest(camera: ActiveCamera): CaptureRequest =
+        camera.device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+            addTarget(camera.previewSurface)
+            set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            camera.video?.fpsRange?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, android.util.Range(it.first, it.last)) }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && camera.usesZoomRatio) {
+                set(CaptureRequest.CONTROL_ZOOM_RATIO, camera.zoomRatio)
+            }
+            camera.focusRegion?.let { set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(it)) }
+        }.build()
+
+    private suspend fun createHighSpeedSession(device: CameraDevice, surface: Surface): CameraCaptureSession =
+        suspendCancellableCoroutine { cont ->
+            @Suppress("DEPRECATION") // SessionConfiguration's high-speed type needs Android 9; this works from 6.
+            device.createConstrainedHighSpeedCaptureSession(
+                listOf(surface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        if (cont.isActive) cont.resume(session) else session.close()
+                    }
+
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        if (cont.isActive) cont.resumeWithException(IllegalStateException("High-speed session configuration failed"))
+                    }
+                },
+                handler,
+            )
+        }
 
     /** Translates the user's settings into Camera2 controls, shared by preview and still capture. */
     private fun applyControls(camera: ActiveCamera, builder: CaptureRequest.Builder) {
