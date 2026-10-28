@@ -2,7 +2,7 @@ package com.camoron.domain.model
 
 import kotlin.math.roundToLong
 
-/** The three kinds of video, each with its own frame rate and sound. */
+/** The kinds of video, each with its own frame rate and sound. */
 enum class VideoKind(
     /** Frame rate of the saved file. */
     val outputFps: Int,
@@ -15,6 +15,9 @@ enum class VideoKind(
 
     /** One frame every so often, played back at 30 frames a second; silent. */
     TIMELAPSE(outputFps = 30, recordsSound = false),
+
+    /** Filmed at a high frame rate (120 frames a second where the camera can) and played back at 30, so slower; silent. */
+    SLOW_MOTION(outputFps = 30, recordsSound = false),
 }
 
 /** Recording resolution, as the sensor sees it (landscape). Saved videos are always 16:9. */
@@ -57,8 +60,29 @@ object VideoMath {
             VideoKind.STANDARD -> best(30)
             VideoKind.CINEMATIC -> best(24) ?: best(30)
             VideoKind.TIMELAPSE -> ranges.filter { it.last == 30 }.minByOrNull { it.first } ?: best(30)
+            // Without a high-speed session, the fastest steady rate the camera offers.
+            VideoKind.SLOW_MOTION -> ranges.filter { it.first == it.last }.maxByOrNull { it.last } ?: ranges.maxByOrNull { it.last }
         }
     }
+
+    /**
+     * The high-speed recording for slow motion, from the [options] (size and frame-rate range) the
+     * camera's high-speed mode offers: a steady rate of at least 120 frames a second, at the largest
+     * 16:9 size up to 1080p, nearest 120 so each frame still gets light. Null when none fits.
+     */
+    fun chooseHighSpeed(options: List<Pair<PixelSize, IntRange>>): Pair<PixelSize, IntRange>? =
+        options.filter { (size, range) ->
+            range.first == range.last && range.last >= SLOW_MOTION_FPS &&
+                size.width <= VideoResolution.FHD.width && kotlin.math.abs(size.width * 9 - size.height * 16) <= size.height
+        }.sortedWith(
+            compareByDescending<Pair<PixelSize, IntRange>> { it.first.width.toLong() * it.first.height }
+                .thenBy { it.second.last - SLOW_MOTION_FPS },
+        ).firstOrNull()
+
+    /** How many times slower than real time a slow-motion video filmed at [cameraFps] plays. */
+    fun slowdown(cameraFps: Int): Int = (cameraFps / VideoKind.SLOW_MOTION.outputFps).coerceAtLeast(1)
+
+    private const val SLOW_MOTION_FPS = 120
 
     /**
      * Rotation for the saved video. Frames are encoded landscape with the upright picture turned a
@@ -97,6 +121,8 @@ object VideoMath {
         // Without a native 24 fps mode, keep every frame that lands on the 24 fps grid.
         VideoKind.CINEMATIC -> if (cameraFpsRange?.last == 24) FramePacer.everyFrame() else FramePacer.decimate(24)
         VideoKind.STANDARD -> FramePacer.everyFrame()
+        // Every frame, spaced for playback at 30 frames a second, so the film plays slower.
+        VideoKind.SLOW_MOTION -> FramePacer.slowMotion(VideoKind.SLOW_MOTION.outputFps)
     }
 }
 
@@ -137,6 +163,8 @@ class FramePacer private constructor(
         fun everyFrame() = FramePacer(intervalNs = 0, outputFrameNs = 0)
 
         fun decimate(fps: Int) = FramePacer(intervalNs = 1_000_000_000L / fps, outputFrameNs = 0)
+
+        fun slowMotion(outputFps: Int) = FramePacer(intervalNs = 0, outputFrameNs = (1_000_000_000.0 / outputFps).roundToLong())
 
         fun timelapse(captureIntervalNs: Long, outputFps: Int) = FramePacer(
             intervalNs = captureIntervalNs,

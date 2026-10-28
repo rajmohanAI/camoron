@@ -51,6 +51,12 @@ data class CameraCapabilities(
      * phone with a telephoto and a periscope. Empty when it has none or the phone doesn't say.
      */
     val opticalZoomRatios: List<Float> = emptyList(),
+    /**
+     * Zoom ratio at which this (logical) camera switches to a lens of its own that focuses close
+     * enough for Macro, e.g. 0.5 for an ultra-wide that focuses at 3 cm. Phones such as Motorola's
+     * hide that lens behind the main camera, so this is the only way to reach it. Null when none.
+     */
+    val macroLensZoom: Float? = null,
     /** Upper bounds of the AE target fps ranges, e.g. 24, 30, 60. */
     val videoFrameRates: Set<Int> = emptySet(),
     val supportsHighSpeedVideo: Boolean = false,
@@ -80,6 +86,9 @@ data class CameraCapabilities(
     /** Focuses close enough to be worth a Macro mode, and has a way to hold focus there. */
     val supportsMacro: Boolean
         get() = minFocusDistanceDiopters >= MACRO_MIN_DIOPTERS && (supportsMacroAf || supportsManualFocus)
+
+    /** Macro through this camera, on its own close-focusing lens or one hidden behind it. */
+    val offersMacro: Boolean get() = supportsMacro || macroLensZoom != null
 
     /** Front cameras without an LED still get a screen flash. */
     val supportsFlashControl: Boolean get() = hasFlash || lensFacing == LensFacing.FRONT
