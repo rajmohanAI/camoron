@@ -97,6 +97,21 @@ class CameraViewModelTest {
         CameraViewModel(controller, CaptureAndSavePhoto(controller, media, processor), settings, media, PlanZoomPresets())
 
     @Test
+    fun `portrait mode asks for the background blur and keeps the camera automatic`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.onShutter()
+        assertThat(processor.applied.last().portrait).isFalse()
+
+        vm.setMode(CaptureMode.PORTRAIT)
+        assertThat(controller.applied.last()).isEqualTo(ManualSettings.AUTO)
+        assertThat(vm.uiState.value.showNightControl).isFalse()
+        vm.onShutter()
+        assertThat(processor.applied.last().portrait).isTrue()
+        assertThat(controller.bursts).isEmpty()
+    }
+
+    @Test
     fun `starts on the highest resolution back camera`() = runTest {
         val vm = viewModel()
         assertThat(vm.uiState.value.selectedCamera).isEqualTo(back)

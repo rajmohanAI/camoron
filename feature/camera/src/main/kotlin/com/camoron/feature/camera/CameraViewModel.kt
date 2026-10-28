@@ -67,6 +67,8 @@ enum class CaptureMode(val video: VideoKind? = null) {
     CINEMATIC(VideoKind.CINEMATIC),
     VIDEO(VideoKind.STANDARD),
     PHOTO,
+    /** A photo with the people kept sharp and the background blurred. */
+    PORTRAIT,
     PRO;
 
     val isVideo: Boolean get() = video != null
@@ -189,7 +191,7 @@ data class CameraUiState(
      */
     val burstFrames: Int
         get() = when {
-            activeExtension != null || mode != CaptureMode.PHOTO -> 0
+            activeExtension != null || (mode != CaptureMode.PHOTO && mode != CaptureMode.PORTRAIT) -> 0
             nightActive -> NIGHT_FRAMES
             indoorLight && cameraSettings.flash == FlashMode.OFF -> INDOOR_FRAMES
             else -> 0
@@ -460,7 +462,7 @@ class CameraViewModel @Inject constructor(
             return
         }
         // Photo mode is fully automatic; Pro mode restores whatever the user dialled in.
-        applySettings(if (mode == CaptureMode.PHOTO) ManualSettings.AUTO else _uiState.value.settings)
+        applySettings(if (mode != CaptureMode.PRO) ManualSettings.AUTO else _uiState.value.settings)
     }
 
     /** In video the flash is a light that is on or off. */
@@ -689,6 +691,7 @@ class CameraViewModel @Inject constructor(
         look = state.cameraSettings.look,
         enhance = state.cameraSettings.enhance,
         zoom = state.zoomRatio,
+        portrait = state.mode == CaptureMode.PORTRAIT,
     )
 
     private fun updateCameraSettings(transform: (CameraSettings) -> CameraSettings) {
