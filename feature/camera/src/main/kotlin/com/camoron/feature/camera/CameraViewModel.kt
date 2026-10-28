@@ -63,6 +63,7 @@ import javax.inject.Inject
 
 /** Capture modes in carousel order. Video modes record; the rest take photos. */
 enum class CaptureMode(val video: VideoKind? = null) {
+    SLOW_MOTION(VideoKind.SLOW_MOTION),
     TIMELAPSE(VideoKind.TIMELAPSE),
     CINEMATIC(VideoKind.CINEMATIC),
     VIDEO(VideoKind.STANDARD),
@@ -119,7 +120,8 @@ data class CameraUiState(
 
     /** 4K is offered where this camera and the phone's encoder can do it. */
     val showResolutionControl: Boolean
-        get() = mode.isVideo && selectedCamera?.videoResolutions?.contains(VideoResolution.UHD) == true
+        get() = mode.isVideo && mode != CaptureMode.SLOW_MOTION &&
+            selectedCamera?.videoResolutions?.contains(VideoResolution.UHD) == true
 
     /** Timer, aspect ratio and Night belong to photos. */
     val showPhotoControls: Boolean get() = !mode.isVideo

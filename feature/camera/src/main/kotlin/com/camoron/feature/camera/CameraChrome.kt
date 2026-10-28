@@ -530,6 +530,7 @@ internal fun ModeCarousel(selected: CaptureMode, onSelect: (CaptureMode) -> Unit
 }
 
 private fun modeLabel(mode: CaptureMode): Int = when (mode) {
+    CaptureMode.SLOW_MOTION -> R.string.mode_slow_motion
     CaptureMode.TIMELAPSE -> R.string.mode_timelapse
     CaptureMode.CINEMATIC -> R.string.mode_cinematic
     CaptureMode.VIDEO -> R.string.mode_video

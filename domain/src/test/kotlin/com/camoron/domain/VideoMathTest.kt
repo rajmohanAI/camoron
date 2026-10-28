@@ -93,6 +93,40 @@ class VideoMathTest {
     }
 
     @Test
+    fun `slow motion keeps every 120 fps frame and spaces them for 30 fps playback`() {
+        val pacer = VideoMath.pacerFor(VideoSpec(VideoKind.SLOW_MOTION), 120..120)
+        val kept = frames(120, 120).mapNotNull(pacer::next)
+        assertThat(kept).hasSize(120)
+        // One second filmed plays for four.
+        assertThat(kept.last() - kept.first()).isEqualTo(119 * 33_333_333L)
+        assertThat(VideoMath.slowdown(120)).isEqualTo(4)
+        assertThat(VideoMath.slowdown(240)).isEqualTo(8)
+        assertThat(VideoMath.slowdown(30)).isEqualTo(1)
+    }
+
+    @Test
+    fun `slow motion picks 1080p at 120 fps over faster or smaller options`() {
+        val fhd = PixelSize(1920, 1080)
+        val hd = PixelSize(1280, 720)
+        val options = listOf(
+            hd to 240..240,
+            fhd to 30..120,
+            fhd to 240..240,
+            fhd to 120..120,
+            PixelSize(3840, 2160) to 120..120,
+        )
+        assertThat(VideoMath.chooseHighSpeed(options)).isEqualTo(fhd to 120..120)
+        assertThat(VideoMath.chooseHighSpeed(listOf(hd to 240..240, fhd to 60..60))).isEqualTo(hd to 240..240)
+        assertThat(VideoMath.chooseHighSpeed(listOf(fhd to 60..60))).isNull()
+    }
+
+    @Test
+    fun `without high speed, slow motion takes the fastest steady rate`() {
+        assertThat(VideoMath.chooseFpsRange(listOf(15..30, 30..30, 60..60), VideoKind.SLOW_MOTION)).isEqualTo(60..60)
+        assertThat(VideoMath.chooseFpsRange(listOf(15..30, 30..30), VideoKind.SLOW_MOTION)).isEqualTo(30..30)
+    }
+
+    @Test
     fun `cinematic only thins frames when the camera has no 24 fps mode`() {
         val native = VideoMath.pacerFor(VideoSpec(VideoKind.CINEMATIC), 24..24)
         assertThat(frames(24, 24).mapNotNull(native::next)).hasSize(24)

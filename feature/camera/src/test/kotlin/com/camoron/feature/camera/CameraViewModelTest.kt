@@ -97,6 +97,20 @@ class CameraViewModelTest {
         CameraViewModel(controller, CaptureAndSavePhoto(controller, media, processor), settings, media, PlanZoomPresets())
 
     @Test
+    fun `slo-mo opens a silent slow-motion video session without the 4k choice`() = runTest {
+        controller.all = listOf(back.copy(videoResolutions = setOf(VideoResolution.FHD, VideoResolution.UHD)), front)
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.SLOW_MOTION)
+        vm.onSurfaceReady(Target(1080, 1920))
+        assertThat(controller.videoOpened.last().kind).isEqualTo(VideoKind.SLOW_MOTION)
+        assertThat(VideoKind.SLOW_MOTION.recordsSound).isFalse()
+        assertThat(vm.uiState.value.showResolutionControl).isFalse()
+        vm.setMode(CaptureMode.VIDEO)
+        assertThat(vm.uiState.value.showResolutionControl).isTrue()
+    }
+
+    @Test
     fun `starts on the highest resolution back camera`() = runTest {
         val vm = viewModel()
         assertThat(vm.uiState.value.selectedCamera).isEqualTo(back)
