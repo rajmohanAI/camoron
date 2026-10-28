@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="cd_back">Back</string>
-    <string name="cd_close_editor">Close editor</string>
     <string name="cd_undo">Undo</string>
     <string name="cd_redo">Redo</string>
     <string name="cd_share">Share</string>
@@ -11,6 +10,7 @@
     <string name="share">Share</string>
     <string name="gallery">Gallery</string>
     <string name="save_copy">Save copy</string>
+    <string name="cancel">Cancel</string>
     <string name="saving_copy">Saving a copy…</string>
     <string name="saved_copy">Saved as a copy. Your original is unchanged.</string>
     <string name="save_failed">Couldn\'t save the edited photo. Please try again.</string>
@@ -22,7 +22,7 @@
     <string name="discard">Discard</string>
     <string name="keep_editing">Keep editing</string>
 
-    <string name="tab_looks">Looks</string>
+    <string name="tab_looks">Filters</string>
     <string name="tab_adjust">Adjust</string>
     <string name="tab_crop">Crop</string>
     <string name="tab_try_on">Try on</string>
@@ -100,7 +100,7 @@
     <string name="adjust_vignette">Vignette</string>
     <string name="adjust_grain">Grain</string>
 
-    <string name="tab_erase">Erase</string>
+    <string name="tab_erase">Eraser</string>
     <string name="erase_tap">Tap</string>
     <string name="erase_brush">Brush</string>
     <string name="erase_tap_hint">Tap something to remove it</string>
