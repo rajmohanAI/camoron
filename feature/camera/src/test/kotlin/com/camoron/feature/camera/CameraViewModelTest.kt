@@ -10,6 +10,7 @@ import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
 import com.camoron.domain.model.ZoomPreset
+import com.camoron.domain.model.GeoPoint
 import com.camoron.domain.model.LiveExposure
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.StillAspect
@@ -30,6 +31,7 @@ import com.camoron.domain.model.VideoKind
 import com.camoron.domain.model.VideoResolution
 import com.camoron.domain.model.VideoSpec
 import com.camoron.domain.repository.CameraController
+import com.camoron.domain.repository.LocationProvider
 import com.camoron.domain.repository.MediaRepository
 import com.camoron.domain.repository.PendingVideo
 import com.camoron.domain.repository.PhotoProcessor
@@ -92,6 +94,17 @@ class CameraViewModelTest {
         }
     }
     private val settings = FakeSettingsRepository()
+    private val location = object : LocationProvider {
+        var following = false
+        var fix: GeoPoint? = GeoPoint(51.5, -0.12, 20.0)
+        override fun start() {
+            following = true
+        }
+        override fun stop() {
+            following = false
+        }
+        override fun current() = fix
+    }
 
     @Before
     fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -100,7 +113,7 @@ class CameraViewModelTest {
     fun tearDown() = Dispatchers.resetMain()
 
     private fun viewModel() =
-        CameraViewModel(controller, CaptureAndSavePhoto(controller, media, processor), settings, media, PlanZoomPresets(), rotation)
+        CameraViewModel(controller, CaptureAndSavePhoto(controller, media, processor), settings, media, PlanZoomPresets(), location, rotation)
 
     private val rotation = object : RotationSensor {
         var yaw: Float? = 0f
@@ -171,6 +184,25 @@ class CameraViewModelTest {
         assertThat(processor.stitched).isEmpty()
         assertThat(vm.uiState.value.event).isEqualTo(CameraEvent.PanoramaTooShort)
         assertThat(controller.exposureLocks).containsExactly(true, false).inOrder()
+    }
+
+    @Test
+    fun `photos carry the location only with save location on, followed only on screen`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(location.following).isFalse()
+        vm.onShutter()
+        assertThat(processor.applied.last().location).isNull()
+
+        settings.state.update { it.copy(geotag = true) }
+        assertThat(location.following).isTrue()
+        vm.onShutter()
+        assertThat(processor.applied.last().location).isEqualTo(GeoPoint(51.5, -0.12, 20.0))
+
+        vm.onForegroundChanged(false)
+        assertThat(location.following).isFalse()
+        vm.onForegroundChanged(true)
+        assertThat(location.following).isTrue()
     }
 
     @Test

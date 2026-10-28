@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
+import com.camoron.core.common.DiagnosticLog
+import com.camoron.core.common.timed
 import com.camoron.domain.model.PixelSize
 import java.io.ByteArrayOutputStream
 
@@ -20,7 +22,7 @@ import java.io.ByteArrayOutputStream
 internal class NightMerger(burst: List<ByteArray>) {
 
     /** The burst with its sharpest frame first, as the reference. */
-    private val frames: List<ByteArray> = sharpestFirst(burst)
+    private val frames: List<ByteArray> = DiagnosticLog.timed(TAG, "Picking the sharpest of ${burst.size} frames") { sharpestFirst(burst) }
 
     private data class Shift(val dx: Int, val dy: Int)
 
@@ -29,17 +31,19 @@ internal class NightMerger(burst: List<ByteArray>) {
         if (frames.size < 2) return null
         val size = decodeBounds(frames[0])
         if (size.width <= 0 || size.height <= 0) return null
-        val shifts = align(size)
+        val shifts = DiagnosticLog.timed(TAG, "Aligning ${frames.size} frames") { align(size) }
         if (shifts.size < 2) return null
 
         val decoders = shifts.keys.associateWith { regionDecoder(frames[it]) }
         try {
             val output = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
             try {
-                mergeInto(output, size, shifts, decoders)
-                val bytes = ByteArrayOutputStream()
-                    .also { output.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }
-                    .toByteArray()
+                DiagnosticLog.timed(TAG, "Merging ${shifts.size} frames ${size.width}x${size.height}") { mergeInto(output, size, shifts, decoders) }
+                val bytes = DiagnosticLog.timed(TAG, "Encoding the merged photo") {
+                    ByteArrayOutputStream()
+                        .also { output.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }
+                        .toByteArray()
+                }
                 return bytes to size
             } finally {
                 output.recycle()
@@ -179,6 +183,7 @@ internal class NightMerger(burst: List<ByteArray>) {
             return listOf(burst[best]) + burst.filterIndexed { i, _ -> i != best }
         }
 
+        const val TAG = "NightMerger"
         const val SHARPNESS_SAMPLE = 4
         const val COARSE_SAMPLE = 8
         const val COARSE_RADIUS = 8

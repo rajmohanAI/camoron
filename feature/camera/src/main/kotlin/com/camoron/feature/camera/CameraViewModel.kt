@@ -34,6 +34,7 @@ import com.camoron.domain.model.VideoSpec
 import com.camoron.domain.model.WhiteBalance
 import com.camoron.domain.model.ZoomPreset
 import com.camoron.domain.repository.CameraController
+import com.camoron.domain.repository.LocationProvider
 import com.camoron.domain.repository.MediaRepository
 import com.camoron.domain.repository.PendingVideo
 import com.camoron.domain.repository.PreviewTarget
@@ -241,6 +242,7 @@ class CameraViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val media: MediaRepository,
     private val planZoomPresets: PlanZoomPresets,
+    private val location: LocationProvider,
     private val rotation: RotationSensor,
 ) : ViewModel() {
 
@@ -361,6 +363,17 @@ class CameraViewModel @Inject constructor(
         if (this.foreground == foreground) return
         this.foreground = foreground
         if (foreground) openIfReady() else closeCamera()
+        syncLocation()
+    }
+
+    /** Follows the location only while the camera is on screen and Save location is on. */
+    private fun syncLocation() {
+        if (foreground && _uiState.value.cameraSettings.geotag) location.start() else location.stop()
+    }
+
+    override fun onCleared() {
+        location.stop()
+        rotation.stop()
     }
 
     /** The user tapped the error message: try the camera again. */
@@ -570,10 +583,6 @@ class CameraViewModel @Inject constructor(
 
     fun eventConsumed() = _uiState.update { it.copy(event = null) }
 
-    override fun onCleared() {
-        rotation.stop()
-    }
-
     /** Panorama: the first tap starts the sweep, the next one (or the last frame) finishes it. */
     private fun togglePanorama() {
         val state = _uiState.value
@@ -649,7 +658,12 @@ class CameraViewModel @Inject constructor(
             return
         }
         _uiState.update { it.copy(photosSaving = it.photosSaving + 1) }
-        val adjustments = PhotoAdjustments(look = state.cameraSettings.look, enhance = state.cameraSettings.enhance, zoom = state.zoomRatio)
+        val adjustments = PhotoAdjustments(
+            look = state.cameraSettings.look,
+            enhance = state.cameraSettings.enhance,
+            zoom = state.zoomRatio,
+            location = if (state.cameraSettings.geotag) location.current() else null,
+        )
         val focal = selected.equivalentFocalLengthMm?.let { it * state.zoomRatio }
         val uri = runCatching { captureAndSave.savePanorama(frames, yaws, focal, adjustments) }
             .onFailure { DiagnosticLog.record(TAG, "Couldn't stitch the panorama", it) }
@@ -818,6 +832,7 @@ class CameraViewModel @Inject constructor(
         look = state.cameraSettings.look,
         enhance = state.cameraSettings.enhance,
         zoom = state.zoomRatio,
+        location = if (state.cameraSettings.geotag) location.current() else null,
     )
 
     private fun updateCameraSettings(transform: (CameraSettings) -> CameraSettings) {
@@ -828,6 +843,7 @@ class CameraViewModel @Inject constructor(
         val previous = _uiState.value.cameraSettings
         if (!initial && next == previous) return
         _uiState.update { it.copy(cameraSettings = next) }
+        if (initial || next.geotag != previous.geotag) syncLocation()
         if (initial || next.flash != previous.flash) camera.setFlashMode(next.flash)
         val videoChanged = next.videoResolution != previous.videoResolution || next.timelapseSpeed != previous.timelapseSpeed
         if (!initial && _uiState.value.mode.isVideo && videoChanged) {

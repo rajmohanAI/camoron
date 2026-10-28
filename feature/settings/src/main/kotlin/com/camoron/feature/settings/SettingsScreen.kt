@@ -1,5 +1,8 @@
 package com.camoron.feature.settings
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -45,6 +48,10 @@ fun SettingsScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var confirmReset by rememberSaveable { mutableStateOf(false) }
+    // Save location turns on only once the user has allowed location (precise or approximate).
+    val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted.values.any { it }) viewModel.setGeotag(true)
+    }
 
     Scaffold(
         topBar = {
@@ -80,6 +87,18 @@ fun SettingsScreen(
                 viewModel::setAutoFocusTracking,
             )
             SwitchRow(R.string.phone_hdr, R.string.phone_hdr_desc, s.phoneHdr, viewModel::setPhoneHdr)
+            SwitchRow(
+                R.string.geotag,
+                R.string.geotag_desc,
+                s.geotag,
+                onChange = { on ->
+                    if (on) {
+                        locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                    } else {
+                        viewModel.setGeotag(false)
+                    }
+                },
+            )
 
             SectionHeader(R.string.capture_assistant)
             SwitchRow(R.string.grid, R.string.grid_desc, s.grid, viewModel::setGrid)
