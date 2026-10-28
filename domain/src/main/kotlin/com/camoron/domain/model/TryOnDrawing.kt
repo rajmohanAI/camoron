@@ -167,19 +167,28 @@ object TryOnDrawing {
             }
             if (tryOn.eyes != EyeColour.NONE && shape.count >= IRIS_POINTS) {
                 // The iris circle, only where the eye is open.
-                for ((centre, ring, lids) in listOf(Triple(468, 469..472, LEFT_EYE), Triple(473, 474..477, RIGHT_EYE))) {
-                    val c = face.pt(centre)
-                    val radius = ring.map { face.dist(it, centre) }.average().toFloat() * IRIS_GROW
-                    val iris = (0 until 32).map { i ->
+                for (left in listOf(true, false)) {
+                    val (c, radius) = iris(face, left)
+                    val circle = (0 until 32).map { i ->
                         val t = 2 * PI.toFloat() * i / 32
                         Pt(c.x + radius * cos(t), c.y + radius * sin(t))
                     }
-                    out += MakeupArea(MakeupKind.EYES, listOf(iris.flat()), listOf(lids.map { face.pt(it) }.flat()), tryOn.eyes.argb, radius * 0.12f)
+                    out += MakeupArea(MakeupKind.EYES, listOf(circle.flat()), listOf(eyeOpening(face, left).flat()), tryOn.eyes.argb, radius * 0.12f)
                 }
             }
         }
         return out
     }
+
+    /** The centre and radius of the iris of the eye on the photo's [left] or right, in photo pixels; needs the iris points. */
+    internal fun iris(face: Face, left: Boolean): Pair<Pt, Float> {
+        val centre = if (left) 468 else 473
+        val ring = if (left) 469..472 else 474..477
+        return face.pt(centre) to ring.map { face.dist(it, centre) }.average().toFloat() * IRIS_GROW
+    }
+
+    /** The outline of the open eye between the lids, on the photo's [left] or right, in photo pixels. */
+    internal fun eyeOpening(face: Face, left: Boolean): List<Pt> = (if (left) LEFT_EYE else RIGHT_EYE).map { face.pt(it) }
 
     // --- Spectacles -------------------------------------------------------------------------
 
@@ -791,10 +800,8 @@ object TryOnDrawing {
     /** A mask over the nose, mouth and chin, from the cheeks under the eyes down past the jaw. */
     private fun faceMask(face: Face, style: MaskStyle, out: MutableList<Shape2D>) {
         val centre = face.pt(NOSE_TIP)
-        val top = MASK_TOP.map { face.pt(it) }
-        val bottom = JAW.map { face.pt(it) }.map { it.awayFrom(centre, 1.05f) }
-        // Top edge: cheek, over the bridge of the nose, cheek. Bottom edge: along and just past the jaw.
-        val outline = smoothClosed(top + bottom.subList(1, bottom.size - 1).reversed())
+        val (top, bottom) = faceMaskEdges(face)
+        val outline = faceMaskOutline(top, bottom)
         val unit = face.dist(33, 263) / 2f
         val (base, edge) = when (style) {
             MaskStyle.SURGICAL -> 0xFF9FC8E3.toInt() to 0xFF7EAFCF.toInt()
@@ -843,14 +850,33 @@ object TryOnDrawing {
         }
     }
 
-    /** A party or hero mask over the eyes, with eye holes. */
-    private fun eyeMask(face: Face, style: MaskStyle, out: MutableList<Shape2D>) {
+    /**
+     * A face mask's edges in photo pixels, both running from the left cheek to the right: the top
+     * over the bridge of the nose, the bottom along and just past the jaw.
+     */
+    internal fun faceMaskEdges(face: Face): Pair<List<Pt>, List<Pt>> {
+        val centre = face.pt(NOSE_TIP)
+        return MASK_TOP.map { face.pt(it) } to JAW.map { face.pt(it) }.map { it.awayFrom(centre, 1.05f) }
+    }
+
+    /** The closed outline of a face mask with [faceMaskEdges]' [top] and [bottom]. */
+    internal fun faceMaskOutline(top: List<Pt>, bottom: List<Pt>): List<Pt> = smoothClosed(top + bottom.subList(1, bottom.size - 1).reversed())
+
+    /** An eye mask's outline and its two eye holes, in photo pixels. */
+    internal fun eyeMaskOutlines(face: Face): List<List<Pt>> {
         val eyesCentre = face.mid(33, 263)
-        val outline = smoothClosed(EYE_MASK.map { face.pt(it).awayFrom(eyesCentre, 1.1f) })
         val leftCentre = face.mid(33, 133)
         val rightCentre = face.mid(362, 263)
-        val holeLeft = smoothClosed(LEFT_EYE.map { face.pt(it).awayFrom(leftCentre, 1.45f) })
-        val holeRight = smoothClosed(RIGHT_EYE.map { face.pt(it).awayFrom(rightCentre, 1.45f) })
+        return listOf(
+            smoothClosed(EYE_MASK.map { face.pt(it).awayFrom(eyesCentre, 1.1f) }),
+            smoothClosed(LEFT_EYE.map { face.pt(it).awayFrom(leftCentre, 1.45f) }),
+            smoothClosed(RIGHT_EYE.map { face.pt(it).awayFrom(rightCentre, 1.45f) }),
+        )
+    }
+
+    /** A party or hero mask over the eyes, with eye holes. */
+    private fun eyeMask(face: Face, style: MaskStyle, out: MutableList<Shape2D>) {
+        val (outline, holeLeft, holeRight) = eyeMaskOutlines(face)
         val unit = face.dist(33, 263) / 2f
         val contours = listOf(outline.flat(), holeLeft.flat(), holeRight.flat())
         val top = face.pt(9)
@@ -879,7 +905,7 @@ object TryOnDrawing {
         }
     }
 
-    private class Face(val shape: FaceShape, val width: Float, val height: Float) {
+    internal class Face(val shape: FaceShape, val width: Float, val height: Float) {
         fun pt(i: Int) = Pt(shape.x(i) * width, shape.y(i) * height)
         fun mid(a: Int, b: Int) = pt(a).lerp(pt(b), 0.5f)
         fun dist(a: Int, b: Int): Float {
@@ -896,7 +922,7 @@ object TryOnDrawing {
     }
 
     /** Eye units onto the photo: pupils at (∓1, 0), y down the face. */
-    private class EyeFrame(left: Pt, right: Pt) {
+    internal class EyeFrame(left: Pt, right: Pt) {
         private val origin = left.lerp(right, 0.5f)
         private val u = (right - left) * 0.5f
         private val v = Pt(-u.y, u.x)
@@ -951,7 +977,7 @@ object TryOnDrawing {
     }
 
     /** A smooth line through [points], ending at the last one. */
-    private fun smoothOpen(points: List<Pt>, steps: Int = 6): List<Pt> {
+    internal fun smoothOpen(points: List<Pt>, steps: Int = 6): List<Pt> {
         val n = points.size
         val out = ArrayList<Pt>(n * steps)
         for (i in 0 until n - 1) {
@@ -1015,9 +1041,9 @@ object TryOnDrawing {
     private const val IRIS_POINTS = 478
     private const val IRIS_GROW = 1.04f
     private const val LENS_POINTS = 64
-    private const val LENS_X = 1f
-    private const val LENS_SCALE = 1.08f
-    private const val LENS_Y = 0.08f
+    internal const val LENS_X = 1f
+    internal const val LENS_SCALE = 1.08f
+    internal const val LENS_Y = 0.08f
     private const val NOSE_TIP = 1
     private const val MAX_HAIRS = 9000
     private const val HAIR_SEED = 20261026
