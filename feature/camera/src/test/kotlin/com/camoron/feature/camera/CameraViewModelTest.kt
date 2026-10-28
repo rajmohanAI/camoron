@@ -206,6 +206,20 @@ class CameraViewModelTest {
     }
 
     @Test
+    fun `slo-mo opens a silent slow-motion video session without the 4k choice`() = runTest {
+        controller.all = listOf(back.copy(videoResolutions = setOf(VideoResolution.FHD, VideoResolution.UHD)), front)
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.SLOW_MOTION)
+        vm.onSurfaceReady(Target(1080, 1920))
+        assertThat(controller.videoOpened.last().kind).isEqualTo(VideoKind.SLOW_MOTION)
+        assertThat(VideoKind.SLOW_MOTION.recordsSound).isFalse()
+        assertThat(vm.uiState.value.showResolutionControl).isFalse()
+        vm.setMode(CaptureMode.VIDEO)
+        assertThat(vm.uiState.value.showResolutionControl).isTrue()
+    }
+
+    @Test
     fun `starts on the highest resolution back camera`() = runTest {
         val vm = viewModel()
         assertThat(vm.uiState.value.selectedCamera).isEqualTo(back)
@@ -423,6 +437,35 @@ class CameraViewModelTest {
         vm.toggleMacro()
         assertThat(controller.macros).containsExactly(true, false).inOrder()
         assertThat(controller.opened.last()).isEqualTo("0")
+    }
+
+    @Test
+    fun `macro zooms to a close-focusing lens hidden behind the main camera`() = runTest {
+        // Like Motorola: one back camera whose ultra-wide focuses at 3 cm but isn't listed on its own.
+        controller.all = listOf(back.copy(zoomRatioRange = 0.5f..10f, macroLensZoom = 0.5f), front)
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(vm.uiState.value.macroAvailable).isTrue()
+
+        vm.toggleMacro()
+        assertThat(vm.uiState.value.macro).isTrue()
+        assertThat(controller.zooms.last()).isEqualTo(0.5f)
+        assertThat(controller.opened).containsExactly("0")
+
+        vm.toggleMacro()
+        assertThat(vm.uiState.value.macro).isFalse()
+        assertThat(controller.zooms.last()).isEqualTo(1f)
+    }
+
+    @Test
+    fun `macro is for the back cameras only`() = runTest {
+        controller.all = listOf(back, front.copy(minFocusDistanceDiopters = 33f, supportsMacroAf = true))
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.switchCamera()
+        assertThat(vm.uiState.value.macroAvailable).isFalse()
+        vm.toggleMacro()
+        assertThat(vm.uiState.value.macro).isFalse()
     }
 
     @Test

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="mode_photo">Photo</string>
+    <string name="mode_slow_motion">Slo-mo</string>
     <string name="mode_pro">Pro</string>
     <string name="mode_video">Video</string>
     <string name="mode_cinematic">Cinematic</string>
