@@ -433,8 +433,9 @@ class CameraViewModel @Inject constructor(
     }
 
     /**
-     * Macro: close-up focus. Uses the camera on this side that focuses closest, switching to it if
-     * it isn't the open one, and back to the main camera when turned off.
+     * Macro: close-up focus, on the back cameras only. Uses the camera on this side that focuses
+     * closest, switching to it if it isn't the open one, or zooms to the close-focusing lens a
+     * camera hides behind it; back to the main camera at 1x when turned off.
      */
     fun toggleMacro() {
         val state = _uiState.value
@@ -444,14 +445,29 @@ class CameraViewModel @Inject constructor(
             if (state.macro) {
                 _uiState.update { it.copy(macro = false) }
                 camera.setMacro(false)
-                profile.bestCamera(selected.lensFacing)?.takeIf { it.cameraId != selected.cameraId }?.let { select(it) }
-                    ?: syncExtensionSession()
+                val main = profile.bestCamera(selected.lensFacing)
+                if (main != null && main.cameraId != selected.cameraId) {
+                    select(main)
+                } else {
+                    if (!selected.supportsMacro) setZoom(1f)
+                    syncExtensionSession()
+                }
                 return@launch
             }
+            if (selected.lensFacing != LensFacing.BACK) return@launch
             val target = macroCamera(selected) ?: return@launch
+            // A camera that focuses close itself is used at 1x; otherwise zoom to its hidden macro lens.
+            val zoom = if (target.supportsMacro) 1f else target.macroLensZoom ?: return@launch
             _uiState.update { it.copy(macro = true) }
             camera.setMacro(true)
-            if (target.cameraId != selected.cameraId) select(target) else syncExtensionSession()
+            when {
+                target.cameraId != selected.cameraId -> select(target, zoom)
+                zoom != state.zoomRatio -> {
+                    setZoom(zoom)
+                    syncExtensionSession()
+                }
+                else -> syncExtensionSession()
+            }
         }
     }
 
@@ -730,12 +746,16 @@ class CameraViewModel @Inject constructor(
         viewModelScope.launch { camera.setZoom(ratio) }
     }
 
-    /** The camera on [current]'s side that focuses closest, preferring the open one when it qualifies. */
+    /**
+     * The camera on [current]'s side that focuses closest, preferring the open one when it
+     * qualifies, then one with a hidden macro lens.
+     */
     private fun macroCamera(current: CameraCapabilities): CameraCapabilities? {
         if (current.supportsMacro) return current
-        return profile.cameras
-            .filter { it.lensFacing == current.lensFacing && it.supportsMacro }
-            .maxByOrNull { it.minFocusDistanceDiopters }
+        val sameSide = profile.cameras.filter { it.lensFacing == current.lensFacing }
+        return sameSide.filter { it.supportsMacro }.maxByOrNull { it.minFocusDistanceDiopters }
+            ?: current.takeIf { it.macroLensZoom != null }
+            ?: sameSide.firstOrNull { it.macroLensZoom != null }
     }
 
     private suspend fun select(capabilities: CameraCapabilities, zoom: Float = 1f) {
@@ -768,7 +788,7 @@ class CameraViewModel @Inject constructor(
                 zoomPresets = presets,
                 zoomRatio = zoom,
                 lensBase = base,
-                macroAvailable = sameSide.any { camera -> camera.supportsMacro },
+                macroAvailable = capabilities.lensFacing == LensFacing.BACK && sameSide.any { camera -> camera.offersMacro },
                 activeExtension = extension,
             )
         }
