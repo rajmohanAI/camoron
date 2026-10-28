@@ -413,17 +413,75 @@ class CameraViewModelTest {
         controller.all = listOf(back.copy(extensions = setOf(CameraExtension.NIGHT)), front)
         val vm = viewModel()
         vm.onSurfaceReady(Target(1440, 1080))
-        assertThat(controller.openedWithNightExtension.last()).isFalse()
+        assertThat(controller.openedWithExtension.last()).isNull()
 
         settings.state.update { it.copy(night = NightSetting.ON) }
-        assertThat(controller.openedWithNightExtension.last()).isTrue()
+        assertThat(controller.openedWithExtension.last()).isEqualTo(CameraExtension.NIGHT)
         assertThat(vm.uiState.value.showFlashControl).isFalse()
         vm.onShutter()
         assertThat(controller.bursts).isEmpty()
         assertThat(controller.capturedWithRaw).hasSize(1)
 
         settings.state.update { it.copy(night = NightSetting.OFF) }
-        assertThat(controller.openedWithNightExtension.last()).isFalse()
+        assertThat(controller.openedWithExtension.last()).isNull()
+    }
+
+    @Test
+    fun `phone's hdr uses the maker's hdr mode for normal photos where offered`() = runTest {
+        controller.all = listOf(back.copy(extensions = setOf(CameraExtension.AUTO, CameraExtension.HDR)), front)
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(controller.openedWithExtension.last()).isNull()
+
+        settings.state.update { it.copy(phoneHdr = true) }
+        assertThat(controller.openedWithExtension.last()).isEqualTo(CameraExtension.HDR)
+        controller.state.update {
+            (it as CameraState.Previewing).copy(liveExposure = LiveExposure(iso = 400, exposureTimeNs = 20_000_000L))
+        }
+        vm.onShutter()
+        assertThat(controller.bursts).isEmpty()
+        assertThat(controller.capturedWithRaw).hasSize(1)
+
+        // Night on wins over HDR: this camera has no maker Night mode, so it is our own merge.
+        settings.state.update { it.copy(night = NightSetting.ON) }
+        assertThat(controller.openedWithExtension.last()).isNull()
+        vm.setMode(CaptureMode.PRO)
+        assertThat(vm.uiState.value.wantedExtension).isNull()
+    }
+
+    @Test
+    fun `phone's hdr falls back to the maker's automatic mode and to the normal camera`() = runTest {
+        controller.all = listOf(back.copy(extensions = setOf(CameraExtension.AUTO)), front)
+        settings.state.update { it.copy(phoneHdr = true) }
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(controller.openedWithExtension.last()).isEqualTo(CameraExtension.AUTO)
+
+        vm.switchCamera()
+        assertThat(controller.openedWithExtension.last()).isNull()
+    }
+
+    @Test
+    fun `indoor light merges a short burst and daylight takes a single frame`() = runTest {
+        settings.state.update { it.copy(night = NightSetting.OFF) }
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        controller.state.update {
+            (it as CameraState.Previewing).copy(liveExposure = LiveExposure(iso = 50, exposureTimeNs = 2_000_000L))
+        }
+        vm.onShutter()
+        assertThat(controller.bursts).isEmpty()
+
+        controller.state.update {
+            (it as CameraState.Previewing).copy(liveExposure = LiveExposure(iso = 250, exposureTimeNs = 20_000_000L))
+        }
+        vm.onShutter()
+        assertThat(controller.bursts).containsExactly(4)
+        assertThat(vm.uiState.value.nightCapturing).isFalse()
+
+        // Flash means a single lit frame.
+        settings.state.update { it.copy(flash = FlashMode.AUTO) }
+        assertThat(vm.uiState.value.burstFrames).isEqualTo(0)
     }
 
     @Test
@@ -637,9 +695,9 @@ class CameraViewModelTest {
 
         override suspend fun cameras() = all
         override suspend fun deviceProfile() = DeviceProfile(all, mustPlayShutterSound = mustPlayShutterSound)
-        val openedWithNightExtension = mutableListOf<Boolean>()
+        val openedWithExtension = mutableListOf<CameraExtension?>()
         val bursts = mutableListOf<Int>()
-        override suspend fun previewSize(cameraId: String, aspect: StillAspect, nightExtension: Boolean): PixelSize {
+        override suspend fun previewSize(cameraId: String, aspect: StillAspect, extension: CameraExtension?): PixelSize {
             previewAspects += aspect
             return if (aspect == StillAspect.FOUR_THREE) PixelSize(1440, 1080) else PixelSize(1920, 1080)
         }
@@ -648,10 +706,10 @@ class CameraViewModelTest {
             target: PreviewTarget,
             rawEnabled: Boolean,
             aspect: StillAspect,
-            nightExtension: Boolean,
+            extension: CameraExtension?,
         ) {
             opened += cameraId
-            openedWithNightExtension += nightExtension
+            openedWithExtension += extension
             openedWithRaw += rawEnabled
             openedWithAspect += aspect
             state.value = CameraState.Previewing(all.first { it.cameraId == cameraId }, ManualSettings.AUTO, null)

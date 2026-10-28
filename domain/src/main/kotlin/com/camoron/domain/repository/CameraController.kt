@@ -1,6 +1,7 @@
 package com.camoron.domain.repository
 
 import com.camoron.domain.model.CameraCapabilities
+import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.DeviceProfile
 import com.camoron.domain.model.FlashMode
@@ -40,7 +41,7 @@ interface CameraController {
     suspend fun previewSize(
         cameraId: String,
         aspect: StillAspect = StillAspect.FOUR_THREE,
-        nightExtension: Boolean = false,
+        extension: CameraExtension? = null,
     ): PixelSize
 
     /** Brightness histogram of recent preview frames. Only produced while RAW is off. */
@@ -53,8 +54,9 @@ interface CameraController {
      * include a DNG. Without it, a small analysis stream feeds [histogram] instead: Camera2 only
      * guarantees one of the two alongside preview and full-size JPEG.
      *
-     * With [nightExtension] (and a camera that reports the phone maker's Night extension) the
-     * session is a Camera2 Extensions session instead: captures come back already night-processed,
+     * With an [extension] (Night or HDR, on a camera that reports the phone maker's version of it)
+     * the session is a Camera2 Extensions session instead: captures come back already processed by
+     * the phone's own pipeline,
      * and RAW, histogram, manual controls, zoom, flash and focus tracking are unavailable.
      */
     suspend fun open(
@@ -62,7 +64,7 @@ interface CameraController {
         target: PreviewTarget,
         rawEnabled: Boolean = false,
         aspect: StillAspect = StillAspect.FOUR_THREE,
-        nightExtension: Boolean = false,
+        extension: CameraExtension? = null,
     )
 
     /** Flash for still captures. ON/AUTO run an exposure precapture so the flash is metered. */
@@ -93,7 +95,7 @@ interface CameraController {
     suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean = false): CaptureBundle
 
     /**
-     * Night mode without the maker extension: [frames] JPEGs back to back at one locked exposure,
+     * Night and indoor photos without the maker extension: [frames] JPEGs back to back at one locked exposure,
      * without flash, for merging.
      */
     suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage>

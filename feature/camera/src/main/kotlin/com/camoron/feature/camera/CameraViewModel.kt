@@ -103,8 +103,8 @@ data class CameraUiState(
     val lensBase: Float = 1f,
     val macroAvailable: Boolean = false,
     val macro: Boolean = false,
-    /** The open session is the phone maker's Night mode rather than the normal camera. */
-    val nightExtensionActive: Boolean = false,
+    /** The phone maker's own mode (Night or HDR) the open session runs, or null for the normal camera. */
+    val activeExtension: CameraExtension? = null,
     /** A night photo is being taken: the user should hold still. */
     val nightCapturing: Boolean = false,
     /** System.nanoTime() when the current recording started, or null when not recording. */
@@ -149,7 +149,7 @@ data class CameraUiState(
         get() = if (mode.isVideo) {
             selectedCamera?.hasFlash == true
         } else {
-            selectedCamera?.supportsFlashControl == true && !nightExtensionActive
+            selectedCamera?.supportsFlashControl == true && activeExtension == null
         }
 
     /** Night is a Photo mode option; Pro mode is for exposures the user sets by hand. */
@@ -172,16 +172,43 @@ data class CameraUiState(
             NightSetting.OFF -> false
             NightSetting.ON -> true
             // Flash on Auto means the user wants the flash in the dark, so Night on Auto steps aside.
-            NightSetting.AUTO -> cameraSettings.flash != FlashMode.AUTO && (nightExtensionActive || lowLight)
+            NightSetting.AUTO -> cameraSettings.flash != FlashMode.AUTO && (activeExtension == CameraExtension.NIGHT || lowLight)
+        }
+
+    /** Indoors: dimmer than daylight, though not dark enough for Night. */
+    private val indoorLight: Boolean
+        get() {
+            val exposure = (cameraState as? CameraState.Previewing)?.liveExposure ?: return false
+            return exposure.iso * (exposure.exposureTimeNs / 1e9) >= INDOOR_EXPOSURE
         }
 
     /**
-     * Night set to On on a camera whose maker offers its own Night mode: use that. Auto keeps the
-     * normal camera, because deciding when it is dark needs the live exposure only it reports.
+     * Frames to merge for the next photo, or 0 for a single frame: a long burst at night, and a
+     * short one indoors, where a single frame is already noisy and smeared by noise reduction. The
+     * maker's own modes merge frames themselves, and flash or the screen light needs a single frame.
      */
-    val wantsNightExtension: Boolean
-        get() = showNightControl && !flashForced && !macro && cameraSettings.night == NightSetting.ON &&
-            selectedCamera?.extensions?.contains(CameraExtension.NIGHT) == true
+    val burstFrames: Int
+        get() = when {
+            activeExtension != null || mode != CaptureMode.PHOTO -> 0
+            nightActive -> NIGHT_FRAMES
+            indoorLight && cameraSettings.flash == FlashMode.OFF -> INDOOR_FRAMES
+            else -> 0
+        }
+
+    /**
+     * The maker's own mode to open, if any. Night set to On on a camera whose maker offers its own
+     * Night mode uses that; Night on Auto keeps the normal camera, because deciding when it is dark
+     * needs the live exposure only it reports. Otherwise Phone's HDR uses the maker's HDR mode (or
+     * its automatic mode) for normal photos.
+     */
+    val wantedExtension: CameraExtension?
+        get() {
+            if (!showNightControl || flashForced || macro) return null
+            val offered = selectedCamera?.extensions.orEmpty()
+            if (cameraSettings.night == NightSetting.ON) return CameraExtension.NIGHT.takeIf { it in offered }
+            if (!cameraSettings.phoneHdr) return null
+            return listOf(CameraExtension.HDR, CameraExtension.AUTO).firstOrNull { it in offered }
+        }
 }
 
 sealed interface CameraEvent {
@@ -248,7 +275,7 @@ class CameraViewModel @Inject constructor(
         val target: PreviewTarget,
         val raw: Boolean,
         val aspect: com.camoron.domain.model.StillAspect,
-        val nightExtension: Boolean,
+        val extension: CameraExtension?,
         val video: VideoSpec?,
     )
 
@@ -406,13 +433,13 @@ class CameraViewModel @Inject constructor(
                 _uiState.update { it.copy(macro = false) }
                 camera.setMacro(false)
                 profile.bestCamera(selected.lensFacing)?.takeIf { it.cameraId != selected.cameraId }?.let { select(it) }
-                    ?: syncNightSession()
+                    ?: syncExtensionSession()
                 return@launch
             }
             val target = macroCamera(selected) ?: return@launch
             _uiState.update { it.copy(macro = true) }
             camera.setMacro(true)
-            if (target.cameraId != selected.cameraId) select(target) else syncNightSession()
+            if (target.cameraId != selected.cameraId) select(target) else syncExtensionSession()
         }
     }
 
@@ -426,7 +453,7 @@ class CameraViewModel @Inject constructor(
             before.selectedCamera?.let { selected -> viewModelScope.launch { select(selected, zoom = before.zoomRatio) } }
             return
         }
-        if (syncNightSession()) return
+        if (syncExtensionSession()) return
         if (_uiState.value.rawActive != rawBefore) {
             // Leaving or entering Pro with RAW on changes the session's streams.
             openIfReady()
@@ -583,8 +610,7 @@ class CameraViewModel @Inject constructor(
         _uiState.update { it.copy(isCapturing = true) }
         val state = _uiState.value
         val night = state.nightActive
-        // The maker's Night mode merges frames itself; otherwise merge a burst of our own.
-        val nightFrames = if (night && !state.nightExtensionActive) NIGHT_FRAMES else 0
+        val frames = state.burstFrames
         if (night) _uiState.update { it.copy(nightCapturing = true) }
         if (!night && needsScreenFlash(state)) {
             // Light the screen first so auto exposure has time to adapt to it.
@@ -605,14 +631,14 @@ class CameraViewModel @Inject constructor(
             showInstantThumbnail(photo, adjustments.mirror)
         }
         val uri = runCatching {
-            captureAndSave(deviceRotation, state.rawActive, adjustments, nightFrames, onCaptured = ready)
+            captureAndSave(deviceRotation, state.rawActive, adjustments, frames, onCaptured = ready)
         }.onFailure { DiagnosticLog.record(TAG, "Couldn't take the photo", it) }.getOrNull()
         if (uri != null) {
             DiagnosticLog.info(
                 TAG,
                 "Photo saved ${SystemClock.elapsedRealtime() - started} ms after the shutter " +
                     "(${state.cameraSettings.aspectRatio}, preview ${state.previewSize}, screen %.3f, crop ${adjustments.cropAspect}, ".format(displayAspect) +
-                    "enhance ${adjustments.enhance}, zoom ${adjustments.zoom})",
+                    "enhance ${adjustments.enhance}, zoom ${adjustments.zoom}, frames $frames, maker mode ${state.activeExtension ?: "none"})",
             )
         }
         _uiState.update {
@@ -681,7 +707,7 @@ class CameraViewModel @Inject constructor(
             // A different sensor output shape needs a new preview size and session.
             _uiState.value.selectedCamera?.let { select(it) }
         } else if (!initial) {
-            syncNightSession()
+            syncExtensionSession()
         }
     }
 
@@ -701,13 +727,13 @@ class CameraViewModel @Inject constructor(
     private suspend fun select(capabilities: CameraCapabilities, zoom: Float = 1f) {
         cancelTimer()
         val aspect = _uiState.value.cameraSettings.aspectRatio.stillAspect
-        val nightExtension = _uiState.value.copy(selectedCamera = capabilities).wantsNightExtension
+        val extension = _uiState.value.copy(selectedCamera = capabilities).wantedExtension
         val video = _uiState.value.videoSpec
         val size = runCatching {
             if (video != null) {
                 camera.videoPreviewSize(capabilities.cameraId, video)
             } else {
-                camera.previewSize(capabilities.cameraId, aspect, nightExtension)
+                camera.previewSize(capabilities.cameraId, aspect, extension)
             }
         }.getOrNull()
         val main = profile.bestCamera(capabilities.lensFacing) ?: capabilities
@@ -729,7 +755,7 @@ class CameraViewModel @Inject constructor(
                 zoomRatio = zoom,
                 lensBase = base,
                 macroAvailable = sameSide.any { camera -> camera.supportsMacro },
-                nightExtensionActive = nightExtension,
+                activeExtension = extension,
             )
         }
         // If the surface is already the right size the UI will not resize it, so open directly.
@@ -748,7 +774,7 @@ class CameraViewModel @Inject constructor(
             target,
             raw = state.rawActive,
             aspect = state.cameraSettings.aspectRatio.stillAspect,
-            nightExtension = state.nightExtensionActive,
+            extension = state.activeExtension,
             video = state.videoSpec,
         )
         // Several events (surface sized, camera selected, app resumed) can ask for the same session.
@@ -764,7 +790,7 @@ class CameraViewModel @Inject constructor(
                     target,
                     rawEnabled = key.raw,
                     aspect = key.aspect,
-                    nightExtension = key.nightExtension,
+                    extension = key.extension,
                 )
             }
             if (state.mode == CaptureMode.PRO) camera.applySettings(_uiState.value.settings)
@@ -774,18 +800,18 @@ class CameraViewModel @Inject constructor(
     }
 
     /**
-     * Reopens the camera when Night's needs changed (the maker's Night mode turned on or off).
-     * Returns true if it did.
+     * Reopens the camera when the maker's mode it should run changed (its Night or HDR mode turned
+     * on or off). Returns true if it did.
      */
-    private fun syncNightSession(): Boolean {
+    private fun syncExtensionSession(): Boolean {
         val state = _uiState.value
         val selected = state.selectedCamera ?: return false
-        val wanted = state.wantsNightExtension
-        if (wanted == state.nightExtensionActive) return false
+        val wanted = state.wantedExtension
+        if (wanted == state.activeExtension) return false
         viewModelScope.launch {
             val aspect = state.cameraSettings.aspectRatio.stillAspect
             val size = runCatching { camera.previewSize(selected.cameraId, aspect, wanted) }.getOrNull()
-            _uiState.update { it.copy(previewSize = size, nightExtensionActive = wanted) }
+            _uiState.update { it.copy(previewSize = size, activeExtension = wanted) }
             openIfReady()
         }
         return true
@@ -799,7 +825,6 @@ class CameraViewModel @Inject constructor(
         const val DEFAULT_DISPLAY_ASPECT = 9f / 20
         const val SCREEN_FLASH_LEAD_MS = 600L
         const val LOW_LIGHT_ISO = 800
-        const val NIGHT_FRAMES = 8
         const val ENHANCE_EASING = 0.35f
         const val MAX_RETRIES = 3
         const val RETRY_DELAY_MS = 800L
@@ -814,3 +839,9 @@ private const val ZOOM_EPSILON = 0.01f
  * 1/66 s: ordinary indoor light, where a single frame is already visibly grainy.
  */
 private const val LOW_LIGHT_EXPOSURE = 12.0
+
+/** ISO times seconds from which a photo counts as indoors, e.g. ISO 100 at 1/60 s; daylight is far below. */
+private const val INDOOR_EXPOSURE = 1.5
+
+internal const val NIGHT_FRAMES = 8
+internal const val INDOOR_FRAMES = 4

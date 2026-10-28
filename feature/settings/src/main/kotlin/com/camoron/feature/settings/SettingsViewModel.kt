@@ -46,6 +46,7 @@ class SettingsViewModel @Inject constructor(
     fun setAutoFocusTracking(on: Boolean) = update { it.copy(autoFocusTracking = on) }
     fun setGrid(on: Boolean) = update { it.copy(grid = on) }
     fun setLeveller(on: Boolean) = update { it.copy(leveller = on) }
+    fun setPhoneHdr(on: Boolean) = update { it.copy(phoneHdr = on) }
 
     fun reset() {
         viewModelScope.launch { repository.reset() }
