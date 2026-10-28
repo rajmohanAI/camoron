@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Shader
 import com.camoron.domain.model.FaceScene
+import com.camoron.domain.model.GlassesStyle
 import com.camoron.domain.model.HairColour
 import com.camoron.domain.model.HairMask
 import com.camoron.domain.model.HairTint
@@ -16,14 +17,16 @@ import com.camoron.domain.model.Inpaint
 import com.camoron.domain.model.MakeupArea
 import com.camoron.domain.model.MakeupKind
 import com.camoron.domain.model.MakeupTint
+import com.camoron.domain.model.PhotoGlasses
+import com.camoron.domain.model.PhotoPixels
 import com.camoron.domain.model.Shape2D
 import com.camoron.domain.model.TryOn
 import com.camoron.domain.model.TryOnDrawing
 
 /**
  * Puts try-ons onto an upright photo: paints out hair a new hairstyle replaces, recolours the
- * rest of the hair, then draws what [TryOnDrawing] lays out. Used for both the editor's preview
- * and the saved photo.
+ * rest of the hair, then draws what [TryOnDrawing] lays out and renders glasses with
+ * [PhotoGlasses]. Used for both the editor's preview and the saved photo.
  */
 object TryOnPainter {
 
@@ -60,12 +63,22 @@ object TryOnPainter {
         val hair = scene.hair
         if (tryOn.hair != HairColour.NONE && hair != null && tryOn.hairStrength > 0f) recolourHair(bitmap, tryOn, hair, cleared.removed)
         for (area in TryOnDrawing.makeup(tryOn, scene, bitmap.width, bitmap.height)) applyMakeup(bitmap, area)
-        // A new hairstyle with no colour chosen takes the person's own hair colour.
-        val shapes = TryOnDrawing.shapes(tryOn, scene, bitmap.width, bitmap.height, cleared.ownHair)
+        // A new hairstyle with no colour chosen takes the person's own hair colour. Glasses are
+        // rendered into the pixels afterwards, on top, rather than drawn as shapes.
+        val shapes = TryOnDrawing.shapes(tryOn.copy(glasses = GlassesStyle.NONE), scene, bitmap.width, bitmap.height, cleared.ownHair)
         if (shapes.isNotEmpty()) {
             val canvas = Canvas(bitmap)
             shapes.forEach { draw(canvas, it) }
         }
+        if (tryOn.glasses != GlassesStyle.NONE) PhotoGlasses.render(BitmapPixels(bitmap), tryOn, scene)
+    }
+
+    /** [bitmap]'s pixels for the domain's pixel renderers. */
+    private class BitmapPixels(private val bitmap: Bitmap) : PhotoPixels {
+        override val width get() = bitmap.width
+        override val height get() = bitmap.height
+        override fun read(x0: Int, y0: Int, w: Int, h: Int) = IntArray(w * h).also { bitmap.getPixels(it, 0, w, x0, y0, w, h) }
+        override fun write(pixels: IntArray, x0: Int, y0: Int, w: Int, h: Int) = bitmap.setPixels(pixels, 0, w, x0, y0, w, h)
     }
 
     /** The average colour of the surest hair pixels, or null if there are none. */

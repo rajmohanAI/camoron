@@ -879,7 +879,7 @@ object TryOnDrawing {
         }
     }
 
-    private class Face(val shape: FaceShape, val width: Float, val height: Float) {
+    internal class Face(val shape: FaceShape, val width: Float, val height: Float) {
         fun pt(i: Int) = Pt(shape.x(i) * width, shape.y(i) * height)
         fun mid(a: Int, b: Int) = pt(a).lerp(pt(b), 0.5f)
         fun dist(a: Int, b: Int): Float {
@@ -896,7 +896,7 @@ object TryOnDrawing {
     }
 
     /** Eye units onto the photo: pupils at (∓1, 0), y down the face. */
-    private class EyeFrame(left: Pt, right: Pt) {
+    internal class EyeFrame(left: Pt, right: Pt) {
         private val origin = left.lerp(right, 0.5f)
         private val u = (right - left) * 0.5f
         private val v = Pt(-u.y, u.x)
@@ -1015,9 +1015,9 @@ object TryOnDrawing {
     private const val IRIS_POINTS = 478
     private const val IRIS_GROW = 1.04f
     private const val LENS_POINTS = 64
-    private const val LENS_X = 1f
-    private const val LENS_SCALE = 1.08f
-    private const val LENS_Y = 0.08f
+    internal const val LENS_X = 1f
+    internal const val LENS_SCALE = 1.08f
+    internal const val LENS_Y = 0.08f
     private const val NOSE_TIP = 1
     private const val MAX_HAIRS = 9000
     private const val HAIR_SEED = 20261026
