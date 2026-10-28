@@ -1,6 +1,7 @@
 package com.camoron.domain
 
 import com.camoron.domain.model.CameraCapabilities
+import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.CaptureBundle
 import com.camoron.domain.model.CapturedImage
@@ -127,14 +128,14 @@ class CaptureAndSavePhotoTest {
         override val histogram = MutableStateFlow<Histogram?>(null)
         override suspend fun cameras(): List<CameraCapabilities> = listOf(fullCamera())
         override suspend fun deviceProfile(): DeviceProfile = DeviceProfile(cameras())
-        override suspend fun previewSize(cameraId: String, aspect: StillAspect, nightExtension: Boolean) =
+        override suspend fun previewSize(cameraId: String, aspect: StillAspect, extension: CameraExtension?) =
             PixelSize(1440, 1080)
         override suspend fun open(
             cameraId: String,
             target: PreviewTarget,
             rawEnabled: Boolean,
             aspect: StillAspect,
-            nightExtension: Boolean,
+            extension: CameraExtension?,
         ) = Unit
         override suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int) = List(frames) { jpeg }
         override suspend fun setFlashMode(mode: FlashMode) = Unit

@@ -79,6 +79,7 @@ fun SettingsScreen(
                 s.autoFocusTracking,
                 viewModel::setAutoFocusTracking,
             )
+            SwitchRow(R.string.phone_hdr, R.string.phone_hdr_desc, s.phoneHdr, viewModel::setPhoneHdr)
 
             SectionHeader(R.string.capture_assistant)
             SwitchRow(R.string.grid, R.string.grid_desc, s.grid, viewModel::setGrid)

@@ -33,6 +33,7 @@ internal data class StoredCameraSettings(
     val night: String? = null,
     val look: String? = null,
     val enhance: Boolean? = null,
+    val phoneHdr: Boolean? = null,
     val videoResolution: String? = null,
     val timelapseSpeed: String? = null,
     /** Format version; missing in files written before Night defaulted to Auto. */
@@ -56,6 +57,7 @@ internal data class StoredCameraSettings(
                 ?: defaults.night,
             look = enumOrNull<ShotLook>(look) ?: defaults.look,
             enhance = enhance ?: defaults.enhance,
+            phoneHdr = phoneHdr ?: defaults.phoneHdr,
             videoResolution = enumOrNull<VideoResolution>(videoResolution) ?: defaults.videoResolution,
             timelapseSpeed = enumOrNull<TimelapseSpeed>(timelapseSpeed) ?: defaults.timelapseSpeed,
         )
@@ -74,6 +76,7 @@ internal data class StoredCameraSettings(
             night = settings.night.name,
             look = settings.look.name,
             enhance = settings.enhance,
+            phoneHdr = settings.phoneHdr,
             videoResolution = settings.videoResolution.name,
             timelapseSpeed = settings.timelapseSpeed.name,
             version = CURRENT_VERSION,

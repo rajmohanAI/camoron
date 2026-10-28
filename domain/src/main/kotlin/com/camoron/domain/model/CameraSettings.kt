@@ -34,6 +34,11 @@ data class CameraSettings(
     val look: ShotLook = ShotLook.NORMAL,
     /** Scene-adaptive tone, colour and detail, live on the preview and on the photo. */
     val enhance: Boolean = true,
+    /**
+     * Normal photos through the phone maker's own HDR mode, where the phone offers it to other
+     * apps. Off by default while it is tried: that mode has no zoom, focus tap or Night Auto.
+     */
+    val phoneHdr: Boolean = false,
     /** Video and Cinematic recording size; 4K only where the camera and encoder support it. */
     val videoResolution: VideoResolution = VideoResolution.FHD,
     val timelapseSpeed: TimelapseSpeed = TimelapseSpeed.X15,

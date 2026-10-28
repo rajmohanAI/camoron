@@ -13,6 +13,8 @@
     <string name="grid">Grid</string>
     <string name="grid_desc">Show a 3×3 grid to help with composition.</string>
     <string name="leveller">Leveller</string>
+    <string name="phone_hdr">Phone\'s HDR (trial)</string>
+    <string name="phone_hdr_desc">Take normal photos with your phone\'s own HDR processing, where the phone shares it with other apps. Zoom, tap to focus and Night Auto are off while it is on.</string>
     <string name="leveller_desc">Show a level line that turns yellow when the phone is straight.</string>
     <string name="reset_settings">Reset settings</string>
     <string name="reset_settings_desc">Restore all camera settings to their defaults.</string>
