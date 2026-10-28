@@ -39,6 +39,8 @@ data class CameraSettings(
      * apps. Off by default while it is tried: that mode has no zoom, focus tap or Night Auto.
      */
     val phoneHdr: Boolean = false,
+    /** Tag photos with where they were taken; off until the user turns it on and allows location. */
+    val geotag: Boolean = false,
     /** Video and Cinematic recording size; 4K only where the camera and encoder support it. */
     val videoResolution: VideoResolution = VideoResolution.FHD,
     val timelapseSpeed: TimelapseSpeed = TimelapseSpeed.X15,
@@ -58,9 +60,11 @@ data class PhotoAdjustments(
     val zoom: Float = 1f,
     /** Portrait: keep the people sharp and blur the background behind them. */
     val portrait: Boolean = false,
+    /** Where the photo was taken, written into its EXIF; null to leave it out. */
+    val location: GeoPoint? = null,
 ) {
     val isIdentity: Boolean
-        get() = cropAspect == null && !mirror && look == ShotLook.NORMAL && !enhance && !portrait
+        get() = cropAspect == null && !mirror && look == ShotLook.NORMAL && !enhance && !portrait && location == null
 
     companion object {
         val NONE = PhotoAdjustments()

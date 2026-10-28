@@ -33,6 +33,7 @@ import com.camoron.domain.model.VideoSpec
 import com.camoron.domain.model.WhiteBalance
 import com.camoron.domain.model.ZoomPreset
 import com.camoron.domain.repository.CameraController
+import com.camoron.domain.repository.LocationProvider
 import com.camoron.domain.repository.MediaRepository
 import com.camoron.domain.repository.PendingVideo
 import com.camoron.domain.repository.PreviewTarget
@@ -229,6 +230,7 @@ class CameraViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val media: MediaRepository,
     private val planZoomPresets: PlanZoomPresets,
+    private val location: LocationProvider,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CameraUiState())
@@ -344,6 +346,16 @@ class CameraViewModel @Inject constructor(
         if (this.foreground == foreground) return
         this.foreground = foreground
         if (foreground) openIfReady() else closeCamera()
+        syncLocation()
+    }
+
+    /** Follows the location only while the camera is on screen and Save location is on. */
+    private fun syncLocation() {
+        if (foreground && _uiState.value.cameraSettings.geotag) location.start() else location.stop()
+    }
+
+    override fun onCleared() {
+        location.stop()
     }
 
     /** The user tapped the error message: try the camera again. */
@@ -692,6 +704,7 @@ class CameraViewModel @Inject constructor(
         enhance = state.cameraSettings.enhance,
         zoom = state.zoomRatio,
         portrait = state.mode == CaptureMode.PORTRAIT,
+        location = if (state.cameraSettings.geotag) location.current() else null,
     )
 
     private fun updateCameraSettings(transform: (CameraSettings) -> CameraSettings) {
@@ -702,6 +715,7 @@ class CameraViewModel @Inject constructor(
         val previous = _uiState.value.cameraSettings
         if (!initial && next == previous) return
         _uiState.update { it.copy(cameraSettings = next) }
+        if (initial || next.geotag != previous.geotag) syncLocation()
         if (initial || next.flash != previous.flash) camera.setFlashMode(next.flash)
         val videoChanged = next.videoResolution != previous.videoResolution || next.timelapseSpeed != previous.timelapseSpeed
         if (!initial && _uiState.value.mode.isVideo && videoChanged) {
