@@ -1,5 +1,6 @@
 package com.camoron.data.media
 
+import com.camoron.domain.repository.LocationProvider
 import com.camoron.domain.repository.MediaRepository
 import com.camoron.domain.repository.PhotoLibrary
 import dagger.Binds
@@ -18,4 +19,8 @@ internal abstract class MediaModule {
     @Binds
     @Singleton
     abstract fun bindPhotoLibrary(impl: MediaStoreRepository): PhotoLibrary
+
+    @Binds
+    @Singleton
+    abstract fun bindLocationProvider(impl: AndroidLocationProvider): LocationProvider
 }

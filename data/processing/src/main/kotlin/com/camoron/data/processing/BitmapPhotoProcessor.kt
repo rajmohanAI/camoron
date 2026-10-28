@@ -11,6 +11,7 @@ import androidx.exifinterface.media.ExifInterface
 import com.camoron.core.common.DiagnosticLog
 import com.camoron.core.common.timed
 import com.camoron.domain.model.CapturedImage
+import com.camoron.domain.model.GeoPoint
 import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.PhotoAdjustments
@@ -56,7 +57,9 @@ class BitmapPhotoProcessor @Inject constructor(
             val enhance = adjustments.enhance
 
             // A crop request for a shape the sensor already delivers needs no work at all.
-            if (crop == null && look == null && !enhance && !adjustments.mirror) return@withContext image
+            if (crop == null && look == null && !enhance && !adjustments.mirror && adjustments.location == null) {
+                return@withContext image
+            }
 
             var bytes = image.bytes
             var size = bounds
@@ -83,7 +86,7 @@ class BitmapPhotoProcessor @Inject constructor(
                 }
             }
             val newOrientation = if (adjustments.mirror) PhotoMath.mirroredOrientation(orientation) else orientation
-            bytes = writeExif(bytes, original.takeIf { bytes !== image.bytes }, newOrientation, size)
+            bytes = writeJpegExif(context, bytes, original.takeIf { bytes !== image.bytes }, newOrientation, size, adjustments.location)
             image.withBytes(bytes, size)
         }
     }
@@ -204,7 +207,14 @@ internal fun decodeBounds(bytes: ByteArray): PixelSize {
  * ExifInterface can only save to a file, so round-trip through the app's cache. When [copyFrom]
  * is given (the JPEG was re-encoded and lost its EXIF), the camera's tags are copied over first.
  */
-internal fun writeJpegExif(context: Context, bytes: ByteArray, copyFrom: ExifInterface?, orientation: Int, size: PixelSize): ByteArray {
+internal fun writeJpegExif(
+    context: Context,
+    bytes: ByteArray,
+    copyFrom: ExifInterface?,
+    orientation: Int,
+    size: PixelSize,
+    location: GeoPoint? = null,
+): ByteArray {
     val file = File.createTempFile("adjust", ".jpg", context.cacheDir)
     try {
         file.writeBytes(bytes)
@@ -215,6 +225,10 @@ internal fun writeJpegExif(context: Context, bytes: ByteArray, copyFrom: ExifInt
                 setAttribute(ExifInterface.TAG_PIXEL_Y_DIMENSION, size.height.toString())
             }
             setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
+            location?.let { point ->
+                setLatLong(point.latitude, point.longitude)
+                point.altitude?.let(::setAltitude)
+            }
             saveAttributes()
         }
         return file.readBytes()
@@ -249,4 +263,11 @@ private val COPIED_TAGS = listOf(
     ExifInterface.TAG_FOCAL_LENGTH,
     ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
     ExifInterface.TAG_COLOR_SPACE,
+    // Where it was taken, so editing a geotagged photo keeps it.
+    ExifInterface.TAG_GPS_LATITUDE,
+    ExifInterface.TAG_GPS_LATITUDE_REF,
+    ExifInterface.TAG_GPS_LONGITUDE,
+    ExifInterface.TAG_GPS_LONGITUDE_REF,
+    ExifInterface.TAG_GPS_ALTITUDE,
+    ExifInterface.TAG_GPS_ALTITUDE_REF,
 )

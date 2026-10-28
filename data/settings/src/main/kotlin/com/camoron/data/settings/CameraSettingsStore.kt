@@ -34,6 +34,7 @@ internal data class StoredCameraSettings(
     val look: String? = null,
     val enhance: Boolean? = null,
     val phoneHdr: Boolean? = null,
+    val geotag: Boolean? = null,
     val videoResolution: String? = null,
     val timelapseSpeed: String? = null,
     /** Format version; missing in files written before Night defaulted to Auto. */
@@ -58,6 +59,7 @@ internal data class StoredCameraSettings(
             look = enumOrNull<ShotLook>(look) ?: defaults.look,
             enhance = enhance ?: defaults.enhance,
             phoneHdr = phoneHdr ?: defaults.phoneHdr,
+            geotag = geotag ?: defaults.geotag,
             videoResolution = enumOrNull<VideoResolution>(videoResolution) ?: defaults.videoResolution,
             timelapseSpeed = enumOrNull<TimelapseSpeed>(timelapseSpeed) ?: defaults.timelapseSpeed,
         )
@@ -77,6 +79,7 @@ internal data class StoredCameraSettings(
             look = settings.look.name,
             enhance = settings.enhance,
             phoneHdr = settings.phoneHdr,
+            geotag = settings.geotag,
             videoResolution = settings.videoResolution.name,
             timelapseSpeed = settings.timelapseSpeed.name,
             version = CURRENT_VERSION,
