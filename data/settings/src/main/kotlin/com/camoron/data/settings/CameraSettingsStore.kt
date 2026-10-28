@@ -35,6 +35,8 @@ internal data class StoredCameraSettings(
     val enhance: Boolean? = null,
     val videoResolution: String? = null,
     val timelapseSpeed: String? = null,
+    /** Format version; missing in files written before Night defaulted to Auto. */
+    val version: Int? = null,
 ) {
     fun toDomain(): CameraSettings {
         val defaults = CameraSettings()
@@ -47,7 +49,11 @@ internal data class StoredCameraSettings(
             autoFocusTracking = autoFocusTracking ?: defaults.autoFocusTracking,
             grid = grid ?: defaults.grid,
             leveller = leveller ?: defaults.leveller,
-            night = enumOrNull<NightSetting>(night) ?: defaults.night,
+            // Night used to default to Off, so older files hold Off whether or not anyone chose it.
+            // Move them to the new Auto default once; the next save records the current version.
+            night = enumOrNull<NightSetting>(night)
+                ?.takeUnless { it == NightSetting.OFF && (version ?: 0) < NIGHT_AUTO_VERSION }
+                ?: defaults.night,
             look = enumOrNull<ShotLook>(look) ?: defaults.look,
             enhance = enhance ?: defaults.enhance,
             videoResolution = enumOrNull<VideoResolution>(videoResolution) ?: defaults.videoResolution,
@@ -70,7 +76,12 @@ internal data class StoredCameraSettings(
             enhance = settings.enhance,
             videoResolution = settings.videoResolution.name,
             timelapseSpeed = settings.timelapseSpeed.name,
+            version = CURRENT_VERSION,
         )
+
+        /** The version in which Night's default became Auto. */
+        private const val NIGHT_AUTO_VERSION = 2
+        const val CURRENT_VERSION = NIGHT_AUTO_VERSION
     }
 }
 

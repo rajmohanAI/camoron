@@ -371,6 +371,29 @@ class CameraViewModelTest {
     }
 
     @Test
+    fun `night is on auto by default and merges a burst in ordinary indoor light`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        controller.state.update {
+            (it as CameraState.Previewing).copy(liveExposure = LiveExposure(iso = 640, exposureTimeNs = 33_000_000L))
+        }
+        assertThat(vm.uiState.value.nightActive).isTrue()
+        vm.onShutter()
+        assertThat(controller.bursts).containsExactly(8)
+    }
+
+    @Test
+    fun `flash on auto keeps night auto out of the way`() = runTest {
+        settings.state.update { it.copy(flash = FlashMode.AUTO) }
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        controller.state.update {
+            (it as CameraState.Previewing).copy(liveExposure = LiveExposure(iso = 3200, exposureTimeNs = 66_000_000L))
+        }
+        assertThat(vm.uiState.value.nightActive).isFalse()
+    }
+
+    @Test
     fun `night is off in pro mode and when the flash is forced on`() = runTest {
         controller.all = listOf(back.copy(hasFlash = true), front)
         settings.state.update { it.copy(night = NightSetting.ON, flash = FlashMode.ON) }

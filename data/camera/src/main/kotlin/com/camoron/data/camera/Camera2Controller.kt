@@ -773,7 +773,8 @@ class Camera2Controller @Inject constructor(
                 TAG,
                 "Opened camera $cameraId in ${SystemClock.elapsedRealtime() - started} ms: asked $aspect, " +
                     "photos ${jpegSize.width}x${jpegSize.height}, " +
-                    "analysis ${analysisSize?.let { "${it.width}x${it.height}" }}",
+                    "analysis ${analysisSize?.let { "${it.width}x${it.height}" }}, " +
+                    "maker modes ${caps.extensions.ifEmpty { "none" }}",
             )
         } catch (e: Exception) {
             DiagnosticLog.record(TAG, "Failed to open camera $cameraId", e)
