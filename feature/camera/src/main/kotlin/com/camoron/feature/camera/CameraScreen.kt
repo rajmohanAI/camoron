@@ -181,6 +181,16 @@ fun CameraScreen(
             val width by animateDpAsState(frame.width.dp, tween(FRAME_MS), label = "frameWidth")
             val height by animateDpAsState(frame.height.dp, tween(FRAME_MS), label = "frameHeight")
             val previewArea = Modifier.offset(y = top).size(width, height)
+            // A soft blur while the frame changes shape, as the phone's own camera does, so the
+            // picture eases into its new crop instead of jumping.
+            val shapeBlur = remember { Animatable(0f) }
+            var shownAspect by remember { mutableStateOf(aspect) }
+            LaunchedEffect(aspect) {
+                if (aspect == shownAspect) return@LaunchedEffect
+                shownAspect = aspect
+                shapeBlur.animateTo(1f, tween(FRAME_MS / 2))
+                shapeBlur.animateTo(0f, tween(FRAME_MS))
+            }
             PreviewArea(
                 state = state,
                 enhance = { enhance.value },
@@ -189,6 +199,7 @@ fun CameraScreen(
                 onSurfaceDestroyed = viewModel::onSurfaceDestroyed,
                 onTap = viewModel::focusAt,
                 onPinch = viewModel::onPinch,
+                shapeBlur = shapeBlur.value,
                 modifier = Modifier.align(Alignment.TopCenter).then(previewArea),
             )
             CaptureBlink(
@@ -274,6 +285,7 @@ private fun PreviewArea(
     onSurfaceDestroyed: () -> Unit,
     onTap: (Float, Float) -> Unit,
     onPinch: (Float) -> Unit,
+    shapeBlur: Float = 0f,
     modifier: Modifier = Modifier,
 ) {
     BoxWithConstraints(modifier.clipToBounds(), contentAlignment = Alignment.Center) {
@@ -306,7 +318,7 @@ private fun PreviewArea(
                     live = state.cameraState is CameraState.Previewing,
                     onSurfaceReady = onSurfaceReady,
                     onSurfaceDestroyed = onSurfaceDestroyed,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().then(if (shapeBlur > 0f) Modifier.blur(SHAPE_BLUR * shapeBlur) else Modifier),
                 )
                 FocusIndicator(focusTarget, Modifier.fillMaxSize())
             }
@@ -810,5 +822,6 @@ internal val TOP_BAR_HEIGHT = 56.dp
 private const val BUSY_TURN_MS = 900
 private const val BLINK_MS = 280
 private const val FRAME_MS = 280
+private val SHAPE_BLUR = 16.dp
 private const val BLINK_ALPHA = 0.6f
 private val MODE_ROW_HEIGHT = 36.dp
