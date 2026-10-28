@@ -317,6 +317,35 @@ class CameraViewModelTest {
     }
 
     @Test
+    fun `macro zooms to a close-focusing lens hidden behind the main camera`() = runTest {
+        // Like Motorola: one back camera whose ultra-wide focuses at 3 cm but isn't listed on its own.
+        controller.all = listOf(back.copy(zoomRatioRange = 0.5f..10f, macroLensZoom = 0.5f), front)
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(vm.uiState.value.macroAvailable).isTrue()
+
+        vm.toggleMacro()
+        assertThat(vm.uiState.value.macro).isTrue()
+        assertThat(controller.zooms.last()).isEqualTo(0.5f)
+        assertThat(controller.opened).containsExactly("0")
+
+        vm.toggleMacro()
+        assertThat(vm.uiState.value.macro).isFalse()
+        assertThat(controller.zooms.last()).isEqualTo(1f)
+    }
+
+    @Test
+    fun `macro is for the back cameras only`() = runTest {
+        controller.all = listOf(back, front.copy(minFocusDistanceDiopters = 33f, supportsMacroAf = true))
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.switchCamera()
+        assertThat(vm.uiState.value.macroAvailable).isFalse()
+        vm.toggleMacro()
+        assertThat(vm.uiState.value.macro).isFalse()
+    }
+
+    @Test
     fun `tap tracks the subject only when the setting is on`() = runTest {
         val vm = viewModel()
         vm.onSurfaceReady(Target(1440, 1080))

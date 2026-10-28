@@ -123,15 +123,35 @@ class Camera2Controller @Inject constructor(
     private fun withOpticalZoom(caps: CameraCapabilities, cameraId: String): CameraCapabilities {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return caps
         val main = caps.equivalentFocalLengthMm ?: return caps
-        val ratios = characteristicsOf(cameraId).physicalCameraIds.mapNotNull { id ->
+        // Each lens behind this camera: its zoom relative to the main lens, and how close it focuses.
+        val lenses = characteristicsOf(cameraId).physicalCameraIds.mapNotNull { id ->
             runCatching {
                 val physical = characteristicsOf(id)
                 val focal = physical.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.minOrNull()
                 val size = physical.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
-                if (focal == null || size == null) null else CameraMath.equivalentFocalLength(focal, kotlin.math.hypot(size.width, size.height)) / main
+                val closest = physical.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+                if (focal == null || size == null) {
+                    null
+                } else {
+                    CameraMath.equivalentFocalLength(focal, kotlin.math.hypot(size.width, size.height)) / main to closest
+                }
             }.getOrNull()
         }
-        return caps.copy(opticalZoomRatios = CameraMath.opticalZoomSteps(ratios))
+        return caps.copy(
+            opticalZoomRatios = CameraMath.opticalZoomSteps(lenses.map { it.first }),
+            macroLensZoom = macroLensZoom(caps, lenses),
+        )
+    }
+
+    /**
+     * The zoom that brings up a hidden close-focusing lens, when the camera itself doesn't focus
+     * close: the closest-focusing lens behind it, within the zoom the camera accepts.
+     */
+    private fun macroLensZoom(caps: CameraCapabilities, lenses: List<Pair<Float, Float>>): Float? {
+        if (caps.supportsMacro) return null
+        val range = caps.zoomRatioRange ?: return null
+        val (ratio, _) = lenses.filter { it.second >= CameraCapabilities.MACRO_MIN_DIOPTERS }.maxByOrNull { it.second } ?: return null
+        return ratio.coerceIn(range.start, range.endInclusive)
     }
     private val thread = HandlerThread("CamoronCamera").apply { start() }
     private val handler = Handler(thread.looper)
@@ -944,7 +964,7 @@ class Camera2Controller @Inject constructor(
         }
     }
 
-    private fun macroActive(camera: ActiveCamera): Boolean = macroEnabled && camera.capabilities.supportsMacro
+    private fun macroActive(camera: ActiveCamera): Boolean = macroEnabled && camera.capabilities.offersMacro
 
     private fun clearFocus(camera: ActiveCamera) {
         camera.trackingWanted = false
@@ -1392,7 +1412,7 @@ class Camera2Controller @Inject constructor(
                 builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_MACRO)
                 if (region != null) builder.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
             }
-            macroActive(camera) -> {
+            macroActive(camera) && caps.supportsMacro -> {
                 builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
                 builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, caps.minFocusDistanceDiopters)
             }

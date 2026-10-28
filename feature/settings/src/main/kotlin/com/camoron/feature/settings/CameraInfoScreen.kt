@@ -147,7 +147,8 @@ internal fun describeCamera(c: CameraCapabilities): String = buildString {
     } else {
         appendLine("Focus: fixed")
     }
-    appendLine("Macro: ${yesNo(c.supportsMacro)}")
+    val macroLens = c.macroLensZoom?.let { String.format(Locale.US, " (close-focusing lens at %.1f×)", it) }.orEmpty()
+    appendLine("Macro: ${yesNo(c.offersMacro)}$macroLens")
     appendLine("Flash: ${yesNo(c.hasFlash)}")
     appendLine(
         "Photo shapes: " + c.stillAspects.joinToString {
