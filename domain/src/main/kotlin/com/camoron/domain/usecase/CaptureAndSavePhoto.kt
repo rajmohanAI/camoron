@@ -55,6 +55,24 @@ class CaptureAndSavePhoto @Inject constructor(
         }
     }
 
+    /** One panorama frame, kept in memory until [savePanorama]. */
+    suspend fun captureFrame(deviceRotationDegrees: Int): CapturedImage =
+        retryOnce { camera.capture(deviceRotationDegrees, includeRaw = false) }.primary
+
+    /**
+     * Stitches panorama [frames] taken at [yaws] (radians) and saves the result with [adjustments];
+     * returns its gallery URI, or null when the frames couldn't be stitched.
+     */
+    suspend fun savePanorama(
+        frames: List<CapturedImage>,
+        yaws: List<Float>,
+        focalLength35mm: Float?,
+        adjustments: PhotoAdjustments,
+    ): String? = saving.withLock {
+        val stitched = processor.stitchPanorama(frames, yaws, focalLength35mm) ?: return@withLock null
+        media.save(adjust(stitched, adjustments))
+    }
+
     private suspend fun <T> retryOnce(block: suspend () -> T): T = try {
         block()
     } catch (e: CancellationException) {

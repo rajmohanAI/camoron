@@ -89,6 +89,12 @@ interface CameraController {
     suspend fun setMacro(enabled: Boolean)
 
     /**
+     * Holds exposure and white balance where they are ([locked]) so a series of photos, such as a
+     * panorama's, all match; false hands them back to the camera.
+     */
+    suspend fun lockExposure(locked: Boolean)
+
+    /**
      * [deviceRotationDegrees] is the physical rotation of the phone, used to orient the output.
      * [includeRaw] adds a DNG when the session was opened with RAW enabled.
      */

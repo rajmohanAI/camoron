@@ -535,6 +535,7 @@ private fun modeLabel(mode: CaptureMode): Int = when (mode) {
     CaptureMode.VIDEO -> R.string.mode_video
     CaptureMode.PHOTO -> R.string.mode_photo
     CaptureMode.PRO -> R.string.mode_pro
+    CaptureMode.PANORAMA -> R.string.mode_panorama
 }
 
 /** Red dot and running time while recording; timelapse also shows its speed, Cinematic its frame rate. */

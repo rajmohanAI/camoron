@@ -54,6 +54,9 @@ class CaptureAndSavePhotoTest {
             merged += frames.size
             return frames.first().withBytes(byteArrayOf(7))
         }
+
+        override suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?) =
+            frames.first().withBytes(byteArrayOf(5))
     }
     private val merged = mutableListOf<Int>()
 
@@ -116,6 +119,16 @@ class CaptureAndSavePhotoTest {
     }
 
     @Test
+    fun `a panorama is stitched, adjusted and saved`() = runTest {
+        val useCase = useCase(includeDng = true)
+        val frames = listOf(useCase.captureFrame(0), useCase.captureFrame(0))
+        val uri = useCase.savePanorama(frames, listOf(0f, 0.4f), 24f, PhotoAdjustments(enhance = true))
+        assertThat(uri).isEqualTo("content://1")
+        assertThat(processed).containsExactly(PhotoAdjustments(enhance = true))
+        assertThat(saved.single().bytes.single()).isEqualTo(9.toByte())
+    }
+
+    @Test
     fun `night shows its first frame while merging`() = runTest {
         var shown: CapturedImage? = null
         useCase(includeDng = false)(0, nightFrames = 8, onCaptured = { shown = it })
@@ -144,6 +157,7 @@ class CaptureAndSavePhotoTest {
         override val focusTarget = MutableStateFlow<FocusTarget?>(null)
         override suspend fun setZoom(ratio: Float) = Unit
         override suspend fun setMacro(enabled: Boolean) = Unit
+        override suspend fun lockExposure(locked: Boolean) = Unit
         override suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean): CaptureBundle {
             if (failuresLeft > 0) {
                 failuresLeft--
