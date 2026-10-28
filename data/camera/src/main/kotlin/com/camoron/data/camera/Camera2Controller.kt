@@ -1107,9 +1107,14 @@ class Camera2Controller @Inject constructor(
         // Each frame (or an empty marker for a failed one) lands here as soon as it is ready, which
         // frees the reader's buffer for the next frame of the burst.
         val results = Channel<ByteArray>(Channel.UNLIMITED)
+        val started = SystemClock.elapsedRealtime()
+        // When each frame arrived and what the first one was exposed with, to see where a slow burst spends its time.
+        val arrivals = java.util.concurrent.CopyOnWriteArrayList<Long>()
+        var exposure: String? = null
         reader.setOnImageAvailableListener({ r ->
             r.acquireNextImage()?.use { image ->
                 val buffer = image.planes[0].buffer
+                arrivals += SystemClock.elapsedRealtime() - started
                 results.trySend(ByteArray(buffer.remaining()).also(buffer::get))
             }
         }, handler)
@@ -1130,6 +1135,20 @@ class Camera2Controller @Inject constructor(
                 }.build()
             }
             camera.session.captureBurst(requests, object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    result: TotalCaptureResult,
+                ) {
+                    if (exposure != null) return
+                    val time = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { it / 1_000_000.0 }
+                    exposure = "exposure %.1f ms, ISO %s, noise reduction %s".format(
+                        time ?: 0.0,
+                        result.get(CaptureResult.SENSOR_SENSITIVITY),
+                        result.get(CaptureResult.NOISE_REDUCTION_MODE),
+                    )
+                }
+
                 override fun onCaptureFailed(
                     session: CameraCaptureSession,
                     request: CaptureRequest,
@@ -1148,6 +1167,7 @@ class Camera2Controller @Inject constructor(
                     if (bytes.isNotEmpty()) collected += CapturedImage(bytes, ImageFormat.JPEG, size, timestamp)
                 }
             }
+            DiagnosticLog.info(TAG, "Burst of $frames frames ${size.width}x${size.height}: in at $arrivals ms (${exposure ?: "no result"})")
             if (collected.isEmpty()) error("The burst produced no frames")
             collected
         } finally {
