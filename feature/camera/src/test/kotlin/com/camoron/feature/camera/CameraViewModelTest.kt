@@ -129,6 +129,21 @@ class CameraViewModelTest {
     }
 
     @Test
+    fun `portrait mode asks for the background blur and keeps the camera automatic`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.onShutter()
+        assertThat(processor.applied.last().portrait).isFalse()
+
+        vm.setMode(CaptureMode.PORTRAIT)
+        assertThat(controller.applied.last()).isEqualTo(ManualSettings.AUTO)
+        assertThat(vm.uiState.value.showNightControl).isFalse()
+        vm.onShutter()
+        assertThat(processor.applied.last().portrait).isTrue()
+        assertThat(controller.bursts).isEmpty()
+    }
+
+    @Test
     fun `slo-mo opens a silent slow-motion video session without the 4k choice`() = runTest {
         controller.all = listOf(back.copy(videoResolutions = setOf(VideoResolution.FHD, VideoResolution.UHD)), front)
         val vm = viewModel()
