@@ -38,6 +38,7 @@ import javax.inject.Inject
 class BitmapPhotoProcessor @Inject constructor(
     @ApplicationContext private val context: Context,
     private val zoomEnhancer: ZoomEnhancer,
+    private val portraitBlur: PortraitBlur,
 ) : PhotoProcessor {
 
     private val processing: CoroutineDispatcher get() = pool
@@ -56,19 +57,21 @@ class BitmapPhotoProcessor @Inject constructor(
             val look = LookMatrix.forLook(adjustments.look).takeUnless(LookMatrix::isIdentity)
 
             val enhance = adjustments.enhance
+            // Portrait needs the pixels the right way up to find the people.
+            val portrait = original.rotationDegrees.takeIf { adjustments.portrait }
 
             // A crop request for a shape the sensor already delivers needs no work at all.
-            if (crop == null && look == null && !enhance && !adjustments.mirror && adjustments.location == null) {
+            if (crop == null && look == null && !enhance && !adjustments.mirror && portrait == null && adjustments.location == null) {
                 return@withContext image
             }
 
             var bytes = image.bytes
             var size = bounds
-            val reencode = crop != null || look != null || enhance
+            val reencode = crop != null || look != null || enhance || portrait != null
             if (reencode) {
                 val transformed = try {
                     DiagnosticLog.timed(TAG, "Adjusting ${bounds.width}x${bounds.height}") {
-                        transformJpeg(image.bytes, crop, look, enhance, adjustments.zoom)
+                        transformJpeg(image.bytes, crop, look, enhance, adjustments.zoom, portrait)
                     }
                 } catch (e: OutOfMemoryError) {
                     // Very large sensors can exceed the heap; keep the photo rather than lose it.
@@ -174,6 +177,7 @@ class BitmapPhotoProcessor @Inject constructor(
         look: FloatArray?,
         enhance: Boolean,
         zoom: Float,
+        portrait: Int?,
     ): ByteArray {
         val options = BitmapFactory.Options().apply {
             inMutable = true
@@ -198,14 +202,18 @@ class BitmapPhotoProcessor @Inject constructor(
                 ?: error("Could not copy the decoded photo")
         }
         try {
-            return finishPixels(bitmap, look, enhance, zoom)
+            return finishPixels(bitmap, look, enhance, zoom, portrait)
         } finally {
             bitmap.recycle()
         }
     }
 
-    /** Optimisation, colour look and JPEG encoding. */
-    private suspend fun finishPixels(bitmap: Bitmap, look: FloatArray?, enhance: Boolean, zoom: Float): ByteArray {
+    /**
+     * Portrait blur (with the pixels' turn to upright in [portrait], or null for none), optimisation,
+     * colour look and JPEG encoding.
+     */
+    private suspend fun finishPixels(bitmap: Bitmap, look: FloatArray?, enhance: Boolean, zoom: Float, portrait: Int? = null): ByteArray {
+        if (portrait != null) portraitBlur.blur(bitmap, portrait)
         if (enhance && zoomEnhancer.worthwhile(zoom)) zoomEnhancer.enhance(bitmap, zoom)
         if (enhance) Enhancer.enhance(bitmap, zoom)
         if (look != null) applyLook(bitmap, look)

@@ -535,6 +535,7 @@ private fun modeLabel(mode: CaptureMode): Int = when (mode) {
     CaptureMode.CINEMATIC -> R.string.mode_cinematic
     CaptureMode.VIDEO -> R.string.mode_video
     CaptureMode.PHOTO -> R.string.mode_photo
+    CaptureMode.PORTRAIT -> R.string.mode_portrait
     CaptureMode.PRO -> R.string.mode_pro
     CaptureMode.PANORAMA -> R.string.mode_panorama
 }

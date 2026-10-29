@@ -58,11 +58,13 @@ data class PhotoAdjustments(
     val enhance: Boolean = false,
     /** Digital zoom the photo was taken at; zoomed photos get gentler sharpening. */
     val zoom: Float = 1f,
+    /** Portrait: keep the people sharp and blur the background behind them. */
+    val portrait: Boolean = false,
     /** Where the photo was taken, written into its EXIF; null to leave it out. */
     val location: GeoPoint? = null,
 ) {
     val isIdentity: Boolean
-        get() = cropAspect == null && !mirror && look == ShotLook.NORMAL && !enhance && location == null
+        get() = cropAspect == null && !mirror && look == ShotLook.NORMAL && !enhance && !portrait && location == null
 
     companion object {
         val NONE = PhotoAdjustments()
