@@ -12,8 +12,11 @@ interface PhotoProcessor {
      * roughly the square root of the frame count. Parts that moved between frames are taken from
      * the first frame only, so moving subjects don't ghost. Returns the first frame unchanged if the
      * merge can't run (for example, not enough memory).
+     *
+     * With [cropAspect] (as in [PhotoAdjustments.cropAspect]) only the part the photo will keep is
+     * merged, which saves time, and the result is already that shape.
      */
-    suspend fun mergeNight(frames: List<CapturedImage>): CapturedImage
+    suspend fun mergeNight(frames: List<CapturedImage>, cropAspect: Float? = null): CapturedImage
 
     /**
      * Panorama: stitches [frames] taken as the phone turned, each at its [yaws] (radians, increasing

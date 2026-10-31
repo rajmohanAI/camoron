@@ -126,4 +126,17 @@ class MergeMathTest {
         fun error(image: IntArray) = image.indices.sumOf { kotlin.math.abs((image[it] and 0xFF) - (truth[it] and 0xFF)) }
         assertThat(error(merged)).isLessThan(error(reference) * 6 / 10)
     }
+
+    @Test
+    fun `halving averages each 2x2 block`() {
+        val luma = intArrayOf(
+            0, 4, 10, 10, 7,
+            8, 4, 20, 20, 7,
+            1, 1, 1, 1, 1,
+        )
+        val (halved, width, height) = MergeMath.halve(luma, 5, 3)
+        assertThat(width).isEqualTo(2)
+        assertThat(height).isEqualTo(1)
+        assertThat(halved.toList()).containsExactly(4, 15).inOrder()
+    }
 }

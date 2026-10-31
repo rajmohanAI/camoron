@@ -50,8 +50,9 @@ class CaptureAndSavePhotoTest {
             return image.withBytes(byteArrayOf(9))
         }
 
-        override suspend fun mergeNight(frames: List<CapturedImage>): CapturedImage {
+        override suspend fun mergeNight(frames: List<CapturedImage>, cropAspect: Float?): CapturedImage {
             merged += frames.size
+            mergeCrops += cropAspect
             return frames.first().withBytes(byteArrayOf(7))
         }
 
@@ -59,6 +60,7 @@ class CaptureAndSavePhotoTest {
             frames.first().withBytes(byteArrayOf(5))
     }
     private val merged = mutableListOf<Int>()
+    private val mergeCrops = mutableListOf<Float?>()
 
     /** Captures that fail before one succeeds, as some phones do right after the session opens. */
     private var failuresLeft = 0
@@ -134,6 +136,14 @@ class CaptureAndSavePhotoTest {
         useCase(includeDng = false)(0, nightFrames = 8, onCaptured = { shown = it })
         assertThat(shown).isEqualTo(jpeg)
         assertThat(merged).containsExactly(8)
+    }
+
+    @Test
+    fun `night merges only the part the photo keeps`() = runTest {
+        val adjustments = PhotoAdjustments(cropAspect = 9f / 20, enhance = true)
+        useCase(includeDng = false)(0, adjustments = adjustments, nightFrames = 8)
+        assertThat(mergeCrops).containsExactly(9f / 20)
+        assertThat(processed).containsExactly(adjustments)
     }
 
     private fun camera(includeDng: Boolean) = object : CameraController {
