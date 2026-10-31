@@ -1,6 +1,7 @@
 package com.camoron.data.camera
 
 import com.camoron.domain.repository.CameraController
+import com.camoron.domain.repository.RotationSensor
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -11,4 +12,7 @@ import dagger.hilt.components.SingletonComponent
 internal abstract class CameraModule {
     @Binds
     abstract fun bindCameraController(impl: Camera2Controller): CameraController
+
+    @Binds
+    abstract fun bindRotationSensor(impl: AndroidRotationSensor): RotationSensor
 }

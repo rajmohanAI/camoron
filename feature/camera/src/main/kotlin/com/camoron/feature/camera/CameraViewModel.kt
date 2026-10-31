@@ -22,6 +22,7 @@ import com.camoron.domain.model.LensFacing
 import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.NightSetting
+import com.camoron.domain.model.PanoramaPlan
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.model.ShotLook
@@ -37,6 +38,7 @@ import com.camoron.domain.repository.LocationProvider
 import com.camoron.domain.repository.MediaRepository
 import com.camoron.domain.repository.PendingVideo
 import com.camoron.domain.repository.PreviewTarget
+import com.camoron.domain.repository.RotationSensor
 import com.camoron.domain.repository.SettingsRepository
 import com.camoron.domain.usecase.CaptureAndSavePhoto
 import com.camoron.domain.usecase.PlanZoomPresets
@@ -59,6 +61,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.abs
+import kotlin.math.sign
 import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 
@@ -71,7 +76,8 @@ enum class CaptureMode(val video: VideoKind? = null) {
     PHOTO,
     /** A photo with the people kept sharp and the background blurred. */
     PORTRAIT,
-    PRO;
+    PRO,
+    PANORAMA;
 
     val isVideo: Boolean get() = video != null
 }
@@ -111,11 +117,15 @@ data class CameraUiState(
     val activeExtension: CameraExtension? = null,
     /** A night photo is being taken: the user should hold still. */
     val nightCapturing: Boolean = false,
+    /** Frames taken so far while a panorama is being swept, or null when none is. */
+    val panoramaFrames: Int? = null,
     /** System.nanoTime() when the current recording started, or null when not recording. */
     val recordingStartedNanos: Long? = null,
     val event: CameraEvent? = null,
 ) {
     val recording: Boolean get() = recordingStartedNanos != null
+
+    val panoramaSweeping: Boolean get() = panoramaFrames != null
 
     /** How the camera is set up for the current video mode, or null in a photo mode. */
     val videoSpec: VideoSpec?
@@ -126,8 +136,8 @@ data class CameraUiState(
         get() = mode.isVideo && mode != CaptureMode.SLOW_MOTION &&
             selectedCamera?.videoResolutions?.contains(VideoResolution.UHD) == true
 
-    /** Timer, aspect ratio and Night belong to photos. */
-    val showPhotoControls: Boolean get() = !mode.isVideo
+    /** Timer and aspect ratio belong to photos; a panorama takes its own shape. */
+    val showPhotoControls: Boolean get() = !mode.isVideo && mode != CaptureMode.PANORAMA
 
     /** Zoom as the user thinks of it, relative to the main camera. */
     val displayZoom: Float get() = lensBase * zoomRatio
@@ -153,6 +163,8 @@ data class CameraUiState(
     val showFlashControl: Boolean
         get() = if (mode.isVideo) {
             selectedCamera?.hasFlash == true
+        } else if (mode == CaptureMode.PANORAMA) {
+            false
         } else {
             selectedCamera?.supportsFlashControl == true && activeExtension == null
         }
@@ -220,6 +232,8 @@ sealed interface CameraEvent {
     data class Saved(val uri: String) : CameraEvent
     data object CaptureFailed : CameraEvent
     data object RecordingFailed : CameraEvent
+    /** The phone wasn't turned far enough for a second panorama frame. */
+    data object PanoramaTooShort : CameraEvent
 }
 
 /** One-off cues for the UI, such as sounds. */
@@ -233,6 +247,7 @@ class CameraViewModel @Inject constructor(
     private val media: MediaRepository,
     private val planZoomPresets: PlanZoomPresets,
     private val location: LocationProvider,
+    private val rotation: RotationSensor,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CameraUiState())
@@ -264,6 +279,10 @@ class CameraViewModel @Inject constructor(
     private var profile = DeviceProfile(emptyList())
     private var surface: PreviewTarget? = null
     private var timerJob: Job? = null
+
+    /** Set to end the panorama being swept. */
+    @Volatile
+    private var panoramaStop = false
 
     /**
      * The app is on screen. Android takes the camera away from apps in the background (and reports
@@ -358,6 +377,7 @@ class CameraViewModel @Inject constructor(
 
     override fun onCleared() {
         location.stop()
+        rotation.stop()
     }
 
     /** The user tapped the error message: try the camera again. */
@@ -369,6 +389,7 @@ class CameraViewModel @Inject constructor(
 
     private fun closeCamera() {
         cancelTimer()
+        panoramaStop = true
         retryJob?.cancel()
         openKey = null
         viewModelScope.launch {
@@ -403,7 +424,7 @@ class CameraViewModel @Inject constructor(
     }
 
     fun switchCamera() {
-        if (_uiState.value.recording) return
+        if (_uiState.value.recording || _uiState.value.panoramaSweeping) return
         val current = _uiState.value.selectedCamera ?: return
         val facing = if (current.lensFacing == LensFacing.FRONT) LensFacing.BACK else LensFacing.FRONT
         val target = profile.bestCamera(facing) ?: return
@@ -477,7 +498,7 @@ class CameraViewModel @Inject constructor(
 
     fun setMode(mode: CaptureMode) {
         val before = _uiState.value
-        if (before.recording || mode == before.mode) return
+        if (before.recording || before.panoramaSweeping || mode == before.mode) return
         val rawBefore = before.rawActive
         _uiState.update { it.copy(mode = mode) }
         if (_uiState.value.videoSpec != before.videoSpec) {
@@ -491,8 +512,8 @@ class CameraViewModel @Inject constructor(
             openIfReady()
             return
         }
-        // Photo mode is fully automatic; Pro mode restores whatever the user dialled in.
-        applySettings(if (mode != CaptureMode.PRO) ManualSettings.AUTO else _uiState.value.settings)
+        // Pro mode restores whatever the user dialled in; the other modes are fully automatic.
+        applySettings(if (mode == CaptureMode.PRO) _uiState.value.settings else ManualSettings.AUTO)
     }
 
     /** In video the flash is a light that is on or off. */
@@ -556,6 +577,10 @@ class CameraViewModel @Inject constructor(
             toggleRecording()
             return
         }
+        if (_uiState.value.mode == CaptureMode.PANORAMA) {
+            togglePanorama()
+            return
+        }
         if (cancelTimer()) return
         val state = _uiState.value
         if (state.isCapturing || state.cameraState !is CameraState.Previewing) return
@@ -577,6 +602,112 @@ class CameraViewModel @Inject constructor(
     }
 
     fun eventConsumed() = _uiState.update { it.copy(event = null) }
+
+    /** Panorama: the first tap starts the sweep, the next one (or the last frame) finishes it. */
+    private fun togglePanorama() {
+        val state = _uiState.value
+        if (state.panoramaSweeping) {
+            panoramaStop = true
+            return
+        }
+        if (state.isCapturing || state.cameraState !is CameraState.Previewing) return
+        val selected = state.selectedCamera ?: return
+        if (!rotation.start()) {
+            DiagnosticLog.info(TAG, "No rotation sensor for a panorama")
+            _uiState.update { it.copy(event = CameraEvent.CaptureFailed) }
+            return
+        }
+        panoramaStop = false
+        _uiState.update { it.copy(panoramaFrames = 0) }
+        viewModelScope.launch { sweepPanorama(state, selected) }
+    }
+
+    /**
+     * Takes a frame at the start and another each time the phone has turned on by [PanoramaPlan.step],
+     * in whichever direction the user turns first, with exposure held so the frames match; then
+     * stitches and saves them.
+     */
+    private suspend fun sweepPanorama(state: CameraUiState, selected: CameraCapabilities) {
+        val front = selected.lensFacing == LensFacing.FRONT
+        val frames = mutableListOf<CapturedImage>()
+        val yaws = mutableListOf<Float>()
+        val step = PanoramaPlan.step(
+            selected.equivalentFocalLengthMm,
+            state.zoomRatio,
+            portrait = deviceRotation % 180 == 0,
+            longOverShort = state.cameraSettings.aspectRatio.stillAspect.ratio.toFloat(),
+        )
+        val started = SystemClock.elapsedRealtime()
+        try {
+            camera.lockExposure(true)
+            var last = awaitYaw(front) ?: run {
+                DiagnosticLog.info(TAG, "The rotation sensor didn't report")
+                return
+            }
+            var turned = 0f
+            var shotAt = 0f
+            var direction = 0f
+            while (!panoramaStop && frames.size < PanoramaPlan.MAX_FRAMES) {
+                val due = frames.isEmpty() || (direction != 0f && (turned - shotAt) * direction >= step)
+                if (due) {
+                    if (state.shutterSoundOn) _effects.tryEmit(CameraEffect.SHUTTER)
+                    frames += captureAndSave.captureFrame(deviceRotation)
+                    yaws += turned
+                    shotAt = turned
+                    _uiState.update { it.copy(panoramaFrames = frames.size) }
+                }
+                delay(PANORAMA_POLL_MS)
+                val now = rotation.cameraYaw(front) ?: continue
+                turned += PanoramaPlan.wrap(now - last)
+                last = now
+                if (direction == 0f && abs(turned - shotAt) >= step) direction = sign(turned - shotAt)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Keep the frames taken so far: the camera may have gone mid-sweep.
+            DiagnosticLog.record(TAG, "Panorama frame failed", e)
+        } finally {
+            rotation.stop()
+            runCatching { camera.lockExposure(false) }
+            _uiState.update { it.copy(panoramaFrames = null) }
+        }
+        DiagnosticLog.info(TAG, "Panorama: ${frames.size} frames over %.0f° in ${SystemClock.elapsedRealtime() - started} ms".format(Math.toDegrees(abs(yaws.lastOrNull() ?: 0f).toDouble())))
+        if (frames.size < 2) {
+            _uiState.update { it.copy(event = CameraEvent.PanoramaTooShort) }
+            return
+        }
+        _uiState.update { it.copy(photosSaving = it.photosSaving + 1) }
+        val adjustments = PhotoAdjustments(
+            look = state.cameraSettings.look,
+            enhance = state.cameraSettings.enhance,
+            zoom = state.zoomRatio,
+            location = if (state.cameraSettings.geotag) location.current() else null,
+        )
+        val focal = selected.equivalentFocalLengthMm?.let { it * state.zoomRatio }
+        val uri = runCatching { captureAndSave.savePanorama(frames, yaws, focal, adjustments) }
+            .onFailure { DiagnosticLog.record(TAG, "Couldn't stitch the panorama", it) }
+            .getOrNull()
+        if (uri != null) DiagnosticLog.info(TAG, "Panorama saved ${SystemClock.elapsedRealtime() - started} ms after the first tap")
+        _uiState.update {
+            it.copy(
+                photosSaving = (it.photosSaving - 1).coerceAtLeast(0),
+                lastCaptureUri = uri ?: it.lastCaptureUri,
+                instantThumbnail = if (uri != null) null else it.instantThumbnail,
+                event = if (uri != null) CameraEvent.Saved(uri) else CameraEvent.CaptureFailed,
+            )
+        }
+    }
+
+    /** The first heading the sensor reports, or null if it says nothing for a while. */
+    private suspend fun awaitYaw(front: Boolean): Float? = withTimeoutOrNull(SENSOR_WAIT_MS) {
+        var yaw = rotation.cameraYaw(front)
+        while (yaw == null) {
+            delay(PANORAMA_POLL_MS)
+            yaw = rotation.cameraYaw(front)
+        }
+        yaw
+    }
 
     private fun toggleRecording() {
         val state = _uiState.value
@@ -868,6 +999,8 @@ class CameraViewModel @Inject constructor(
         const val MAX_RETRIES = 3
         const val RETRY_DELAY_MS = 800L
         const val TAG = "Camera"
+        const val PANORAMA_POLL_MS = 40L
+        const val SENSOR_WAIT_MS = 1_000L
     }
 }
 

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -122,6 +123,29 @@ internal fun HoldStillOverlay() {
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.6f))
                 .padding(horizontal = 20.dp, vertical = 10.dp),
+        )
+    }
+}
+
+/**
+ * Panorama guidance under the badges at the top of the preview: how to start, then how many frames are in
+ * while the phone turns.
+ */
+@Composable
+internal fun PanoramaHint(frames: Int?) {
+    Box(Modifier.fillMaxSize().padding(top = 56.dp), contentAlignment = Alignment.TopCenter) {
+        Text(
+            if (frames == null) {
+                stringResource(R.string.panorama_start)
+            } else {
+                pluralStringResource(R.plurals.panorama_turning, frames, frames)
+            },
+            color = Color.White,
+            fontSize = 15.sp,
+            modifier = Modifier
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.6f))
+                .padding(horizontal = 16.dp, vertical = 8.dp),
         )
     }
 }

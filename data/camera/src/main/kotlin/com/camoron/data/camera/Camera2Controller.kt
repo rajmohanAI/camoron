@@ -252,6 +252,8 @@ class Camera2Controller @Inject constructor(
         var lastExposure: LiveExposure? = null
         var lastColorTransform: ColorSpaceTransform? = null
         var lastPublishedAt: Long = 0L
+        /** Exposure and white balance held for a panorama. */
+        var exposureLocked = false
 
         val sensorOrientation: Int = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
         val activeArray: Rect? = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
@@ -1005,6 +1007,14 @@ class Camera2Controller @Inject constructor(
         }
     }
 
+    override suspend fun lockExposure(locked: Boolean) {
+        locked {
+            val camera = active ?: return@locked
+            camera.exposureLocked = locked
+            startRepeating(camera)
+        }
+    }
+
     private fun macroActive(camera: ActiveCamera): Boolean = macroEnabled && camera.capabilities.offersMacro
 
     private fun clearFocus(camera: ActiveCamera) {
@@ -1529,6 +1539,10 @@ class Camera2Controller @Inject constructor(
         }
         if (region != null && camera.maxAeRegions > 0) {
             builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
+        }
+        if (camera.exposureLocked) {
+            builder.set(CaptureRequest.CONTROL_AE_LOCK, true)
+            builder.set(CaptureRequest.CONTROL_AWB_LOCK, true)
         }
 
         // Exposure: Camera2 only accepts ISO and shutter together, so fill the one the user left on

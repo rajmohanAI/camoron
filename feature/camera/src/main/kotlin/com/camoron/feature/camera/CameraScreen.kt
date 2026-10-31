@@ -136,17 +136,19 @@ fun CameraScreen(
     HideStatusBar()
     ShutterSounds(viewModel)
     ScreenFlashBrightness(state.screenFlash)
-    KeepScreenOn(state.recording)
+    KeepScreenOn(state.recording || state.panoramaSweeping)
     RequestMicrophone(state.mode.video?.recordsSound == true)
 
     val failedText = stringResource(R.string.capture_failed)
     val recordingFailedText = stringResource(R.string.recording_failed)
+    val panoramaShortText = stringResource(R.string.panorama_too_short)
     LaunchedEffect(state.event) {
         when (state.event) {
             // Like the phone's own camera, a saved photo just shows up in the thumbnail.
             is CameraEvent.Saved -> Unit
             CameraEvent.CaptureFailed -> Toast.makeText(context, failedText, Toast.LENGTH_LONG).show()
             CameraEvent.RecordingFailed -> Toast.makeText(context, recordingFailedText, Toast.LENGTH_LONG).show()
+            CameraEvent.PanoramaTooShort -> Toast.makeText(context, panoramaShortText, Toast.LENGTH_LONG).show()
             null -> return@LaunchedEffect
         }
         viewModel.eventConsumed()
@@ -335,6 +337,7 @@ private fun PreviewArea(
         }
         state.countdown?.let { CountdownOverlay(it) }
         if (state.nightCapturing) HoldStillOverlay()
+        if (state.mode == CaptureMode.PANORAMA) PanoramaHint(state.panoramaFrames)
     }
 }
 
@@ -552,6 +555,7 @@ private fun BottomBar(
                 ShutterButton(
                     busy = state.isCapturing,
                     counting = state.countdown != null,
+                    sweeping = state.panoramaSweeping,
                     enabled = state.cameraState is CameraState.Previewing,
                     onClick = onCapture,
                 )
@@ -591,8 +595,14 @@ private fun BottomBar(
  * being taken a warm arc runs around the ring; during a timer the disc turns red to cancel.
  */
 @Composable
-private fun ShutterButton(busy: Boolean, counting: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    val description = stringResource(if (counting) R.string.cd_cancel_timer else R.string.cd_shutter)
+private fun ShutterButton(busy: Boolean, counting: Boolean, sweeping: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val description = stringResource(
+        when {
+            counting -> R.string.cd_cancel_timer
+            sweeping -> R.string.cd_finish_panorama
+            else -> R.string.cd_shutter
+        },
+    )
     val haptics = rememberHaptics()
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -604,7 +614,7 @@ private fun ShutterButton(busy: Boolean, counting: Boolean, enabled: Boolean, on
     val disc by animateColorAsState(
         when {
             !enabled -> Color.White.copy(alpha = 0.35f)
-            counting -> Glass.Recording
+            counting || sweeping -> Glass.Recording
             else -> Color.White
         },
         label = "shutter colour",

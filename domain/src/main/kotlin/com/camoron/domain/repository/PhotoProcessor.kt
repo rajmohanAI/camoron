@@ -14,4 +14,11 @@ interface PhotoProcessor {
      * merge can't run (for example, not enough memory).
      */
     suspend fun mergeNight(frames: List<CapturedImage>): CapturedImage
+
+    /**
+     * Panorama: stitches [frames] taken as the phone turned, each at its [yaws] (radians, increasing
+     * to the right), with a lens of [focalLength35mm] (35 mm equivalent; null for a typical phone
+     * lens). Returns null when they can't be stitched.
+     */
+    suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?): CapturedImage?
 }

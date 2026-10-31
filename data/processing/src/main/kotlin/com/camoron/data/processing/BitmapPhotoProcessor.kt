@@ -3,6 +3,7 @@ package com.camoron.data.processing
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
 import android.os.Build
@@ -111,6 +112,64 @@ class BitmapPhotoProcessor @Inject constructor(
         }
     }
 
+    override suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?): CapturedImage? {
+        if (frames.size < 2) return null
+        return withContext(processing) {
+            // Full size first; if memory runs out, try again with frames half as large.
+            for (longSide in listOf(PANORAMA_LONG_SIDE, PANORAMA_LONG_SIDE / 2)) {
+                try {
+                    return@withContext DiagnosticLog.timed(TAG, "Stitching ${frames.size} panorama frames at $longSide px") {
+                        stitch(frames, yaws, focalLength35mm, longSide)
+                    }
+                } catch (e: OutOfMemoryError) {
+                    DiagnosticLog.record(TAG, "Not enough memory to stitch the panorama at $longSide px", e)
+                }
+            }
+            null
+        }
+    }
+
+    private fun stitch(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?, longSide: Int): CapturedImage? {
+        var focal = 0f
+        // Each frame is turned upright, shrunk and projected onto the cylinder straight away, so only
+        // the projected frames are held.
+        val warped = frames.map { image ->
+            val frame = uprightFrame(image.bytes, longSide)
+            if (focal == 0f) focal = PanoramaMath.focalPixels(frame.width, frame.height, focalLength35mm)
+            PanoramaMath.warp(frame, focal)
+        }
+        val pano = PanoramaMath.stitchWarped(warped, yaws, focal) ?: return null
+        val bitmap = Bitmap.createBitmap(pano.pixels, pano.width, pano.height, Bitmap.Config.ARGB_8888)
+        try {
+            val bytes = ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }.toByteArray()
+            val size = PixelSize(pano.width, pano.height)
+            val exif = ExifInterface(ByteArrayInputStream(frames.first().bytes))
+            // The pixels are upright now, so the photo carries no turn of its own.
+            return frames.first().withBytes(writeExif(bytes, exif, ExifInterface.ORIENTATION_NORMAL, size), size)
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    /** The JPEG decoded with its long side at most about [longSide] and turned the right way up. */
+    private fun uprightFrame(bytes: ByteArray, longSide: Int): PanoramaMath.Frame {
+        val bounds = decodeBounds(bytes)
+        var sample = 1
+        while (maxOf(bounds.width, bounds.height) / (sample * 2) >= longSide) sample *= 2
+        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+            ?: error("Could not decode a panorama frame")
+        val rotation = ExifInterface(ByteArrayInputStream(bytes)).rotationDegrees
+        val upright = if (rotation == 0) {
+            decoded
+        } else {
+            Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, Matrix().apply { postRotate(rotation.toFloat()) }, true)
+                .also { if (it !== decoded) decoded.recycle() }
+        }
+        val pixels = IntArray(upright.width * upright.height)
+        upright.getPixels(pixels, 0, upright.width, 0, 0, upright.width, upright.height)
+        return PanoramaMath.Frame(pixels, upright.width, upright.height).also { upright.recycle() }
+    }
+
     /** Decodes (the cropped part of) a JPEG, enhances it, applies the colour matrix and re-encodes it. */
     private suspend fun transformJpeg(
         bytes: ByteArray,
@@ -179,6 +238,8 @@ class BitmapPhotoProcessor @Inject constructor(
     private companion object {
         const val TAG = "PhotoProcessor"
         const val POOL_THREADS = 4
+        /** Long side panorama frames are stitched at: the camera's full height, halved. */
+        const val PANORAMA_LONG_SIDE = 2048
 
         /**
          * Photo processing runs on its own threads at a lower priority than the screen and the

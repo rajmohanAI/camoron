@@ -7,6 +7,14 @@
     <string name="mode_video">Video</string>
     <string name="mode_cinematic">Cinematic</string>
     <string name="mode_timelapse">Timelapse</string>
+    <string name="mode_panorama">Panorama</string>
+    <string name="panorama_start">Tap the shutter, then turn slowly</string>
+    <plurals name="panorama_turning">
+        <item quantity="one">Keep turning slowly · %d photo</item>
+        <item quantity="other">Keep turning slowly · %d photos</item>
+    </plurals>
+    <string name="panorama_too_short">Turn the phone slowly to one side after tapping the shutter.</string>
+    <string name="cd_finish_panorama">Finish panorama</string>
     <string name="cd_start_recording">Start recording</string>
     <string name="cd_stop_recording">Stop recording</string>
     <string name="cd_resolution">Video resolution</string>

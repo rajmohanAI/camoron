@@ -37,6 +37,7 @@ import com.camoron.domain.repository.PendingVideo
 import com.camoron.domain.repository.PhotoProcessor
 import com.camoron.domain.repository.SettingsRepository
 import com.camoron.domain.repository.PreviewTarget
+import com.camoron.domain.repository.RotationSensor
 import com.camoron.domain.usecase.CaptureAndSavePhoto
 import com.camoron.domain.usecase.PlanZoomPresets
 import com.google.common.truth.Truth.assertThat
@@ -86,6 +87,11 @@ class CameraViewModelTest {
             merged += frames.size
             return frames.first()
         }
+        val stitched = mutableListOf<List<Float>>()
+        override suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?): CapturedImage {
+            stitched += yaws
+            return frames.first()
+        }
     }
     private val settings = FakeSettingsRepository()
     private val location = object : LocationProvider {
@@ -107,7 +113,78 @@ class CameraViewModelTest {
     fun tearDown() = Dispatchers.resetMain()
 
     private fun viewModel() =
-        CameraViewModel(controller, CaptureAndSavePhoto(controller, media, processor), settings, media, PlanZoomPresets(), location)
+        CameraViewModel(controller, CaptureAndSavePhoto(controller, media, processor), settings, media, PlanZoomPresets(), location, rotation)
+
+    private val rotation = object : RotationSensor {
+        var yaw: Float? = 0f
+        var listening = false
+        override fun start(): Boolean {
+            listening = true
+            return true
+        }
+        override fun stop() {
+            listening = false
+        }
+        override fun cameraYaw(front: Boolean) = yaw
+    }
+
+    @Test
+    fun `a panorama takes a frame each time the phone has turned far enough, then stitches them`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.PANORAMA)
+        assertThat(vm.uiState.value.showFlashControl).isFalse()
+
+        vm.onShutter()
+        assertThat(vm.uiState.value.panoramaFrames).isEqualTo(1)
+        assertThat(controller.exposureLocks).containsExactly(true)
+        rotation.yaw = 0.2f
+        advanceTimeBy(200)
+        assertThat(vm.uiState.value.panoramaFrames).isEqualTo(1)
+        rotation.yaw = 0.5f
+        advanceTimeBy(200)
+        assertThat(vm.uiState.value.panoramaFrames).isEqualTo(2)
+
+        vm.onShutter()
+        advanceTimeBy(200)
+        runCurrent()
+        assertThat(processor.stitched.single()).containsExactly(0f, 0.5f).inOrder()
+        assertThat(controller.exposureLocks).containsExactly(true, false).inOrder()
+        assertThat(rotation.listening).isFalse()
+        assertThat(vm.uiState.value.panoramaSweeping).isFalse()
+        assertThat(vm.uiState.value.event).isInstanceOf(CameraEvent.Saved::class.java)
+    }
+
+    @Test
+    fun `a panorama follows the turn across the wrap of the heading`() = runTest {
+        rotation.yaw = 3.0f
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.PANORAMA)
+        vm.onShutter()
+        rotation.yaw = -2.8f
+        advanceTimeBy(200)
+        vm.onShutter()
+        advanceTimeBy(200)
+        runCurrent()
+        val yaws = processor.stitched.single()
+        assertThat(yaws[1]).isWithin(1e-3f).of((2 * Math.PI).toFloat() - 5.8f)
+    }
+
+    @Test
+    fun `a panorama without turning saves nothing and says why`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.PANORAMA)
+        vm.onShutter()
+        advanceTimeBy(200)
+        vm.onShutter()
+        advanceTimeBy(200)
+        runCurrent()
+        assertThat(processor.stitched).isEmpty()
+        assertThat(vm.uiState.value.event).isEqualTo(CameraEvent.PanoramaTooShort)
+        assertThat(controller.exposureLocks).containsExactly(true, false).inOrder()
+    }
 
     @Test
     fun `photos carry the location only with save location on, followed only on screen`() = runTest {
@@ -822,6 +899,10 @@ class CameraViewModelTest {
         }
         override suspend fun setMacro(enabled: Boolean) {
             macros += enabled
+        }
+        val exposureLocks = mutableListOf<Boolean>()
+        override suspend fun lockExposure(locked: Boolean) {
+            exposureLocks += locked
         }
         override suspend fun capture(deviceRotationDegrees: Int, includeRaw: Boolean): CaptureBundle {
             capturedWithRaw += includeRaw
