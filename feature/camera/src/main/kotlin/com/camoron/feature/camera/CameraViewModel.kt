@@ -17,6 +17,7 @@ import com.camoron.domain.model.EnhanceMath
 import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
+import com.camoron.domain.model.GeoPoint
 import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.LensFacing
 import com.camoron.domain.model.LookMatrix
@@ -25,6 +26,7 @@ import com.camoron.domain.model.NightSetting
 import com.camoron.domain.model.PanoramaPlan
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.SkyCatalogue
 import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.TimelapseSpeed
 import com.camoron.domain.model.TimerSetting
@@ -39,6 +41,7 @@ import com.camoron.domain.repository.MediaRepository
 import com.camoron.domain.repository.PendingVideo
 import com.camoron.domain.repository.PreviewTarget
 import com.camoron.domain.repository.RotationSensor
+import com.camoron.domain.repository.SkyCatalogueSource
 import com.camoron.domain.repository.SettingsRepository
 import com.camoron.domain.usecase.CaptureAndSavePhoto
 import com.camoron.domain.usecase.PlanZoomPresets
@@ -77,7 +80,9 @@ enum class CaptureMode(val video: VideoKind? = null) {
     /** A photo with the people kept sharp and the background blurred. */
     PORTRAIT,
     PRO,
-    PANORAMA;
+    PANORAMA,
+    /** The camera with the stars, planets and constellations it points at named on top. */
+    SKY;
 
     val isVideo: Boolean get() = video != null
 }
@@ -117,6 +122,8 @@ data class CameraUiState(
     val activeExtension: CameraExtension? = null,
     /** A night photo is being taken: the user should hold still. */
     val nightCapturing: Boolean = false,
+    /** The stars and constellations for Sky view, once loaded. */
+    val skyCatalogue: SkyCatalogue? = null,
     /** Frames taken so far while a panorama is being swept, or null when none is. */
     val panoramaFrames: Int? = null,
     /** System.nanoTime() when the current recording started, or null when not recording. */
@@ -163,7 +170,7 @@ data class CameraUiState(
     val showFlashControl: Boolean
         get() = if (mode.isVideo) {
             selectedCamera?.hasFlash == true
-        } else if (mode == CaptureMode.PANORAMA) {
+        } else if (mode == CaptureMode.PANORAMA || mode == CaptureMode.SKY) {
             false
         } else {
             selectedCamera?.supportsFlashControl == true && activeExtension == null
@@ -248,6 +255,7 @@ class CameraViewModel @Inject constructor(
     private val planZoomPresets: PlanZoomPresets,
     private val location: LocationProvider,
     private val rotation: RotationSensor,
+    private val skyCatalogues: SkyCatalogueSource,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CameraUiState())
@@ -368,12 +376,51 @@ class CameraViewModel @Inject constructor(
         this.foreground = foreground
         if (foreground) openIfReady() else closeCamera()
         syncLocation()
+        syncSky()
     }
 
-    /** Follows the location only while the camera is on screen and Save location is on. */
-    private fun syncLocation() {
-        if (foreground && _uiState.value.cameraSettings.geotag) location.start() else location.stop()
+    /** Location was just allowed: start following it if anything wants it. */
+    fun onLocationAllowed() {
+        location.stop()
+        syncLocation()
     }
+
+    /** Follows the location only while the camera is on screen and Save location is on, or Sky view needs it. */
+    private fun syncLocation() {
+        val wanted = _uiState.value.cameraSettings.geotag || _uiState.value.mode == CaptureMode.SKY
+        if (foreground && wanted) location.start() else location.stop()
+    }
+
+    private var skyCompassOn = false
+
+    /** In Sky view, on screen: the compass on and the catalogue loaded; otherwise the compass off. */
+    private fun syncSky() {
+        val wanted = foreground && _uiState.value.mode == CaptureMode.SKY
+        if (wanted == skyCompassOn) return
+        skyCompassOn = wanted
+        if (!wanted) {
+            rotation.stop()
+            return
+        }
+        if (!rotation.start(compass = true)) DiagnosticLog.info(TAG, "No compass for Sky view")
+        if (_uiState.value.skyCatalogue == null) {
+            viewModelScope.launch {
+                val catalogue = runCatching { skyCatalogues.load() }
+                    .onFailure { DiagnosticLog.record(TAG, "Couldn't read the star catalogue", it) }
+                    .getOrNull()
+                _uiState.update { it.copy(skyCatalogue = catalogue) }
+            }
+        }
+    }
+
+    /** What Sky view needs each frame: where the phone points, where it is and whether the compass is trustworthy. */
+    fun skyOrientation(): FloatArray? = rotation.orientation()
+
+    fun skyLocation(): GeoPoint? = location.current() ?: location.approximate()
+
+    fun skyCompassUnreliable(): Boolean = rotation.compassUnreliable()
+
+    fun skyDeclination(point: GeoPoint, epochMillis: Long): Float = rotation.declinationDegrees(point, epochMillis)
 
     override fun onCleared() {
         location.stop()
@@ -501,6 +548,10 @@ class CameraViewModel @Inject constructor(
         if (before.recording || before.panoramaSweeping || mode == before.mode) return
         val rawBefore = before.rawActive
         _uiState.update { it.copy(mode = mode) }
+        if (mode == CaptureMode.SKY || before.mode == CaptureMode.SKY) {
+            syncLocation()
+            syncSky()
+        }
         if (_uiState.value.videoSpec != before.videoSpec) {
             // Photo and video sessions are set up differently (and each video kind has its own frame rate).
             before.selectedCamera?.let { selected -> viewModelScope.launch { select(selected, zoom = before.zoomRatio) } }

@@ -109,6 +109,7 @@ import com.camoron.domain.model.CameraError
 import com.camoron.domain.model.CameraState
 import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.FocusTarget
+import com.camoron.domain.model.LensFacing
 import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.PixelSize
 
@@ -138,6 +139,10 @@ fun CameraScreen(
     ScreenFlashBrightness(state.screenFlash)
     KeepScreenOn(state.recording || state.panoramaSweeping)
     RequestMicrophone(state.mode.video?.recordsSound == true)
+    RequestLocationForSky(state.mode == CaptureMode.SKY, viewModel::onLocationAllowed)
+    val skyFeed = remember(viewModel) {
+        SkyFeed(viewModel::skyOrientation, viewModel::skyLocation, viewModel::skyCompassUnreliable, viewModel::skyDeclination)
+    }
 
     val failedText = stringResource(R.string.capture_failed)
     val recordingFailedText = stringResource(R.string.recording_failed)
@@ -203,6 +208,18 @@ fun CameraScreen(
                 onPinch = viewModel::onPinch,
                 shapeBlur = shapeBlur.value,
                 modifier = Modifier.align(Alignment.TopCenter).then(previewArea),
+                overlay = {
+                    if (state.mode == CaptureMode.SKY) {
+                        SkyOverlay(
+                            catalogue = state.skyCatalogue,
+                            feed = skyFeed,
+                            focalLength35mm = state.selectedCamera?.equivalentFocalLengthMm,
+                            zoom = state.zoomRatio,
+                            front = state.selectedCamera?.lensFacing == LensFacing.FRONT,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                },
             )
             CaptureBlink(
                 capturing = state.isCapturing && !state.mode.isVideo,
@@ -289,6 +306,8 @@ private fun PreviewArea(
     onPinch: (Float) -> Unit,
     shapeBlur: Float = 0f,
     modifier: Modifier = Modifier,
+    /** Drawn over the camera's whole (partly clipped) picture, in its coordinates. */
+    overlay: @Composable () -> Unit = {},
 ) {
     BoxWithConstraints(modifier.clipToBounds(), contentAlignment = Alignment.Center) {
         val bufferSize = state.previewSize
@@ -323,6 +342,7 @@ private fun PreviewArea(
                     modifier = Modifier.fillMaxSize().then(if (shapeBlur > 0f) Modifier.blur(SHAPE_BLUR * shapeBlur) else Modifier),
                 )
                 FocusIndicator(focusTarget, Modifier.fillMaxSize())
+                overlay()
             }
         }
         if (state.cameraSettings.grid) GridOverlay(Modifier.fillMaxSize())
@@ -802,6 +822,26 @@ private fun RequestMicrophone(wanted: Boolean) {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             launcher.launch(Manifest.permission.RECORD_AUDIO)
         }
+    }
+}
+
+/**
+ * Asks for the location the first time Sky view opens without it: the sky depends on where you
+ * stand. Declining leaves Sky view saying it needs the location.
+ */
+@Composable
+private fun RequestLocationForSky(wanted: Boolean, onAllowed: () -> Unit) {
+    val context = LocalContext.current
+    var asked by rememberSaveable { mutableStateOf(false) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted.values.any { it }) onAllowed()
+    }
+    LaunchedEffect(wanted) {
+        if (!wanted || asked) return@LaunchedEffect
+        asked = true
+        val have = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+            .any { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+        if (!have) launcher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
     }
 }
 

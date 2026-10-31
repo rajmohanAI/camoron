@@ -2,7 +2,7 @@ package com.camoron.domain.repository
 
 import com.camoron.domain.model.GeoPoint
 
-/** The phone's location, for tagging photos with where they were taken. */
+/** The phone's location, for tagging photos with where they were taken and for Sky view. */
 interface LocationProvider {
     /** Starts following the location. Does nothing without the location permission. */
     fun start()
@@ -11,4 +11,10 @@ interface LocationProvider {
 
     /** The latest recent fix, or null when it is unknown, too old or not allowed. */
     fun current(): GeoPoint?
+
+    /**
+     * The latest fix however old, or null when none is known or allowed: good enough to place the
+     * stars, which barely move across a city or a few days.
+     */
+    fun approximate(): GeoPoint?
 }
