@@ -245,8 +245,9 @@ private class SkyScene(private val catalogue: SkyCatalogue) {
             val below = stars[i * 3 + 2] < 0
             val radius = (3.4 - 0.55 * star.magnitude).coerceAtLeast(0.7).toFloat() * unit
             drawCircle(starColor(star.bv).copy(alpha = if (below) 0.35f else 1f), radius, Offset(point[0], point[1]))
-            if (star.name != null && star.magnitude <= NAMED_STAR_MAGNITUDE) {
-                label(measurer, star.name, point, Color.White.copy(alpha = if (below) 0.4f else 0.85f), 11, offset = radius)
+            val name = star.name
+            if (name != null && star.magnitude <= NAMED_STAR_MAGNITUDE) {
+                label(measurer, name, point, Color.White.copy(alpha = if (below) 0.4f else 0.85f), 11, offset = radius)
             }
         }
 
