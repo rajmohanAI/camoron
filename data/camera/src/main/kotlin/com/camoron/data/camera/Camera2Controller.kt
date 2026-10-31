@@ -273,6 +273,8 @@ class Camera2Controller @Inject constructor(
         var lastAeState: Int? = null
 
         val edgeModes: Set<Int> = characteristics.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES)?.toSet().orEmpty()
+        val noiseReductionModes: Set<Int> =
+            characteristics.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)?.toSet().orEmpty()
 
         fun closeReaders() {
             runCatching { jpegReader?.close() }
@@ -1204,7 +1206,7 @@ class Camera2Controller @Inject constructor(
                     if (camera.capabilities.hasFlash) set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
                     set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY)
                     set(CaptureRequest.JPEG_ORIENTATION, rotation)
-                    applyStillProcessing(camera, this)
+                    applyBurstProcessing(camera, this)
                 }.build()
             }
             camera.session.captureBurst(requests, object : CameraCaptureSession.CaptureCallback() {
@@ -1258,6 +1260,20 @@ class Camera2Controller @Inject constructor(
         }
         if (CameraMetadata.EDGE_MODE_HIGH_QUALITY in camera.edgeModes) {
             builder.set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_HIGH_QUALITY)
+        }
+    }
+
+    /**
+     * The camera's quick noise reduction and sharpening for burst frames. The high quality modes
+     * can take most of a second per frame at night, and merging the frames removes far more noise
+     * than they do, so a burst comes in several times faster for the same result.
+     */
+    private fun applyBurstProcessing(camera: ActiveCamera, builder: CaptureRequest.Builder) {
+        if (CameraMetadata.NOISE_REDUCTION_MODE_FAST in camera.noiseReductionModes) {
+            builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_FAST)
+        }
+        if (CameraMetadata.EDGE_MODE_FAST in camera.edgeModes) {
+            builder.set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_FAST)
         }
     }
 

@@ -44,7 +44,7 @@ class CaptureAndSavePhoto @Inject constructor(
         if (nightFrames > 1) {
             val frames = retryOnce { camera.captureBurst(deviceRotationDegrees, nightFrames) }
             onCaptured(frames.first())
-            return saving.withLock { media.save(adjust(processor.mergeNight(frames), adjustments)) }
+            return saving.withLock { media.save(adjust(processor.mergeNight(frames, adjustments.cropAspect), adjustments)) }
         }
         val bundle = retryOnce { camera.capture(deviceRotationDegrees, includeRaw) }
         onCaptured(bundle.primary)

@@ -85,7 +85,7 @@ class CameraViewModelTest {
             applied += adjustments
             return image
         }
-        override suspend fun mergeNight(frames: List<CapturedImage>): CapturedImage {
+        override suspend fun mergeNight(frames: List<CapturedImage>, cropAspect: Float?): CapturedImage {
             merged += frames.size
             return frames.first()
         }

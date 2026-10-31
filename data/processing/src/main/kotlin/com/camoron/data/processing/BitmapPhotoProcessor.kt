@@ -95,12 +95,12 @@ class BitmapPhotoProcessor @Inject constructor(
         }
     }
 
-    override suspend fun mergeNight(frames: List<CapturedImage>): CapturedImage {
+    override suspend fun mergeNight(frames: List<CapturedImage>, cropAspect: Float?): CapturedImage {
         val reference = frames.firstOrNull() ?: error("No frames to merge")
         if (frames.size < 2) return reference
         return withContext(processing) {
             try {
-                NightMerger(frames.map { it.bytes }).merge()?.let { (bytes, size) ->
+                NightMerger(frames.map { it.bytes }, cropAspect).merge()?.let { (bytes, size) ->
                     val exif = ExifInterface(ByteArrayInputStream(reference.bytes))
                     val orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
                     reference.withBytes(writeExif(bytes, exif, orientation, size), size)

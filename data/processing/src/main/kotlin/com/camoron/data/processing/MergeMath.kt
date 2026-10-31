@@ -66,6 +66,23 @@ internal object MergeMath {
         return (r * 77 + g * 150 + b * 29) shr 8
     }
 
+    /** A luma image at half the width and height, each pixel the mean of the 2x2 block it covers. */
+    fun halve(luma: IntArray, width: Int, height: Int): Triple<IntArray, Int, Int> {
+        val w = maxOf(1, width / 2)
+        val h = maxOf(1, height / 2)
+        val out = IntArray(w * h)
+        for (y in 0 until h) {
+            val y0 = minOf(2 * y, height - 1)
+            val y1 = minOf(2 * y + 1, height - 1)
+            for (x in 0 until w) {
+                val x0 = minOf(2 * x, width - 1)
+                val x1 = minOf(2 * x + 1, width - 1)
+                out[y * w + x] = (luma[y0 * width + x0] + luma[y0 * width + x1] + luma[y1 * width + x0] + luma[y1 * width + x1] + 2) / 4
+            }
+        }
+        return Triple(out, w, h)
+    }
+
     /** Average of channel sums over [count] frames, as an opaque ARGB pixel. */
     fun average(sumR: Int, sumG: Int, sumB: Int, count: Int): Int {
         val half = count / 2
