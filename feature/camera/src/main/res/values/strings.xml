@@ -8,6 +8,21 @@
     <string name="mode_cinematic">Cinematic</string>
     <string name="mode_timelapse">Timelapse</string>
     <string name="mode_panorama">Panorama</string>
+    <string name="mode_sky">Sky</string>
+    <string name="sky_loading">Loading the stars…</string>
+    <string name="sky_need_location">Allow location to see what\'s in your sky</string>
+    <string name="sky_calibrate">Wave the phone in a figure of eight to steady the compass</string>
+    <string name="sky_target">%1$s · %2$d° up, %3$s</string>
+    <string-array name="compass_points">
+        <item>N</item>
+        <item>NE</item>
+        <item>E</item>
+        <item>SE</item>
+        <item>S</item>
+        <item>SW</item>
+        <item>W</item>
+        <item>NW</item>
+    </string-array>
     <string name="panorama_start">Tap the shutter, then turn slowly</string>
     <plurals name="panorama_turning">
         <item quantity="one">Keep turning slowly · %d photo</item>

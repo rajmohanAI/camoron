@@ -38,6 +38,8 @@ import com.camoron.domain.repository.PhotoProcessor
 import com.camoron.domain.repository.SettingsRepository
 import com.camoron.domain.repository.PreviewTarget
 import com.camoron.domain.repository.RotationSensor
+import com.camoron.domain.repository.SkyCatalogueSource
+import com.camoron.domain.model.SkyCatalogue
 import com.camoron.domain.usecase.CaptureAndSavePhoto
 import com.camoron.domain.usecase.PlanZoomPresets
 import com.google.common.truth.Truth.assertThat
@@ -104,6 +106,7 @@ class CameraViewModelTest {
             following = false
         }
         override fun current() = fix
+        override fun approximate() = fix
     }
 
     @Before
@@ -113,19 +116,58 @@ class CameraViewModelTest {
     fun tearDown() = Dispatchers.resetMain()
 
     private fun viewModel() =
-        CameraViewModel(controller, CaptureAndSavePhoto(controller, media, processor), settings, media, PlanZoomPresets(), location, rotation)
+        CameraViewModel(controller, CaptureAndSavePhoto(controller, media, processor), settings, media, PlanZoomPresets(), location, rotation, skyCatalogues)
 
     private val rotation = object : RotationSensor {
         var yaw: Float? = 0f
         var listening = false
-        override fun start(): Boolean {
+        var compass = false
+        override fun start(compass: Boolean): Boolean {
             listening = true
+            this.compass = compass
             return true
         }
+        override fun orientation(): FloatArray? = null
+        override fun compassUnreliable() = false
+        override fun declinationDegrees(point: GeoPoint, epochMillis: Long) = 0f
         override fun stop() {
             listening = false
         }
         override fun cameraYaw(front: Boolean) = yaw
+    }
+
+    private val skyCatalogues = object : SkyCatalogueSource {
+        var loads = 0
+        override suspend fun load(): SkyCatalogue {
+            loads++
+            return SkyCatalogue(emptyList(), emptyList())
+        }
+    }
+
+    @Test
+    fun `sky view turns on the compass and the location, and off again when left`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(location.following).isFalse()
+
+        vm.setMode(CaptureMode.SKY)
+        assertThat(rotation.listening).isTrue()
+        assertThat(rotation.compass).isTrue()
+        assertThat(location.following).isTrue()
+        assertThat(vm.uiState.value.skyCatalogue).isNotNull()
+        assertThat(vm.skyLocation()).isEqualTo(GeoPoint(51.5, -0.12, 20.0))
+        assertThat(vm.uiState.value.showFlashControl).isFalse()
+
+        vm.onForegroundChanged(false)
+        assertThat(rotation.listening).isFalse()
+        vm.onForegroundChanged(true)
+        assertThat(rotation.listening).isTrue()
+
+        vm.setMode(CaptureMode.PHOTO)
+        assertThat(rotation.listening).isFalse()
+        assertThat(location.following).isFalse()
+        vm.setMode(CaptureMode.SKY)
+        assertThat(skyCatalogues.loads).isEqualTo(1)
     }
 
     @Test

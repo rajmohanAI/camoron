@@ -57,6 +57,12 @@ internal class AndroidLocationProvider @Inject constructor(
         return GeoPoint(location.latitude, location.longitude, location.altitude.takeIf { location.hasAltitude() })
     }
 
+    override fun approximate(): GeoPoint? {
+        if (!allowed()) return null
+        val location = latest ?: return null
+        return GeoPoint(location.latitude, location.longitude, location.altitude.takeIf { location.hasAltitude() })
+    }
+
     /** A clearly newer fix, or one about as recent and no less accurate (GPS over network). */
     private fun isBetter(candidate: Location): Boolean {
         val old = latest ?: return true
