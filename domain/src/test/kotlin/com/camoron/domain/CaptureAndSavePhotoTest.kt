@@ -13,6 +13,8 @@ import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PhotoAdjustments
+import com.camoron.domain.model.RawBurst
+import com.camoron.domain.model.RawColour
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.model.StillAspect
 import com.camoron.domain.model.VideoSpec
@@ -58,7 +60,13 @@ class CaptureAndSavePhotoTest {
 
         override suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?) =
             frames.first().withBytes(byteArrayOf(5))
+
+        override suspend fun developRaw(burst: RawBurst): CapturedImage {
+            developed += burst.frames.size
+            return burst.preview.withBytes(byteArrayOf(3))
+        }
     }
+    private val developed = mutableListOf<Int>()
     private val merged = mutableListOf<Int>()
     private val mergeCrops = mutableListOf<Float?>()
 
@@ -139,6 +147,18 @@ class CaptureAndSavePhotoTest {
     }
 
     @Test
+    fun `detail develops a raw burst, shows the camera's jpeg first and saves no dng`() = runTest {
+        var shown: CapturedImage? = null
+        val adjustments = PhotoAdjustments(cropAspect = 3f / 4, enhance = true)
+        val uri = useCase(includeDng = true)(0, includeRaw = true, adjustments = adjustments, detailFrames = 4, onCaptured = { shown = it })
+        assertThat(shown).isEqualTo(jpeg)
+        assertThat(developed).containsExactly(4)
+        assertThat(processed).containsExactly(adjustments)
+        assertThat(uri).isEqualTo("content://1")
+        assertThat(saved.single().bytes.single()).isEqualTo(9.toByte())
+    }
+
+    @Test
     fun `night merges only the part the photo keeps`() = runTest {
         val adjustments = PhotoAdjustments(cropAspect = 9f / 20, enhance = true)
         useCase(includeDng = false)(0, adjustments = adjustments, nightFrames = 8)
@@ -161,6 +181,21 @@ class CaptureAndSavePhotoTest {
             extension: CameraExtension?,
         ) = Unit
         override suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int) = List(frames) { jpeg }
+        override suspend fun captureRawBurst(deviceRotationDegrees: Int, frames: Int) = RawBurst(
+            frames = List(frames) { ShortArray(4) },
+            width = 2,
+            height = 2,
+            pattern = listOf(RawColour.RED, RawColour.GREEN, RawColour.GREEN, RawColour.BLUE),
+            blackLevel = FloatArray(4),
+            whiteLevel = 1023,
+            whiteBalance = floatArrayOf(2f, 1f, 1.5f),
+            colourMatrix = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
+            noiseScale = null,
+            noiseOffset = null,
+            shading = null,
+            rotationDegrees = 90,
+            preview = jpeg,
+        )
         override suspend fun setFlashMode(mode: FlashMode) = Unit
         override suspend fun applySettings(settings: ManualSettings) = Unit
         override suspend fun focusAt(x: Float, y: Float, track: Boolean) = Unit

@@ -27,7 +27,8 @@ class CaptureAndSavePhoto @Inject constructor(
      * Returns the gallery URI of the JPEG; the DNG, if any, is saved alongside it untouched (RAW keeps
      * the full sensor frame, so crop, look and mirror apply to the JPEG only).
      *
-     * With [nightFrames] above 1 the photo is a merged night burst instead (no RAW).
+     * With [nightFrames] above 1 the photo is a merged night burst instead (no RAW). With
+     * [detailFrames] above 1 it is a merged and developed RAW burst (Detail mode; no DNG is saved).
      *
      * [onCaptured] runs as soon as the camera has delivered the photo, before optimising and saving, with
      * the camera's photo, so the shot can be shown at once and the shutter is ready for the next one
@@ -39,8 +40,14 @@ class CaptureAndSavePhoto @Inject constructor(
         includeRaw: Boolean = false,
         adjustments: PhotoAdjustments = PhotoAdjustments.NONE,
         nightFrames: Int = 0,
+        detailFrames: Int = 0,
         onCaptured: (CapturedImage) -> Unit = {},
     ): String {
+        if (detailFrames > 1) {
+            val burst = retryOnce { camera.captureRawBurst(deviceRotationDegrees, detailFrames) }
+            onCaptured(burst.preview)
+            return saving.withLock { media.save(adjust(processor.developRaw(burst), adjustments)) }
+        }
         if (nightFrames > 1) {
             val frames = retryOnce { camera.captureBurst(deviceRotationDegrees, nightFrames) }
             onCaptured(frames.first())
