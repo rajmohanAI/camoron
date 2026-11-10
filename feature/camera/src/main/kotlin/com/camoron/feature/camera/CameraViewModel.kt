@@ -79,6 +79,8 @@ enum class CaptureMode(val video: VideoKind? = null) {
     PHOTO,
     /** A photo with the people kept sharp and the background blurred. */
     PORTRAIT,
+    /** Our own multi-frame RAW pipeline: a burst merged and developed on the phone, for more detail. */
+    DETAIL,
     PRO,
     PANORAMA,
     /** The camera with the stars, planets and constellations it points at named on top. */
@@ -161,6 +163,24 @@ data class CameraUiState(
     val rawActive: Boolean
         get() = rawEnabled && mode == CaptureMode.PRO && selectedCamera?.supportsRaw == true
 
+    /** Detail mode merges RAW frames, on cameras that can deliver them; elsewhere it takes normal photos. */
+    val detailActive: Boolean
+        get() = mode == CaptureMode.DETAIL && selectedCamera?.supportsRaw == true
+
+    /** The session carries a RAW stream, for Pro's DNGs or Detail's bursts. */
+    val rawStream: Boolean get() = rawActive || detailActive
+
+    /**
+     * RAW frames to merge for the next photo, or 0 for a normal one. RAW frames are the whole
+     * sensor, so a zoomed shot is a normal photo. Dim light gets a longer burst.
+     */
+    val detailFrames: Int
+        get() = when {
+            !detailActive || zoomRatio != 1f -> 0
+            indoorLight -> DETAIL_LOW_LIGHT_FRAMES
+            else -> DETAIL_FRAMES
+        }
+
     val shutterSoundOn: Boolean get() = cameraSettings.shutterSound || shutterSoundForced
 
     /**
@@ -170,7 +190,7 @@ data class CameraUiState(
     val showFlashControl: Boolean
         get() = if (mode.isVideo) {
             selectedCamera?.hasFlash == true
-        } else if (mode == CaptureMode.PANORAMA || mode == CaptureMode.SKY) {
+        } else if (mode == CaptureMode.PANORAMA || mode == CaptureMode.SKY || mode == CaptureMode.DETAIL) {
             false
         } else {
             selectedCamera?.supportsFlashControl == true && activeExtension == null
@@ -546,7 +566,7 @@ class CameraViewModel @Inject constructor(
     fun setMode(mode: CaptureMode) {
         val before = _uiState.value
         if (before.recording || before.panoramaSweeping || mode == before.mode) return
-        val rawBefore = before.rawActive
+        val rawBefore = before.rawStream
         _uiState.update { it.copy(mode = mode) }
         if (mode == CaptureMode.SKY || before.mode == CaptureMode.SKY) {
             syncLocation()
@@ -558,8 +578,8 @@ class CameraViewModel @Inject constructor(
             return
         }
         if (syncExtensionSession()) return
-        if (_uiState.value.rawActive != rawBefore) {
-            // Leaving or entering Pro with RAW on changes the session's streams.
+        if (_uiState.value.rawStream != rawBefore) {
+            // Leaving or entering Pro with RAW on, or Detail, changes the session's streams.
             openIfReady()
             return
         }
@@ -612,9 +632,9 @@ class CameraViewModel @Inject constructor(
     fun setWhiteBalance(wb: WhiteBalance) = updateSettings { it.copy(whiteBalance = wb) }
 
     fun setRawEnabled(enabled: Boolean) {
-        val rawBefore = _uiState.value.rawActive
+        val rawBefore = _uiState.value.rawStream
         _uiState.update { it.copy(rawEnabled = enabled) }
-        if (_uiState.value.rawActive != rawBefore) openIfReady()
+        if (_uiState.value.rawStream != rawBefore) openIfReady()
     }
 
     fun focusAt(x: Float, y: Float) {
@@ -825,8 +845,9 @@ class CameraViewModel @Inject constructor(
         val state = _uiState.value
         val night = state.nightActive
         val frames = state.burstFrames
-        if (night) _uiState.update { it.copy(nightCapturing = true) }
-        if (!night && needsScreenFlash(state)) {
+        val detailFrames = state.detailFrames
+        if (night || detailFrames > 0) _uiState.update { it.copy(nightCapturing = true) }
+        if (!night && detailFrames == 0 && needsScreenFlash(state)) {
             // Light the screen first so auto exposure has time to adapt to it.
             _uiState.update { it.copy(screenFlash = true) }
             delay(SCREEN_FLASH_LEAD_MS)
@@ -845,14 +866,14 @@ class CameraViewModel @Inject constructor(
             showInstantThumbnail(photo, adjustments.mirror)
         }
         val uri = runCatching {
-            captureAndSave(deviceRotation, state.rawActive, adjustments, frames, onCaptured = ready)
+            captureAndSave(deviceRotation, state.rawActive, adjustments, frames, detailFrames, onCaptured = ready)
         }.onFailure { DiagnosticLog.record(TAG, "Couldn't take the photo", it) }.getOrNull()
         if (uri != null) {
             DiagnosticLog.info(
                 TAG,
                 "Photo saved ${SystemClock.elapsedRealtime() - started} ms after the shutter " +
                     "(${state.cameraSettings.aspectRatio}, preview ${state.previewSize}, screen %.3f, crop ${adjustments.cropAspect}, ".format(displayAspect) +
-                    "enhance ${adjustments.enhance}, zoom ${adjustments.zoom}, frames $frames, maker mode ${state.activeExtension ?: "none"})",
+                    "enhance ${adjustments.enhance}, zoom ${adjustments.zoom}, frames $frames, RAW frames $detailFrames, maker mode ${state.activeExtension ?: "none"})",
             )
         }
         _uiState.update {
@@ -993,7 +1014,7 @@ class CameraViewModel @Inject constructor(
         val key = OpenKey(
             selected.cameraId,
             target,
-            raw = state.rawActive,
+            raw = state.rawStream,
             aspect = state.cameraSettings.aspectRatio.stillAspect,
             extension = state.activeExtension,
             video = state.videoSpec,
@@ -1068,3 +1089,5 @@ private const val INDOOR_EXPOSURE = 1.5
 
 internal const val NIGHT_FRAMES = 8
 internal const val INDOOR_FRAMES = 4
+internal const val DETAIL_FRAMES = 4
+internal const val DETAIL_LOW_LIGHT_FRAMES = 6

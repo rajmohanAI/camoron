@@ -61,6 +61,7 @@ import com.camoron.domain.model.LiveExposure
 import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.RawBurst
 import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.StillAspect
 import com.camoron.domain.model.VideoKind
@@ -1249,6 +1250,102 @@ class Camera2Controller @Inject constructor(
             reader.setOnImageAvailableListener(null, null)
             results.close()
             // Unlock auto exposure for the preview again.
+            runCatching { startRepeating(camera) }
+        }
+    }
+
+    override suspend fun captureRawBurst(deviceRotationDegrees: Int, frames: Int): RawBurst = locked {
+        val camera = active ?: error("Camera is not open")
+        val rawReader = camera.rawReader ?: error("This session has no RAW stream")
+        val jpegReader = camera.jpegReader ?: error("Photos can't be taken while filming")
+        val characteristics = camera.characteristics
+        val pattern = RawDevelopment.pattern(characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT))
+            ?: error("This sensor's colour filter isn't a 2x2 Bayer pattern")
+        val rotation = CameraMath.jpegOrientation(camera.sensorOrientation, deviceRotationDegrees, camera.isFront)
+        rawReader.acquireLatestImage()?.close()
+        jpegReader.acquireLatestImage()?.close()
+
+        // Each frame is copied out as it lands, which frees the reader's buffer for the next one.
+        val raws = Channel<ShortArray>(Channel.UNLIMITED)
+        val jpeg = CompletableDeferred<ByteArray>()
+        val firstResult = CompletableDeferred<TotalCaptureResult>()
+        val width = rawReader.width
+        val height = rawReader.height
+        val started = SystemClock.elapsedRealtime()
+        rawReader.setOnImageAvailableListener({ r ->
+            r.acquireNextImage()?.use { image -> raws.trySend(RawDevelopment.copy(image, width, height)) }
+        }, handler)
+        jpegReader.setOnImageAvailableListener({ r ->
+            r.acquireNextImage()?.use { image ->
+                val buffer = image.planes[0].buffer
+                jpeg.complete(ByteArray(buffer.remaining()).also(buffer::get))
+            }
+        }, handler)
+        val shadingMap = CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON in
+            characteristics.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES)?.toSet().orEmpty()
+        try {
+            val requests = List(frames) { index ->
+                camera.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                    addTarget(rawReader.surface)
+                    // The camera's own JPEG of the first frame, shown straight away and kept if developing fails.
+                    if (index == 0) addTarget(jpegReader.surface)
+                    applyControls(camera, this)
+                    // Identical exposures without flash merge cleanly.
+                    if (!isManualExposure(camera)) {
+                        set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+                        set(CaptureRequest.CONTROL_AE_LOCK, true)
+                    }
+                    set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                    if (camera.capabilities.hasFlash) set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
+                    if (shadingMap) set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON)
+                    set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY)
+                    set(CaptureRequest.JPEG_ORIENTATION, rotation)
+                    applyBurstProcessing(camera, this)
+                }.build()
+            }
+            camera.session.captureBurst(requests, object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+                    firstResult.complete(result)
+                }
+
+                override fun onCaptureFailed(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    failure: android.hardware.camera2.CaptureFailure,
+                ) {
+                    raws.trySend(ShortArray(0))
+                }
+            }, handler)
+
+            val collected = mutableListOf<ShortArray>()
+            val preview = withTimeoutOrNull(BURST_TIMEOUT_MS) {
+                repeat(frames) {
+                    val frame = raws.receive()
+                    if (frame.isNotEmpty()) collected += frame
+                }
+                jpeg.await()
+            } ?: error("The RAW burst timed out")
+            val result = withTimeoutOrNull(BURST_TIMEOUT_MS) { firstResult.await() } ?: error("The RAW burst gave no result")
+            if (collected.isEmpty()) error("The RAW burst produced no frames")
+            DiagnosticLog.info(
+                TAG,
+                "RAW burst of ${collected.size}/$frames frames ${width}x$height in ${SystemClock.elapsedRealtime() - started} ms " +
+                    "(exposure %.1f ms, ISO %s, shading map %s)".format(
+                        (result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L) / 1_000_000.0,
+                        result.get(CaptureResult.SENSOR_SENSITIVITY),
+                        result.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP) != null,
+                    ),
+            )
+            val timestamp = System.currentTimeMillis()
+            RawDevelopment.burst(
+                characteristics, result, collected, width, height, pattern, rotation,
+                CapturedImage(preview, ImageFormat.JPEG, PixelSize(jpegReader.width, jpegReader.height), timestamp),
+            )
+        } finally {
+            rawReader.setOnImageAvailableListener(null, null)
+            jpegReader.setOnImageAvailableListener(null, null)
+            raws.close()
+            // Unlock auto exposure and white balance for the preview again.
             runCatching { startRepeating(camera) }
         }
     }
