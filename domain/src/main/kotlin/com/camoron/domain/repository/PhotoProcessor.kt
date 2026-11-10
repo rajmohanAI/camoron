@@ -2,6 +2,7 @@ package com.camoron.domain.repository
 
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.PhotoAdjustments
+import com.camoron.domain.model.RawBurst
 
 /** Post-capture stage that makes the saved JPEG match what the user framed. */
 interface PhotoProcessor {
@@ -17,6 +18,13 @@ interface PhotoProcessor {
      * merged, which saves time, and the result is already that shape.
      */
     suspend fun mergeNight(frames: List<CapturedImage>, cropAspect: Float? = null): CapturedImage
+
+    /**
+     * Detail mode: aligns and merges a RAW [burst] tile by tile, then develops it (lens shading,
+     * white balance, demosaicing, colour and tone) into a JPEG. Returns the camera's own JPEG of
+     * the burst if developing fails.
+     */
+    suspend fun developRaw(burst: RawBurst): CapturedImage = burst.preview
 
     /**
      * Panorama: stitches [frames] taken as the phone turned, each at its [yaws] (radians, increasing

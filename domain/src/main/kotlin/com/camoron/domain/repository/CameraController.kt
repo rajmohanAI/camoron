@@ -12,6 +12,7 @@ import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.RawBurst
 import com.camoron.domain.model.StillAspect
 import com.camoron.domain.model.VideoSpec
 import java.io.FileDescriptor
@@ -105,6 +106,13 @@ interface CameraController {
      * without flash, for merging.
      */
     suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage>
+
+    /**
+     * Detail mode: [frames] RAW frames back to back at one locked exposure, plus the camera's own
+     * JPEG of the first. Needs a session opened with RAW enabled.
+     */
+    suspend fun captureRawBurst(deviceRotationDegrees: Int, frames: Int): RawBurst =
+        error("This camera can't take RAW bursts")
 
     /**
      * Preview buffer size for a video session on [cameraId]. Video frames are drawn upright by the

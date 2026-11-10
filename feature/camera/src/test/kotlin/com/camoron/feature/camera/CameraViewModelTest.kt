@@ -27,6 +27,8 @@ import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.NightSetting
 import com.camoron.domain.model.ShotLook
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.RawBurst
+import com.camoron.domain.model.RawColour
 import com.camoron.domain.model.VideoKind
 import com.camoron.domain.model.VideoResolution
 import com.camoron.domain.model.VideoSpec
@@ -88,6 +90,11 @@ class CameraViewModelTest {
         override suspend fun mergeNight(frames: List<CapturedImage>, cropAspect: Float?): CapturedImage {
             merged += frames.size
             return frames.first()
+        }
+        val developed = mutableListOf<Int>()
+        override suspend fun developRaw(burst: RawBurst): CapturedImage {
+            developed += burst.frames.size
+            return burst.preview
         }
         val stitched = mutableListOf<List<Float>>()
         override suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?): CapturedImage {
@@ -355,6 +362,30 @@ class CameraViewModelTest {
 
         vm.setMode(CaptureMode.VIDEO)
         assertThat(vm.uiState.value.showGeotagControl).isFalse()
+    }
+
+    @Test
+    fun `detail mode merges a raw burst and saves no dng, and a zoomed shot is a normal photo`() = runTest {
+        controller.all = listOf(back.copy(maxDigitalZoom = 4f), front)
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.DETAIL)
+        assertThat(controller.openedWithRaw).containsExactly(false, true).inOrder()
+        assertThat(vm.uiState.value.showFlashControl).isFalse()
+
+        vm.onShutter()
+        assertThat(controller.rawBursts).containsExactly(DETAIL_FRAMES)
+        assertThat(processor.developed).containsExactly(DETAIL_FRAMES)
+        assertThat(controller.capturedWithRaw).isEmpty()
+        assertThat(media.saved).isEqualTo(1)
+
+        vm.onPinch(2f)
+        vm.onShutter()
+        assertThat(controller.rawBursts).hasSize(1)
+        assertThat(controller.capturedWithRaw).containsExactly(false)
+
+        vm.setMode(CaptureMode.PHOTO)
+        assertThat(controller.openedWithRaw.last()).isFalse()
     }
 
     @Test
@@ -988,6 +1019,25 @@ class CameraViewModelTest {
         override suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int): List<CapturedImage> {
             bursts += frames
             return List(frames) { CapturedImage(ByteArray(1), ImageFormat.JPEG, PixelSize(4000, 3000), 0L) }
+        }
+        val rawBursts = mutableListOf<Int>()
+        override suspend fun captureRawBurst(deviceRotationDegrees: Int, frames: Int): RawBurst {
+            rawBursts += frames
+            return RawBurst(
+                frames = List(frames) { ShortArray(4) },
+                width = 2,
+                height = 2,
+                pattern = listOf(RawColour.RED, RawColour.GREEN, RawColour.GREEN, RawColour.BLUE),
+                blackLevel = FloatArray(4),
+                whiteLevel = 1023,
+                whiteBalance = floatArrayOf(1f, 1f, 1f),
+                colourMatrix = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
+                noiseScale = null,
+                noiseOffset = null,
+                shading = null,
+                rotationDegrees = 90,
+                preview = CapturedImage(ByteArray(1), ImageFormat.JPEG, PixelSize(4000, 3000), 0L),
+            )
         }
         val videoOpened = mutableListOf<VideoSpec>()
         val videoFilters = mutableListOf<Pair<FloatArray, EnhanceParams?>>()

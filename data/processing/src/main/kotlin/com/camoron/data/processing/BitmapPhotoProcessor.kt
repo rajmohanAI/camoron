@@ -17,6 +17,7 @@ import com.camoron.domain.model.ImageFormat
 import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.PixelSize
+import com.camoron.domain.model.RawBurst
 import com.camoron.domain.repository.PhotoProcessor
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -110,6 +111,34 @@ class BitmapPhotoProcessor @Inject constructor(
                 reference
             }
         }
+    }
+
+    override suspend fun developRaw(burst: RawBurst): CapturedImage {
+        val preview = burst.preview
+        return withContext(processing) {
+            try {
+                RawDeveloper(burst).develop()?.let { (bytes, size) ->
+                    val exif = ExifInterface(ByteArrayInputStream(preview.bytes))
+                    // Our pixels are the sensor's, so the turn upright is the burst's own, whatever the camera's JPEG did.
+                    preview.withBytes(writeExif(bytes, exif, exifOrientation(burst.rotationDegrees), size), size)
+                } ?: preview
+            } catch (e: OutOfMemoryError) {
+                DiagnosticLog.record(TAG, "Not enough memory to develop the RAW burst; keeping the camera's photo", e)
+                preview
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                DiagnosticLog.record(TAG, "Couldn't develop the RAW burst; keeping the camera's photo", e)
+                preview
+            }
+        }
+    }
+
+    private fun exifOrientation(degrees: Int): Int = when (((degrees % 360) + 360) % 360) {
+        90 -> ExifInterface.ORIENTATION_ROTATE_90
+        180 -> ExifInterface.ORIENTATION_ROTATE_180
+        270 -> ExifInterface.ORIENTATION_ROTATE_270
+        else -> ExifInterface.ORIENTATION_NORMAL
     }
 
     override suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?): CapturedImage? {
