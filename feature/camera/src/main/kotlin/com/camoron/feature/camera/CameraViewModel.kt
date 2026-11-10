@@ -105,6 +105,8 @@ data class CameraUiState(
     /** The saved photo [instantThumbnail] stands for, once it is saved. */
     val instantThumbnailUri: String? = null,
     val rawEnabled: Boolean = false,
+    /** Portrait's exposure compensation, in the camera's steps; auto exposure does the rest. */
+    val portraitExposure: Int = 0,
     /** Seconds left on the self-timer, or null when no countdown is running. */
     val countdown: Int? = null,
     /** The screen is lit white to act as a flash for the front camera. */
@@ -147,6 +149,20 @@ data class CameraUiState(
 
     /** Timer and aspect ratio belong to photos; a panorama takes its own shape. */
     val showPhotoControls: Boolean get() = !mode.isVideo && mode != CaptureMode.PANORAMA
+
+    /** Portrait has its own exposure slider; Pro has the full set of dials. */
+    val showExposureControl: Boolean get() = mode == CaptureMode.PORTRAIT
+
+    /** What the camera's exposure should be in the current mode. */
+    val modeSettings: ManualSettings
+        get() = when (mode) {
+            CaptureMode.PRO -> settings
+            CaptureMode.PORTRAIT -> ManualSettings.AUTO.copy(exposureCompensation = portraitExposure)
+            else -> ManualSettings.AUTO
+        }
+
+    /** Save location applies to every kind of photo; Sky view always uses the location anyway. */
+    val showGeotagControl: Boolean get() = !mode.isVideo && mode != CaptureMode.SKY
 
     /** Zoom as the user thinks of it, relative to the main camera. */
     val displayZoom: Float get() = lensBase * zoomRatio
@@ -583,8 +599,8 @@ class CameraViewModel @Inject constructor(
             openIfReady()
             return
         }
-        // Pro mode restores whatever the user dialled in; the other modes are fully automatic.
-        applySettings(if (mode == CaptureMode.PRO) _uiState.value.settings else ManualSettings.AUTO)
+        // Pro mode restores whatever the user dialled in, Portrait its exposure; the other modes are fully automatic.
+        applySettings(_uiState.value.modeSettings)
     }
 
     /** In video the flash is a light that is on or off. */
@@ -616,6 +632,9 @@ class CameraViewModel @Inject constructor(
 
     fun toggleEnhance() = updateCameraSettings { it.copy(enhance = !it.enhance) }
 
+    /** Save location, from the camera screen as well as Settings; the screen asks for the permission first. */
+    fun setGeotag(on: Boolean) = updateCameraSettings { it.copy(geotag = on) }
+
     fun cycleAspectRatio() = updateCameraSettings {
         it.copy(aspectRatio = AspectRatioSetting.entries[(it.aspectRatio.ordinal + 1) % AspectRatioSetting.entries.size])
     }
@@ -630,6 +649,11 @@ class CameraViewModel @Inject constructor(
     fun setShutter(exposureNs: Long?) = updateSettings { it.copy(exposureTimeNs = exposureNs) }
     fun setExposureCompensation(steps: Int) = updateSettings { it.copy(exposureCompensation = steps) }
     fun setWhiteBalance(wb: WhiteBalance) = updateSettings { it.copy(whiteBalance = wb) }
+
+    fun setPortraitExposure(steps: Int) {
+        _uiState.update { it.copy(portraitExposure = steps) }
+        if (_uiState.value.mode == CaptureMode.PORTRAIT) applySettings(_uiState.value.modeSettings)
+    }
 
     fun setRawEnabled(enabled: Boolean) {
         val rawBefore = _uiState.value.rawStream
@@ -1035,7 +1059,8 @@ class CameraViewModel @Inject constructor(
                     extension = key.extension,
                 )
             }
-            if (state.mode == CaptureMode.PRO) camera.applySettings(_uiState.value.settings)
+            val settings = _uiState.value.modeSettings
+            if (state.mode == CaptureMode.PRO || settings != ManualSettings.AUTO) camera.applySettings(settings)
             val zoom = _uiState.value.zoomRatio
             if (zoom != 1f) camera.setZoom(zoom)
         }

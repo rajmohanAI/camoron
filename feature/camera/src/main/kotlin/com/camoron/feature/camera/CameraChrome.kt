@@ -60,6 +60,8 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FlashlightOff
 import androidx.compose.material.icons.filled.FlashlightOn
 import androidx.compose.material.icons.filled.LocalFlorist
+import androidx.compose.material.icons.filled.LocationOff
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Settings
@@ -122,6 +124,7 @@ internal fun TopMenu(
     onEnhance: () -> Unit,
     onResolution: () -> Unit,
     onTimelapseSpeed: () -> Unit,
+    onGeotag: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -185,6 +188,12 @@ internal fun TopMenu(
             val ratioText = stringResource(ratioLabel)
             TopMenuButton(stringResource(R.string.cd_aspect_ratio), onAspectRatio, ratioText) {
                 FrameGlyph(ratioText, frameShape.first, frameShape.second)
+            }
+        }
+        if (state.showGeotagControl) {
+            val on = settings.geotag
+            TopMenuButton(stringResource(R.string.cd_geotag), onGeotag, stringResource(if (on) R.string.option_on else R.string.option_off)) {
+                MenuIcon(if (on) Icons.Filled.LocationOn else Icons.Filled.LocationOff, if (on) MODE_SELECTED else Color.White)
             }
         }
         // Changing these reopens the camera, so they wait until a recording ends.

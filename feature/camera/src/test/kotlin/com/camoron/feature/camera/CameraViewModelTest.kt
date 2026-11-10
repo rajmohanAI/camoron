@@ -332,6 +332,39 @@ class CameraViewModelTest {
     }
 
     @Test
+    fun `portrait keeps its own exposure, and other modes go back to auto`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.PORTRAIT)
+        assertThat(vm.uiState.value.showExposureControl).isTrue()
+        vm.setPortraitExposure(3)
+        assertThat(controller.applied.last()).isEqualTo(ManualSettings.AUTO.copy(exposureCompensation = 3))
+
+        vm.setMode(CaptureMode.PHOTO)
+        assertThat(controller.applied.last()).isEqualTo(ManualSettings.AUTO)
+        assertThat(vm.uiState.value.showExposureControl).isFalse()
+
+        vm.setMode(CaptureMode.PORTRAIT)
+        assertThat(controller.applied.last()).isEqualTo(ManualSettings.AUTO.copy(exposureCompensation = 3))
+    }
+
+    @Test
+    fun `save location can be switched from the camera screen`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(vm.uiState.value.showGeotagControl).isTrue()
+        vm.setGeotag(true)
+        assertThat(settings.state.value.geotag).isTrue()
+        assertThat(location.following).isTrue()
+        vm.setGeotag(false)
+        assertThat(settings.state.value.geotag).isFalse()
+        assertThat(location.following).isFalse()
+
+        vm.setMode(CaptureMode.VIDEO)
+        assertThat(vm.uiState.value.showGeotagControl).isFalse()
+    }
+
+    @Test
     fun `detail mode merges a raw burst and saves no dng, and a zoomed shot is a normal photo`() = runTest {
         controller.all = listOf(back.copy(maxDigitalZoom = 4f), front)
         val vm = viewModel()

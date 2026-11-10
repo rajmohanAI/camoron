@@ -11,6 +11,21 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Exposure
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -31,9 +46,16 @@ import com.camoron.domain.model.WhiteBalance
 import com.camoron.domain.model.WhiteBalancePreset
 import kotlin.math.roundToInt
 
+/** The Pro dials there are; one at a time is open, so the preview stays clear. */
+private enum class ProDial { ISO, SHUTTER, EV, WB }
+
 /**
  * Pro mode dials. Every control is driven by [capabilities]: anything the hardware cannot honour
  * is shown disabled with a reason rather than silently ignored.
+ *
+ * Each dial is a chip showing its current value; tapping one opens just that slider, and tapping
+ * it again (or the hide button) closes it, so the controls never cover more than a strip of the
+ * preview.
  */
 @Composable
 internal fun ProControls(
@@ -48,14 +70,40 @@ internal fun ProControls(
 ) {
     val unsupported = stringResource(R.string.unsupported_on_camera)
     val auto = stringResource(R.string.control_auto)
+    var open by rememberSaveable { mutableStateOf<ProDial?>(null) }
 
-    Column(modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+    val isoRange = capabilities.isoRange
+    val manualIso = settings.iso
+    val isoShown = manualIso ?: liveExposure?.iso
+    val isoText = when {
+        manualIso != null -> manualIso.toString()
+        isoShown != null -> "$auto · $isoShown"
+        else -> auto
+    }
+    val shutterRange = capabilities.exposureTimeRangeNs
+    val manualShutter = settings.exposureTimeNs
+    val shutterShown = manualShutter ?: liveExposure?.exposureTimeNs
+    val shutterText = when {
+        manualShutter != null -> ExposureScale.formatShutter(manualShutter)
+        shutterShown != null -> "$auto · ${ExposureScale.formatShutter(shutterShown)}"
+        else -> auto
+    }
+    val evRange = capabilities.exposureCompensationRange
+    val evSupported = capabilities.supports(ManualControl.EXPOSURE_COMPENSATION)
+    val evText = ExposureScale.formatEv(settings.exposureCompensation, capabilities.exposureCompensationStep)
+    val wbText = when (val wb = settings.whiteBalance) {
+        WhiteBalance.Auto -> stringResource(R.string.wb_auto)
+        is WhiteBalance.Preset -> stringResource(wb.preset.label())
+        is WhiteBalance.Kelvin -> "${wb.temperature} K"
+    }
+
+    Column(modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Box(Modifier.weight(1f).height(48.dp)) {
+            Box(Modifier.weight(1f).height(32.dp)) {
                 when {
                     rawEnabled && capabilities.supportsRaw -> Text(
                         stringResource(R.string.histogram_off_with_raw),
@@ -74,68 +122,108 @@ internal fun ProControls(
                     Text(stringResource(if (capabilities.supportsRaw) R.string.raw_label else R.string.raw_unsupported))
                 },
             )
+            if (open != null) {
+                IconButton(onClick = { open = null }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Filled.ExpandMore, contentDescription = stringResource(R.string.cd_hide_dials))
+                }
+            }
         }
 
-        // ISO
-        val isoRange = capabilities.isoRange
-        val manualIso = settings.iso
-        val isoShown = manualIso ?: liveExposure?.iso
-        LabeledSlider(
-            label = stringResource(R.string.control_iso),
-            valueText = when {
-                manualIso != null -> manualIso.toString()
-                isoShown != null -> "$auto · $isoShown"
-                else -> auto
-            },
-            value = if (isoRange != null && isoShown != null) ExposureScale.toSlider(isoShown, isoRange) else 0f,
-            onValueChange = { f -> isoRange?.let { viewModel.setIso(ExposureScale.fromSlider(f, it)) } },
-            enabled = capabilities.supports(ManualControl.ISO),
-            disabledReason = unsupported,
-            onAuto = { viewModel.setIso(null) }.takeIf { settings.iso != null },
-        )
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf(
+                ProDial.ISO to "${stringResource(R.string.control_iso)} $isoText",
+                ProDial.SHUTTER to "${stringResource(R.string.control_shutter)} $shutterText",
+                ProDial.EV to "${stringResource(R.string.control_ev)} $evText",
+                ProDial.WB to "${stringResource(R.string.control_wb)} $wbText",
+            ).forEach { (dial, text) ->
+                FilterChip(
+                    selected = open == dial,
+                    onClick = { open = if (open == dial) null else dial },
+                    label = { Text(text, maxLines = 1) },
+                )
+            }
+        }
 
-        // Shutter speed
-        val shutterRange = capabilities.exposureTimeRangeNs
-        val manualShutter = settings.exposureTimeNs
-        val shutterShown = manualShutter ?: liveExposure?.exposureTimeNs
-        LabeledSlider(
-            label = stringResource(R.string.control_shutter),
-            valueText = when {
-                manualShutter != null -> ExposureScale.formatShutter(manualShutter)
-                shutterShown != null -> "$auto · ${ExposureScale.formatShutter(shutterShown)}"
-                else -> auto
-            },
-            value = if (shutterRange != null && shutterShown != null) {
-                ExposureScale.toSlider(shutterShown, shutterRange)
-            } else {
-                0f
-            },
-            onValueChange = { f -> shutterRange?.let { viewModel.setShutter(ExposureScale.fromSlider(f, it)) } },
-            enabled = capabilities.supports(ManualControl.SHUTTER_SPEED),
-            disabledReason = unsupported,
-            onAuto = { viewModel.setShutter(null) }.takeIf { settings.exposureTimeNs != null },
-        )
+        when (open) {
+            ProDial.ISO -> LabeledSlider(
+                label = stringResource(R.string.control_iso),
+                valueText = isoText,
+                value = if (isoRange != null && isoShown != null) ExposureScale.toSlider(isoShown, isoRange) else 0f,
+                onValueChange = { f -> isoRange?.let { viewModel.setIso(ExposureScale.fromSlider(f, it)) } },
+                enabled = capabilities.supports(ManualControl.ISO),
+                disabledReason = unsupported,
+                onAuto = { viewModel.setIso(null) }.takeIf { settings.iso != null },
+            )
+            ProDial.SHUTTER -> LabeledSlider(
+                label = stringResource(R.string.control_shutter),
+                valueText = shutterText,
+                value = if (shutterRange != null && shutterShown != null) {
+                    ExposureScale.toSlider(shutterShown, shutterRange)
+                } else {
+                    0f
+                },
+                onValueChange = { f -> shutterRange?.let { viewModel.setShutter(ExposureScale.fromSlider(f, it)) } },
+                enabled = capabilities.supports(ManualControl.SHUTTER_SPEED),
+                disabledReason = unsupported,
+                onAuto = { viewModel.setShutter(null) }.takeIf { settings.exposureTimeNs != null },
+            )
+            // Exposure compensation (only meaningful while auto-exposure runs)
+            ProDial.EV -> LabeledSlider(
+                label = stringResource(R.string.control_ev),
+                valueText = evText,
+                value = if (evRange != null) {
+                    (settings.exposureCompensation - evRange.first).toFloat() / (evRange.last - evRange.first)
+                } else {
+                    0.5f
+                },
+                onValueChange = { f ->
+                    evRange?.let { viewModel.setExposureCompensation(it.first + (f * (it.last - it.first)).roundToInt()) }
+                },
+                enabled = evSupported && !settings.isManualExposure,
+                disabledReason = if (evSupported) stringResource(R.string.ev_off_in_manual) else unsupported,
+                steps = evRange?.let { (it.last - it.first - 1).coerceAtLeast(0) } ?: 0,
+            )
+            ProDial.WB -> WhiteBalanceControls(capabilities, settings.whiteBalance, viewModel::setWhiteBalance, unsupported)
+            null -> Unit
+        }
+    }
+}
 
-        // Exposure compensation (only meaningful while auto-exposure runs)
-        val evRange = capabilities.exposureCompensationRange
-        val evSupported = capabilities.supports(ManualControl.EXPOSURE_COMPENSATION)
-        LabeledSlider(
-            label = stringResource(R.string.control_ev),
-            valueText = ExposureScale.formatEv(settings.exposureCompensation, capabilities.exposureCompensationStep),
-            value = if (evRange != null) {
-                (settings.exposureCompensation - evRange.first).toFloat() / (evRange.last - evRange.first)
-            } else {
-                0.5f
-            },
-            onValueChange = { f ->
-                evRange?.let { viewModel.setExposureCompensation(it.first + (f * (it.last - it.first)).roundToInt()) }
-            },
-            enabled = evSupported && !settings.isManualExposure,
-            disabledReason = if (evSupported) stringResource(R.string.ev_off_in_manual) else unsupported,
-            steps = evRange?.let { (it.last - it.first - 1).coerceAtLeast(0) } ?: 0,
+/**
+ * Portrait's exposure: one slim slider of exposure compensation, so a face against a bright or
+ * dark background can be made brighter or darker while auto exposure keeps doing the rest.
+ */
+@Composable
+internal fun ExposureControl(
+    capabilities: CameraCapabilities,
+    steps: Int,
+    onChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val description = stringResource(R.string.cd_exposure)
+    val range = capabilities.exposureCompensationRange ?: return
+    if (!capabilities.supports(ManualControl.EXPOSURE_COMPENSATION) || range.last <= range.first) return
+    Row(
+        modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(Icons.Filled.Exposure, contentDescription = null, modifier = Modifier.size(20.dp))
+        Slider(
+            value = (steps - range.first).toFloat() / (range.last - range.first),
+            onValueChange = { f -> onChange(range.first + (f * (range.last - range.first)).roundToInt()) },
+            steps = (range.last - range.first - 1).coerceAtLeast(0),
+            modifier = Modifier.weight(1f).semantics { contentDescription = description },
         )
-
-        WhiteBalanceControls(capabilities, settings.whiteBalance, viewModel::setWhiteBalance, unsupported)
+        Text(
+            ExposureScale.formatEv(steps, capabilities.exposureCompensationStep),
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.width(44.dp),
+        )
+        TextButton(onClick = { onChange(0) }, enabled = steps != 0) { Text(stringResource(R.string.exposure_reset)) }
     }
 }
 
