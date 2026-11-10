@@ -140,6 +140,10 @@ fun CameraScreen(
     KeepScreenOn(state.recording || state.panoramaSweeping)
     RequestMicrophone(state.mode.video?.recordsSound == true)
     RequestLocationForSky(state.mode == CaptureMode.SKY, viewModel::onLocationAllowed)
+    val geotagOn = rememberGeotagSwitch(onAllowed = {
+        viewModel.setGeotag(true)
+        viewModel.onLocationAllowed()
+    })
     val skyFeed = remember(viewModel) {
         SkyFeed(viewModel::skyOrientation, viewModel::skyLocation, viewModel::skyCompassUnreliable, viewModel::skyDeclination)
     }
@@ -240,6 +244,9 @@ fun CameraScreen(
                     onEnhance = viewModel::toggleEnhance,
                     onResolution = viewModel::toggleVideoResolution,
                     onTimelapseSpeed = viewModel::cycleTimelapseSpeed,
+                    onGeotag = {
+                        if (state.cameraSettings.geotag) viewModel.setGeotag(false) else geotagOn()
+                    },
                     onSettings = onOpenSettings,
                     modifier = Modifier.align(Alignment.TopCenter),
                 )
@@ -254,6 +261,14 @@ fun CameraScreen(
                             rawEnabled = state.rawEnabled,
                             histogram = { histogram.value },
                             viewModel = viewModel,
+                            modifier = Modifier.padding(horizontal = 12.dp).glass(RoundedCornerShape(20.dp)),
+                        )
+                    }
+                    if (state.showExposureControl && previewing != null) {
+                        ExposureControl(
+                            capabilities = previewing.capabilities,
+                            steps = state.portraitExposure,
+                            onChange = viewModel::setPortraitExposure,
                             modifier = Modifier.padding(horizontal = 12.dp).glass(RoundedCornerShape(20.dp)),
                         )
                     }
@@ -842,6 +857,22 @@ private fun RequestLocationForSky(wanted: Boolean, onAllowed: () -> Unit) {
         val have = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
             .any { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
         if (!have) launcher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+    }
+}
+
+/**
+ * Turns Save location on from the camera screen: straight away when the location is already
+ * allowed, otherwise once the user allows it. Declining leaves it off.
+ */
+@Composable
+private fun rememberGeotagSwitch(onAllowed: () -> Unit): () -> Unit {
+    val context = LocalContext.current
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted.values.any { it }) onAllowed()
+    }
+    return {
+        val permissions = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (permissions.any { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) onAllowed() else launcher.launch(permissions)
     }
 }
 
