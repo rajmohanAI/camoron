@@ -5,6 +5,14 @@
     <string name="mode_detail">Detail</string>
     <string name="mode_geotag">Geo Tag</string>
     <string name="mode_more">More</string>
+    <string name="tool_qr">QR scanner</string>
+    <string name="tool_document">Doc scanner</string>
+    <string name="scanner_unavailable">The scanner needs Google Play services, which didn\'t open it.</string>
+    <string name="qr_result_title">Scanned code</string>
+    <string name="qr_open">Open</string>
+    <string name="qr_share">Share</string>
+    <string name="qr_copy">Copy</string>
+    <string name="qr_copied">Copied</string>
     <string name="cd_background_blur">Background blur</string>
     <string name="portrait_tap_to_focus">More blur to the left. Tap the picture to choose what stays sharp.</string>
     <string name="slow_motion_unavailable">This phone keeps slow motion for its own camera app, so Slo-mo films at normal speed here</string>

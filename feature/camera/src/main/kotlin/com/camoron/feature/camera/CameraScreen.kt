@@ -10,6 +10,8 @@ import android.graphics.SurfaceTexture
 import android.media.MediaActionSound
 import android.view.OrientationEventListener
 import android.view.Surface
+import android.net.Uri
+import kotlinx.coroutines.launch
 import android.view.TextureView
 import android.view.WindowManager
 import android.widget.Toast
@@ -293,6 +295,7 @@ fun CameraScreen(
                         onCapture = viewModel::onShutter,
                         onSwitch = viewModel::switchCamera,
                         onOpenPhoto = onOpenPhoto,
+                        onDocumentPages = { uris -> saveScannedPages(context, uris, viewModel::saveScannedPages) },
                     )
                 }
             }
@@ -562,6 +565,7 @@ private fun BottomBar(
     onCapture: () -> Unit,
     onSwitch: () -> Unit,
     onOpenPhoto: (String) -> Unit,
+    onDocumentPages: (List<Uri>) -> Unit,
 ) {
     val haptics = rememberHaptics()
     Column(
@@ -575,7 +579,7 @@ private fun BottomBar(
     ) {
         // While recording the mode can't change; keep the space so the shutter doesn't jump.
         Box(Modifier.height(MODE_ROW_HEIGHT), contentAlignment = Alignment.Center) {
-            if (!state.recording) ModeCarousel(selected = state.mode, onSelect = onModeChange)
+            if (!state.recording) ModeCarousel(selected = state.mode, onSelect = onModeChange, onDocumentPages = onDocumentPages)
         }
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 32.dp),
@@ -904,7 +908,22 @@ private fun ScreenFlashBrightness(active: Boolean) {
     }
 }
 
-private tailrec fun Context.findActivity(): Activity? = when (this) {
+/** Reads the scanner's pages (in its own cache) off the main thread and hands them on to be saved. */
+private fun saveScannedPages(context: Context, uris: List<Uri>, save: (List<ScannedPage>) -> Unit) {
+    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch(kotlinx.coroutines.CoroutineName("scanned-pages")) {
+        val pages = uris.mapNotNull { uri ->
+            runCatching {
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching null
+                val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                ScannedPage(bytes, bounds.outWidth, bounds.outHeight)
+            }.getOrNull()
+        }
+        if (pages.isNotEmpty()) save(pages)
+    }
+}
+
+internal tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
