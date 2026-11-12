@@ -7,7 +7,7 @@
     <string name="mode_more">More</string>
     <string name="tool_qr">QR scanner</string>
     <string name="tool_document">Doc scanner</string>
-    <string name="scanner_unavailable">The scanner needs Google Play services, which didn't open it.</string>
+    <string name="scanner_unavailable">The scanner needs Google Play services, which didn\'t open it.</string>
     <string name="qr_result_title">Scanned code</string>
     <string name="qr_open">Open</string>
     <string name="qr_share">Share</string>
