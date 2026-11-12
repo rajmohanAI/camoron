@@ -33,8 +33,8 @@
     </string-array>
     <string name="panorama_start">Tap the shutter, then turn slowly</string>
     <plurals name="panorama_turning">
-        <item quantity="one">Keep turning slowly · %d photo</item>
-        <item quantity="other">Keep turning slowly · %d photos</item>
+        <item quantity="one">Turn slowly so the ring meets the dot · %d photo</item>
+        <item quantity="other">Turn slowly so the ring meets the dot · %d photos</item>
     </plurals>
     <string name="panorama_too_short">Turn the phone slowly to one side after tapping the shutter.</string>
     <string name="cd_finish_panorama">Finish panorama</string>
