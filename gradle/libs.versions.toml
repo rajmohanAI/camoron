@@ -19,6 +19,8 @@ turbine = "1.2.0"
 truth = "1.4.4"
 mediapipe = "0.10.14"
 litert = "1.0.1"
+codeScanner = "16.1.0"
+documentScanner = "16.0.0-beta1"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -50,6 +52,8 @@ kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-t
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 
 litert = { module = "com.google.ai.edge.litert:litert", version.ref = "litert" }
+play-services-code-scanner = { module = "com.google.android.gms:play-services-code-scanner", version.ref = "codeScanner" }
+play-services-document-scanner = { module = "com.google.android.gms:play-services-mlkit-document-scanner", version.ref = "documentScanner" }
 litert-gpu = { module = "com.google.ai.edge.litert:litert-gpu", version.ref = "litert" }
 litert-gpu-api = { module = "com.google.ai.edge.litert:litert-gpu-api", version.ref = "litert" }
 mediapipe-tasks-vision = { module = "com.google.mediapipe:tasks-vision", version.ref = "mediapipe" }

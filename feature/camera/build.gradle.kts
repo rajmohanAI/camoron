@@ -45,6 +45,9 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.hilt.navigation.compose)
     implementation(libs.androidx.activity.compose)
+    // Google's own QR and document scanners, run by Play services so the app stays small.
+    implementation(libs.play.services.code.scanner)
+    implementation(libs.play.services.document.scanner)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
     implementation(libs.hilt.android)
