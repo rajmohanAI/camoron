@@ -3,6 +3,9 @@
     <string name="mode_photo">Photo</string>
     <string name="mode_portrait">Portrait</string>
     <string name="mode_detail">Detail</string>
+    <string name="mode_geotag">Geo Tag</string>
+    <string name="geotag_finding">Finding your location…</string>
+    <string name="geotag_no_permission">Allow location to print where photos are taken</string>
     <string name="mode_slow_motion">Slo-mo</string>
     <string name="mode_pro">Pro</string>
     <string name="mode_video">Video</string>

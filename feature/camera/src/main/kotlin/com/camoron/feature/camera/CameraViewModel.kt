@@ -17,7 +17,9 @@ import com.camoron.domain.model.EnhanceMath
 import com.camoron.domain.model.EnhanceParams
 import com.camoron.domain.model.FlashMode
 import com.camoron.domain.model.FocusTarget
+import com.camoron.domain.model.GeoPlace
 import com.camoron.domain.model.GeoPoint
+import com.camoron.domain.model.GeoStamp
 import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.LensFacing
 import com.camoron.domain.model.LookMatrix
@@ -66,6 +68,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sqrt
 import kotlin.math.sign
 import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
@@ -81,6 +85,8 @@ enum class CaptureMode(val video: VideoKind? = null) {
     PORTRAIT,
     /** Our own multi-frame RAW pipeline: a burst merged and developed on the phone, for more detail. */
     DETAIL,
+    /** A photo with where and when it was taken printed on it, like a site or survey photo. */
+    GEOTAG,
     PRO,
     PANORAMA,
     /** The camera with the stars, planets and constellations it points at named on top. */
@@ -128,6 +134,11 @@ data class CameraUiState(
     val nightCapturing: Boolean = false,
     /** The stars and constellations for Sky view, once loaded. */
     val skyCatalogue: SkyCatalogue? = null,
+    /** Geo Tag: the place last looked up near the phone, and where it was looked up. */
+    val geoPlace: GeoPlace? = null,
+    val geoPlacePoint: GeoPoint? = null,
+    /** Geo Tag: the latest location fix, shown on the preview's card. */
+    val geoPoint: GeoPoint? = null,
     /** Frames taken so far while a panorama is being swept, or null when none is. */
     val panoramaFrames: Int? = null,
     /** System.nanoTime() when the current recording started, or null when not recording. */
@@ -162,7 +173,7 @@ data class CameraUiState(
         }
 
     /** Save location applies to every kind of photo; Sky view always uses the location anyway. */
-    val showGeotagControl: Boolean get() = !mode.isVideo && mode != CaptureMode.SKY
+    val showGeotagControl: Boolean get() = !mode.isVideo && mode != CaptureMode.SKY && mode != CaptureMode.GEOTAG
 
     /** Zoom as the user thinks of it, relative to the main camera. */
     val displayZoom: Float get() = lensBase * zoomRatio
@@ -249,7 +260,7 @@ data class CameraUiState(
      */
     val burstFrames: Int
         get() = when {
-            activeExtension != null || (mode != CaptureMode.PHOTO && mode != CaptureMode.PORTRAIT) -> 0
+            activeExtension != null || (mode != CaptureMode.PHOTO && mode != CaptureMode.PORTRAIT && mode != CaptureMode.GEOTAG) -> 0
             nightActive -> NIGHT_FRAMES
             indoorLight && cameraSettings.flash == FlashMode.OFF -> INDOOR_FRAMES
             else -> 0
@@ -413,6 +424,7 @@ class CameraViewModel @Inject constructor(
         if (foreground) openIfReady() else closeCamera()
         syncLocation()
         syncSky()
+        syncGeoPlace()
     }
 
     /** Location was just allowed: start following it if anything wants it. */
@@ -421,10 +433,41 @@ class CameraViewModel @Inject constructor(
         syncLocation()
     }
 
-    /** Follows the location only while the camera is on screen and Save location is on, or Sky view needs it. */
+    /** Follows the location only while the camera is on screen and Save location is on, or Sky view or Geo Tag needs it. */
     private fun syncLocation() {
-        val wanted = _uiState.value.cameraSettings.geotag || _uiState.value.mode == CaptureMode.SKY
+        val mode = _uiState.value.mode
+        val wanted = _uiState.value.cameraSettings.geotag || mode == CaptureMode.SKY || mode == CaptureMode.GEOTAG
         if (foreground && wanted) location.start() else location.stop()
+    }
+
+    private var geoPlaceJob: Job? = null
+
+    /**
+     * In Geo Tag, on screen: keeps the latest fix and the place's name up to date for the card,
+     * looking the name up again only after the phone has moved.
+     */
+    private fun syncGeoPlace() {
+        val wanted = foreground && _uiState.value.mode == CaptureMode.GEOTAG
+        if (!wanted) {
+            geoPlaceJob?.cancel()
+            geoPlaceJob = null
+            return
+        }
+        if (geoPlaceJob?.isActive == true) return
+        geoPlaceJob = viewModelScope.launch {
+            while (true) {
+                val point = location.current() ?: location.approximate()
+                if (point != null) {
+                    _uiState.update { it.copy(geoPoint = point) }
+                    val known = _uiState.value.geoPlacePoint
+                    if (known == null || distanceMetres(known, point) > PLACE_REFRESH_METRES) {
+                        val place = runCatching { location.place(point) }.getOrNull()
+                        if (place != null) _uiState.update { it.copy(geoPlace = place, geoPlacePoint = point) }
+                    }
+                }
+                delay(if (point == null) GEO_RETRY_MS else GEO_REFRESH_MS)
+            }
+        }
     }
 
     private var skyCompassOn = false
@@ -584,9 +627,10 @@ class CameraViewModel @Inject constructor(
         if (before.recording || before.panoramaSweeping || mode == before.mode) return
         val rawBefore = before.rawStream
         _uiState.update { it.copy(mode = mode) }
-        if (mode == CaptureMode.SKY || before.mode == CaptureMode.SKY) {
+        if (mode == CaptureMode.SKY || before.mode == CaptureMode.SKY || mode == CaptureMode.GEOTAG || before.mode == CaptureMode.GEOTAG) {
             syncLocation()
             syncSky()
+            syncGeoPlace()
         }
         if (_uiState.value.videoSpec != before.videoSpec) {
             // Photo and video sessions are set up differently (and each video kind has its own frame rate).
@@ -949,8 +993,20 @@ class CameraViewModel @Inject constructor(
         enhance = state.cameraSettings.enhance,
         zoom = state.zoomRatio,
         portrait = state.mode == CaptureMode.PORTRAIT,
-        location = if (state.cameraSettings.geotag) location.current() else null,
+        location = if (state.cameraSettings.geotag || state.mode == CaptureMode.GEOTAG) geoFix(state) else null,
+        stamp = if (state.mode == CaptureMode.GEOTAG) geoStamp(state) else null,
     )
+
+    /** Save location wants a recent fix; Geo Tag settles for the last known one rather than none. */
+    private fun geoFix(state: CameraUiState): GeoPoint? =
+        location.current() ?: if (state.mode == CaptureMode.GEOTAG) location.approximate() ?: state.geoPoint else null
+
+    /** The card Geo Tag prints: the fix, the place's name if it was looked up nearby, and now. */
+    private fun geoStamp(state: CameraUiState): GeoStamp? {
+        val point = geoFix(state) ?: return null
+        val place = state.geoPlace?.takeIf { state.geoPlacePoint?.let { distanceMetres(it, point) <= PLACE_REFRESH_METRES * 2 } == true }
+        return GeoStamp(point, place, System.currentTimeMillis())
+    }
 
     private fun updateCameraSettings(transform: (CameraSettings) -> CameraSettings) {
         viewModelScope.launch { settingsRepository.update(transform) }
@@ -1098,7 +1154,19 @@ class CameraViewModel @Inject constructor(
         const val TAG = "Camera"
         const val PANORAMA_POLL_MS = 40L
         const val SENSOR_WAIT_MS = 1_000L
+        /** Geo Tag looks the place's name up again once the phone is this far from the last lookup. */
+        const val PLACE_REFRESH_METRES = 50.0
+        const val GEO_REFRESH_MS = 5_000L
+        const val GEO_RETRY_MS = 1_000L
     }
+}
+
+/** Distance between two nearby points, close enough for deciding when to look a place up again. */
+internal fun distanceMetres(a: GeoPoint, b: GeoPoint): Double {
+    val metresPerDegree = 111_320.0
+    val dy = (a.latitude - b.latitude) * metresPerDegree
+    val dx = (a.longitude - b.longitude) * metresPerDegree * cos(Math.toRadians((a.latitude + b.latitude) / 2))
+    return sqrt(dx * dx + dy * dy)
 }
 
 private const val ZOOM_EPSILON = 0.01f

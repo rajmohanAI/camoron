@@ -1,5 +1,6 @@
 package com.camoron.domain.repository
 
+import com.camoron.domain.model.GeoPlace
 import com.camoron.domain.model.GeoPoint
 
 /** The phone's location, for tagging photos with where they were taken and for Sky view. */
@@ -17,4 +18,7 @@ interface LocationProvider {
      * stars, which barely move across a city or a few days.
      */
     fun approximate(): GeoPoint?
+
+    /** The named place at [point] (town and street address), or null when it can't be looked up. */
+    suspend fun place(point: GeoPoint): GeoPlace? = null
 }

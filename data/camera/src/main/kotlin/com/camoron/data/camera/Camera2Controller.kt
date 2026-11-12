@@ -651,9 +651,21 @@ class Camera2Controller @Inject constructor(
             if (highSpeed != null) {
                 DiagnosticLog.info(TAG, "Slow motion on camera $cameraId at ${size.width}x${size.height}, ${fpsRange?.last} fps")
             }
-            val camera = ActiveCamera(caps, characteristics, device, session, cameraSurface, null, null, analysisReader, video)
+            var camera = ActiveCamera(caps, characteristics, device, session, cameraSurface, null, null, analysisReader, video)
             active = camera
-            startRepeating(camera)
+            try {
+                startRepeating(camera)
+            } catch (e: Exception) {
+                if (!video.highSpeed || e is CancellationException) throw e
+                // Some phones offer high-speed sizes yet refuse the burst: film at the normal rate instead.
+                DiagnosticLog.record(TAG, "High-speed preview didn't start; filming slow motion at the normal rate", e)
+                runCatching { session.close() }
+                val normal = createSession(device, listOf(cameraSurface))
+                val fallback = VideoSession(video.spec, video.size, normalFps, turned, video.renderer, stabilization = false)
+                camera = ActiveCamera(caps, characteristics, device, normal, cameraSurface, null, null, null, fallback)
+                active = camera
+                startRepeating(camera)
+            }
             _state.value = CameraState.Previewing(caps, camera.settings, liveExposure = null)
         } catch (e: Exception) {
             DiagnosticLog.record(TAG, "Failed to open camera $cameraId for video", e)
