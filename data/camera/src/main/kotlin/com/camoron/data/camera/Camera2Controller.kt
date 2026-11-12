@@ -604,7 +604,9 @@ class Camera2Controller @Inject constructor(
                 VideoRenderer(surface, previewSize, size, turned, realtime).also { renderer = it }.let { it to it.start() }
             }
             videoRenderer.first.setFilter(videoLook, videoEnhance)
-            device = reused ?: openDevice(cameraId)
+            // Non-null from here; [device] mirrors it for the clean-up below.
+            var live: CameraDevice = reused ?: openDevice(cameraId)
+            device = live
 
             // The analysis stream feeds the histogram (for Enhance) and subject tracking. If the
             // camera can't add it next to a large video stream, film without it. A high-speed
@@ -625,15 +627,16 @@ class Camera2Controller @Inject constructor(
                 for (withSecondStream in listOf(false, true)) {
                     try {
                         val surfaces = if (withSecondStream) listOf(cameraSurface, highSpeedCompanion(size)) else listOf(cameraSurface)
-                        started = createHighSpeedSession(device, surfaces)
+                        started = createHighSpeedSession(live, surfaces)
                         break
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         DiagnosticLog.record(TAG, "High-speed session didn't start (${if (withSecondStream) "two" else "one"} stream)", e)
                         // A refused high-speed setup leaves the camera in an error state: start it afresh.
-                        runCatching { device.close() }
-                        device = openDevice(cameraId)
+                        runCatching { live.close() }
+                        live = openDevice(cameraId)
+                        device = live
                     }
                 }
                 started ?: run {
@@ -643,16 +646,16 @@ class Camera2Controller @Inject constructor(
                     capabilitiesCache[cameraId] = capabilitiesOf(cameraId).copy(supportsHighSpeedVideo = false)
                     releaseHighSpeedCompanion()
                     DiagnosticLog.info(TAG, "Slow motion isn't open to apps on camera $cameraId; filming at the normal rate")
-                    createSession(device, listOf(cameraSurface))
+                    createSession(live, listOf(cameraSurface))
                 }
             } else try {
-                createSession(device, listOfNotNull(cameraSurface, analysisReader?.surface))
+                createSession(live, listOfNotNull(cameraSurface, analysisReader?.surface))
             } catch (e: IllegalStateException) {
                 if (analysisReader == null) throw e
                 DiagnosticLog.record(TAG, "Filming without the analysis stream", e)
                 analysisReader?.close()
                 analysisReader = null
-                createSession(device, listOf(cameraSurface))
+                createSession(live, listOf(cameraSurface))
             }
             val fpsRange = highSpeed?.second ?: normalFps
             val video = VideoSession(
@@ -667,7 +670,7 @@ class Camera2Controller @Inject constructor(
             if (highSpeed != null) {
                 DiagnosticLog.info(TAG, "Slow motion on camera $cameraId at ${size.width}x${size.height}, ${fpsRange?.last} fps")
             }
-            var camera = ActiveCamera(caps, characteristics, device, session, cameraSurface, null, null, analysisReader, video)
+            var camera = ActiveCamera(caps, characteristics, live, session, cameraSurface, null, null, analysisReader, video)
             active = camera
             try {
                 startRepeating(camera)
@@ -676,9 +679,9 @@ class Camera2Controller @Inject constructor(
                 // Some phones offer high-speed sizes yet refuse the burst: film at the normal rate instead.
                 DiagnosticLog.record(TAG, "High-speed preview didn't start; filming slow motion at the normal rate", e)
                 runCatching { session.close() }
-                val normal = createSession(device, listOf(cameraSurface))
+                val normal = createSession(live, listOf(cameraSurface))
                 val fallback = VideoSession(video.spec, video.size, normalFps, turned, video.renderer, stabilization = false)
-                camera = ActiveCamera(caps, characteristics, device, normal, cameraSurface, null, null, null, fallback)
+                camera = ActiveCamera(caps, characteristics, live, normal, cameraSurface, null, null, null, fallback)
                 active = camera
                 startRepeating(camera)
             }
