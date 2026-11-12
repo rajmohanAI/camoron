@@ -3,6 +3,7 @@ package com.camoron.data.processing
 import android.graphics.Bitmap
 import android.os.SystemClock
 import com.camoron.core.common.DiagnosticLog
+import com.camoron.domain.model.ColourCastEstimator
 import com.camoron.domain.model.EnhanceMath
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -26,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger
 internal object Enhancer {
 
     private const val CLARITY_BLOCK = 32
+    private const val CAST_STEP = 8
     private const val HISTOGRAM_BINS = 64
     private const val HISTOGRAM_STEP = 4
     private const val BAND_ROWS = 64
@@ -40,8 +42,24 @@ internal object Enhancer {
         val luma = ByteArray(width * height)
         val row = IntArray(width)
         val bins = IntArray(HISTOGRAM_BINS)
+
+        // A sparse look first, for any colour cast the camera's white balance left behind.
+        val cast = ColourCastEstimator()
+        for (y in 0 until height step CAST_STEP) {
+            bitmap.getPixels(row, 0, width, 0, y, width, 1)
+            for (x in 0 until width step CAST_STEP) {
+                val p = row[x]
+                cast.add((p shr 16) and 0xFF, (p shr 8) and 0xFF, p and 0xFF)
+            }
+        }
+        val gains = cast.gains()
+
         for (y in 0 until height) {
             bitmap.getPixels(row, 0, width, 0, y, width, 1)
+            if (gains != null) {
+                for (x in 0 until width) row[x] = ColourCastEstimator.correct(row[x], gains)
+                bitmap.setPixels(row, 0, width, 0, y, width, 1)
+            }
             val offset = y * width
             for (x in 0 until width) {
                 val l = MergeMath.luma(row[x])
@@ -126,7 +144,12 @@ internal object Enhancer {
         DiagnosticLog.info(
             TAG,
             "Enhanced ${width}x$height in ${SystemClock.elapsedRealtime() - started} ms " +
-                "(noise %.4f, zoom %.1f, sharpen %.2f, workers $workers)".format(tuning.noise, zoom, tuning.sharpen),
+                "(noise %.4f, zoom %.1f, sharpen %.2f, workers $workers, cast %s)".format(
+                    tuning.noise,
+                    zoom,
+                    tuning.sharpen,
+                    gains?.joinToString("/") { "%.3f".format(it) } ?: "none",
+                ),
         )
     }
 
