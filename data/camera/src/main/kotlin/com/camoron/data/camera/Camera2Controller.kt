@@ -560,7 +560,7 @@ class Camera2Controller @Inject constructor(
 
     /** The high-speed size and frame rate for a slow-motion [spec], or null to film it normally. */
     private fun highSpeedFor(cameraId: String, spec: VideoSpec): Pair<PixelSize, IntRange>? {
-        if (spec.kind != VideoKind.SLOW_MOTION || !capabilitiesOf(cameraId).supportsHighSpeedVideo) return null
+        if (spec.kind != VideoKind.SLOW_MOTION || !capabilitiesOf(cameraId).supportsHighSpeedVideo || cameraId in highSpeedRefused) return null
         val streams = characteristicsOf(cameraId).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
         val options = runCatching {
             streams.highSpeedVideoSizes.flatMap { size ->
@@ -604,7 +604,9 @@ class Camera2Controller @Inject constructor(
                 VideoRenderer(surface, previewSize, size, turned, realtime).also { renderer = it }.let { it to it.start() }
             }
             videoRenderer.first.setFilter(videoLook, videoEnhance)
-            device = reused ?: openDevice(cameraId)
+            // Non-null from here; [device] mirrors it for the clean-up below.
+            var live: CameraDevice = reused ?: openDevice(cameraId)
+            device = live
 
             // The analysis stream feeds the histogram (for Enhance) and subject tracking. If the
             // camera can't add it next to a large video stream, film without it. A high-speed
@@ -619,24 +621,41 @@ class Camera2Controller @Inject constructor(
                 }
             val cameraSurface = videoRenderer.second
             val session = if (highSpeed != null) {
-                try {
-                    createHighSpeedSession(device, cameraSurface)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // Film at the camera's fastest normal rate instead.
-                    DiagnosticLog.record(TAG, "High-speed session didn't start; filming slow motion at the normal rate", e)
+                var started: CameraCaptureSession? = null
+                // Some phones only take a high-speed session with a second (recording) stream
+                // beside the preview, so that is tried next.
+                for (withSecondStream in listOf(false, true)) {
+                    try {
+                        val surfaces = if (withSecondStream) listOf(cameraSurface, highSpeedCompanion(size)) else listOf(cameraSurface)
+                        started = createHighSpeedSession(live, surfaces)
+                        break
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        DiagnosticLog.record(TAG, "High-speed session didn't start (${if (withSecondStream) "two" else "one"} stream)", e)
+                        // A refused high-speed setup leaves the camera in an error state: start it afresh.
+                        runCatching { live.close() }
+                        live = openDevice(cameraId)
+                        device = live
+                    }
+                }
+                started ?: run {
+                    // This phone keeps slow motion for its own camera app: film at the fastest normal rate.
                     highSpeed = null
-                    createSession(device, listOf(cameraSurface))
+                    highSpeedRefused += cameraId
+                    capabilitiesCache[cameraId] = capabilitiesOf(cameraId).copy(supportsHighSpeedVideo = false)
+                    releaseHighSpeedCompanion()
+                    DiagnosticLog.info(TAG, "Slow motion isn't open to apps on camera $cameraId; filming at the normal rate")
+                    createSession(live, listOf(cameraSurface))
                 }
             } else try {
-                createSession(device, listOfNotNull(cameraSurface, analysisReader?.surface))
+                createSession(live, listOfNotNull(cameraSurface, analysisReader?.surface))
             } catch (e: IllegalStateException) {
                 if (analysisReader == null) throw e
                 DiagnosticLog.record(TAG, "Filming without the analysis stream", e)
                 analysisReader?.close()
                 analysisReader = null
-                createSession(device, listOf(cameraSurface))
+                createSession(live, listOf(cameraSurface))
             }
             val fpsRange = highSpeed?.second ?: normalFps
             val video = VideoSession(
@@ -651,7 +670,7 @@ class Camera2Controller @Inject constructor(
             if (highSpeed != null) {
                 DiagnosticLog.info(TAG, "Slow motion on camera $cameraId at ${size.width}x${size.height}, ${fpsRange?.last} fps")
             }
-            var camera = ActiveCamera(caps, characteristics, device, session, cameraSurface, null, null, analysisReader, video)
+            var camera = ActiveCamera(caps, characteristics, live, session, cameraSurface, null, null, analysisReader, video)
             active = camera
             try {
                 startRepeating(camera)
@@ -660,13 +679,14 @@ class Camera2Controller @Inject constructor(
                 // Some phones offer high-speed sizes yet refuse the burst: film at the normal rate instead.
                 DiagnosticLog.record(TAG, "High-speed preview didn't start; filming slow motion at the normal rate", e)
                 runCatching { session.close() }
-                val normal = createSession(device, listOf(cameraSurface))
+                val normal = createSession(live, listOf(cameraSurface))
                 val fallback = VideoSession(video.spec, video.size, normalFps, turned, video.renderer, stabilization = false)
-                camera = ActiveCamera(caps, characteristics, device, normal, cameraSurface, null, null, null, fallback)
+                camera = ActiveCamera(caps, characteristics, live, normal, cameraSurface, null, null, null, fallback)
                 active = camera
                 startRepeating(camera)
             }
-            _state.value = CameraState.Previewing(caps, camera.settings, liveExposure = null)
+            val shownCaps = if (cameraId in highSpeedRefused) caps.copy(supportsHighSpeedVideo = false) else caps
+            _state.value = CameraState.Previewing(shownCaps, camera.settings, liveExposure = null)
         } catch (e: Exception) {
             DiagnosticLog.record(TAG, "Failed to open camera $cameraId for video", e)
             runCatching { analysisReader?.close() }
@@ -1464,6 +1484,7 @@ class Camera2Controller @Inject constructor(
             _focusTarget.value = null
             _state.value = CameraState.Closed
         }
+        releaseHighSpeedCompanion()
         // After the camera, so it has stopped streaming into the renderer's texture.
         renderer?.let { withContext(nonCancellableProcessing) { it.release() } }
         renderer = null
@@ -1583,11 +1604,31 @@ class Camera2Controller @Inject constructor(
             camera.focusRegion?.let { set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(it)) }
         }.build()
 
-    private suspend fun createHighSpeedSession(device: CameraDevice, surface: Surface): CameraCaptureSession =
+    /** Cameras whose high-speed sessions the phone refused this run; they film slow motion at the normal rate. */
+    private val highSpeedRefused = java.util.concurrent.CopyOnWriteArraySet<String>()
+
+    /** A stand-in recording stream for phones that only take a high-speed session with two streams. */
+    private var highSpeedCompanion: Pair<SurfaceTexture, Surface>? = null
+
+    private fun highSpeedCompanion(size: PixelSize): Surface {
+        releaseHighSpeedCompanion()
+        val texture = SurfaceTexture(false).apply { setDefaultBufferSize(size.width, size.height) }
+        return Surface(texture).also { highSpeedCompanion = texture to it }
+    }
+
+    private fun releaseHighSpeedCompanion() {
+        highSpeedCompanion?.let { (texture, surface) ->
+            runCatching { surface.release() }
+            runCatching { texture.release() }
+        }
+        highSpeedCompanion = null
+    }
+
+    private suspend fun createHighSpeedSession(device: CameraDevice, surfaces: List<Surface>): CameraCaptureSession =
         suspendCancellableCoroutine { cont ->
             @Suppress("DEPRECATION") // SessionConfiguration's high-speed type needs Android 9; this works from 6.
             device.createConstrainedHighSpeedCaptureSession(
-                listOf(surface),
+                surfaces,
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         if (cont.isActive) cont.resume(session) else session.close()

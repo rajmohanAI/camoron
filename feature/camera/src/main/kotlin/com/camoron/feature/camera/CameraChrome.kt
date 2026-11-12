@@ -482,12 +482,28 @@ internal fun MacroBadge(modifier: Modifier = Modifier) {
     }
 }
 
-/** Layer 2: capture modes, in the order camera apps use: video modes, then Photo, then Pro. */
+/**
+ * Layer 2: capture modes. The everyday ones (Video, Photo, Portrait, Pro) are on the row; the rest
+ * are under More, and the one in use joins the row while it is chosen.
+ */
 @Composable
 internal fun ModeCarousel(selected: CaptureMode, onSelect: (CaptureMode) -> Unit) {
     val listState = rememberLazyListState()
     val haptics = rememberHaptics()
-    val index = CaptureMode.entries.indexOf(selected)
+    var moreOpen by rememberSaveable { mutableStateOf(false) }
+    val entries = modeRowEntries(selected)
+    val index = entries.indexOf(selected)
+    if (moreOpen) {
+        MoreModesSheet(
+            selected = selected,
+            onSelect = { mode ->
+                moreOpen = false
+                if (mode != selected) haptics.tick()
+                onSelect(mode)
+            },
+            onDismiss = { moreOpen = false },
+        )
+    }
     // Keep the selected mode in the middle, like the phone's own camera, so modes at either end
     // (Pro, Timelapse) are always reachable and visible once chosen.
     LaunchedEffect(index) {
@@ -504,21 +520,25 @@ internal fun ModeCarousel(selected: CaptureMode, onSelect: (CaptureMode) -> Unit
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            items(CaptureMode.entries, key = { it.name }) { mode ->
+            items(entries, key = { it?.name ?: "MORE" }) { mode ->
                 val isSelected = mode == selected
                 val colour by animateColorAsState(if (isSelected) Glass.Accent else Color.White.copy(alpha = 0.75f), label = "mode colour")
                 Column(
                     Modifier
                         .clip(RoundedCornerShape(12.dp))
                         .clickable(role = Role.Tab) {
-                            if (!isSelected) haptics.tick()
-                            onSelect(mode)
+                            if (mode == null) {
+                                moreOpen = true
+                            } else {
+                                if (!isSelected) haptics.tick()
+                                onSelect(mode)
+                            }
                         }
                         .padding(horizontal = 14.dp, vertical = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
-                        text = stringResource(modeLabel(mode)).uppercase(Locale.getDefault()),
+                        text = stringResource(if (mode == null) R.string.mode_more else modeLabel(mode)).uppercase(Locale.getDefault()),
                         color = colour,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                         fontSize = 12.sp,
@@ -538,7 +558,7 @@ internal fun ModeCarousel(selected: CaptureMode, onSelect: (CaptureMode) -> Unit
     }
 }
 
-private fun modeLabel(mode: CaptureMode): Int = when (mode) {
+internal fun modeLabel(mode: CaptureMode): Int = when (mode) {
     CaptureMode.SLOW_MOTION -> R.string.mode_slow_motion
     CaptureMode.TIMELAPSE -> R.string.mode_timelapse
     CaptureMode.CINEMATIC -> R.string.mode_cinematic

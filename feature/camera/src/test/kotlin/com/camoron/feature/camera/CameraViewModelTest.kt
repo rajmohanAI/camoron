@@ -334,20 +334,22 @@ class CameraViewModelTest {
     }
 
     @Test
-    fun `portrait keeps its own exposure, and other modes go back to auto`() = runTest {
+    fun `portrait's slider sets the background blur, and the camera stays automatic`() = runTest {
         val vm = viewModel()
         vm.onSurfaceReady(Target(1440, 1080))
         vm.setMode(CaptureMode.PORTRAIT)
-        assertThat(vm.uiState.value.showExposureControl).isTrue()
-        vm.setPortraitExposure(3)
-        assertThat(controller.applied.last()).isEqualTo(ManualSettings.AUTO.copy(exposureCompensation = 3))
+        assertThat(vm.uiState.value.showApertureControl).isTrue()
+        assertThat(vm.uiState.value.showExposureControl).isFalse()
+        vm.onShutter()
+        assertThat(processor.applied.last().portraitAperture).isEqualTo(PhotoAdjustments.DEFAULT_APERTURE)
+
+        vm.setPortraitAperture(1.0f)
+        vm.onShutter()
+        assertThat(processor.applied.last().portraitAperture).isEqualTo(1.0f)
+        assertThat(controller.applied.last()).isEqualTo(ManualSettings.AUTO)
 
         vm.setMode(CaptureMode.PHOTO)
-        assertThat(controller.applied.last()).isEqualTo(ManualSettings.AUTO)
-        assertThat(vm.uiState.value.showExposureControl).isFalse()
-
-        vm.setMode(CaptureMode.PORTRAIT)
-        assertThat(controller.applied.last()).isEqualTo(ManualSettings.AUTO.copy(exposureCompensation = 3))
+        assertThat(vm.uiState.value.showApertureControl).isFalse()
     }
 
     @Test

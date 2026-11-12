@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BlurOn
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Exposure
 import androidx.compose.material3.Icon
@@ -42,6 +43,7 @@ import com.camoron.domain.model.Histogram
 import com.camoron.domain.model.LiveExposure
 import com.camoron.domain.model.ManualControl
 import com.camoron.domain.model.ManualSettings
+import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.WhiteBalance
 import com.camoron.domain.model.WhiteBalancePreset
 import kotlin.math.roundToInt
@@ -224,6 +226,44 @@ internal fun ExposureControl(
             modifier = Modifier.width(44.dp),
         )
         TextButton(onClick = { onChange(0) }, enabled = steps != 0) { Text(stringResource(R.string.exposure_reset)) }
+    }
+}
+
+/**
+ * Portrait's background blur, set like a lens opening: f/1.0 blurs the most, f/8 barely at all.
+ * Tap the preview to choose what stays sharp.
+ */
+@Composable
+internal fun ApertureControl(
+    aperture: Float,
+    onChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val description = stringResource(R.string.cd_background_blur)
+    val stops = PhotoAdjustments.APERTURES
+    val index = stops.indexOfFirst { it >= aperture - 0.01f }.coerceAtLeast(0)
+    Column(modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(Icons.Filled.BlurOn, contentDescription = null, modifier = Modifier.size(20.dp))
+            // Left is the strongest blur, so the slider reads "more blur" towards the left like a lens ring.
+            Slider(
+                value = index.toFloat(),
+                onValueChange = { onChange(stops[it.roundToInt().coerceIn(0, stops.lastIndex)]) },
+                valueRange = 0f..stops.lastIndex.toFloat(),
+                steps = (stops.size - 2).coerceAtLeast(0),
+                modifier = Modifier.weight(1f).semantics { contentDescription = description },
+            )
+            Text(
+                "f/" + if (aperture % 1f == 0f) aperture.toInt().toString() else aperture.toString(),
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.width(44.dp),
+            )
+        }
+        Text(
+            stringResource(R.string.portrait_tap_to_focus),
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(start = 28.dp, bottom = 6.dp),
+        )
     }
 }
 

@@ -72,7 +72,7 @@ class BitmapPhotoProcessor @Inject constructor(
             if (reencode) {
                 val transformed = try {
                     DiagnosticLog.timed(TAG, "Adjusting ${bounds.width}x${bounds.height}") {
-                        transformJpeg(image.bytes, crop, look, enhance, adjustments.zoom, portrait)
+                        transformJpeg(image.bytes, crop, look, enhance, adjustments.zoom, portrait, PhotoAdjustments.DEFAULT_APERTURE / adjustments.portraitAperture)
                     }
                 } catch (e: OutOfMemoryError) {
                     // Very large sensors can exceed the heap; keep the photo rather than lose it.
@@ -226,6 +226,7 @@ class BitmapPhotoProcessor @Inject constructor(
         enhance: Boolean,
         zoom: Float,
         portrait: Int?,
+        portraitStrength: Float = 1f,
     ): ByteArray {
         val options = BitmapFactory.Options().apply {
             inMutable = true
@@ -250,7 +251,7 @@ class BitmapPhotoProcessor @Inject constructor(
                 ?: error("Could not copy the decoded photo")
         }
         try {
-            return finishPixels(bitmap, look, enhance, zoom, portrait)
+            return finishPixels(bitmap, look, enhance, zoom, portrait, portraitStrength)
         } finally {
             bitmap.recycle()
         }
@@ -260,8 +261,15 @@ class BitmapPhotoProcessor @Inject constructor(
      * Portrait blur (with the pixels' turn to upright in [portrait], or null for none), optimisation,
      * colour look and JPEG encoding.
      */
-    private suspend fun finishPixels(bitmap: Bitmap, look: FloatArray?, enhance: Boolean, zoom: Float, portrait: Int? = null): ByteArray {
-        if (portrait != null) portraitBlur.blur(bitmap, portrait)
+    private suspend fun finishPixels(
+        bitmap: Bitmap,
+        look: FloatArray?,
+        enhance: Boolean,
+        zoom: Float,
+        portrait: Int? = null,
+        portraitStrength: Float = 1f,
+    ): ByteArray {
+        if (portrait != null) portraitBlur.blur(bitmap, portrait, portraitStrength)
         if (enhance && zoomEnhancer.worthwhile(zoom)) zoomEnhancer.enhance(bitmap, zoom)
         if (enhance) Enhancer.enhance(bitmap, zoom)
         if (look != null) applyLook(bitmap, look)

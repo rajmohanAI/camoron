@@ -273,6 +273,13 @@ fun CameraScreen(
                             modifier = Modifier.padding(horizontal = 12.dp).glass(RoundedCornerShape(20.dp)),
                         )
                     }
+                    if (state.showApertureControl) {
+                        ApertureControl(
+                            aperture = state.portraitAperture,
+                            onChange = viewModel::setPortraitAperture,
+                            modifier = Modifier.padding(horizontal = 12.dp).glass(RoundedCornerShape(20.dp)),
+                        )
+                    }
                     LensRow(
                         state = state,
                         onMacro = viewModel::toggleMacro,
@@ -373,6 +380,7 @@ private fun PreviewArea(
         }
         state.countdown?.let { CountdownOverlay(it) }
         if (state.nightCapturing) HoldStillOverlay()
+        if (state.slowMotionUnavailable) PreviewNote(stringResource(R.string.slow_motion_unavailable))
         if (state.mode == CaptureMode.GEOTAG) GeoTagCard(state, Modifier.align(Alignment.BottomCenter).padding(12.dp))
         if (state.mode == CaptureMode.PANORAMA) PanoramaHint(state.panoramaFrames)
     }

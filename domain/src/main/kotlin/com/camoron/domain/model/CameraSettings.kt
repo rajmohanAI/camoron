@@ -60,6 +60,8 @@ data class PhotoAdjustments(
     val zoom: Float = 1f,
     /** Portrait: keep the people sharp and blur the background behind them. */
     val portrait: Boolean = false,
+    /** Portrait's chosen lens opening: smaller f-numbers blur the background more. */
+    val portraitAperture: Float = DEFAULT_APERTURE,
     /** Where the photo was taken, written into its EXIF; null to leave it out. */
     val location: GeoPoint? = null,
     /** Geo Tag: the place and time printed on the photo; null for none. */
@@ -70,5 +72,11 @@ data class PhotoAdjustments(
 
     companion object {
         val NONE = PhotoAdjustments()
+
+        /** The blur Portrait has always had, about an f/1.8 lens. */
+        const val DEFAULT_APERTURE = 1.8f
+
+        /** The f-numbers Portrait's slider offers, from the strongest blur to the lightest. */
+        val APERTURES = listOf(1.0f, 1.4f, 1.8f, 2.8f, 4f, 5.6f, 8f)
     }
 }
