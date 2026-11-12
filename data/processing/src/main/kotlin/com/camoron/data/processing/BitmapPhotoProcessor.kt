@@ -62,7 +62,9 @@ class BitmapPhotoProcessor @Inject constructor(
             val portrait = original.rotationDegrees.takeIf { adjustments.portrait }
 
             // A crop request for a shape the sensor already delivers needs no work at all.
-            if (crop == null && look == null && !enhance && !adjustments.mirror && portrait == null && adjustments.location == null && adjustments.stamp == null) {
+            if (crop == null && look == null && !enhance && !adjustments.mirror && portrait == null && adjustments.location == null &&
+                adjustments.stamp == null && adjustments.inset == null
+            ) {
                 return@withContext image
             }
 
@@ -91,7 +93,27 @@ class BitmapPhotoProcessor @Inject constructor(
                 }
             }
             var newOrientation = if (adjustments.mirror) PhotoMath.mirroredOrientation(orientation) else orientation
-            adjustments.stamp?.let { stamp ->
+            var uprightAlready = false
+            adjustments.inset?.let { inset ->
+                val composed = try {
+                    DiagnosticLog.timed(TAG, "Drawing the second camera's photo in the corner") {
+                        DualComposer.compose(bytes, original.rotationDegrees, adjustments.mirror, inset.bytes, adjustments.insetMirror)
+                    }
+                } catch (e: OutOfMemoryError) {
+                    DiagnosticLog.record(TAG, "Not enough memory for the dual photo; saving the main photo alone", e)
+                    null
+                } catch (e: Exception) {
+                    DiagnosticLog.record(TAG, "Couldn't draw the dual photo; saving the main photo alone", e)
+                    null
+                }
+                if (composed != null) {
+                    bytes = composed.first
+                    size = composed.second
+                    newOrientation = ExifInterface.ORIENTATION_NORMAL
+                    uprightAlready = true
+                }
+            }
+            adjustments.stamp?.takeUnless { uprightAlready }?.let { stamp ->
                 val stamped = try {
                     DiagnosticLog.timed(TAG, "Printing the Geo Tag card") {
                         GeoStamper.stamp(bytes, original.rotationDegrees, adjustments.mirror, stamp)

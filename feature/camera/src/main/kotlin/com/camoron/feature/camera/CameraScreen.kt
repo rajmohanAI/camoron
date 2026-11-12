@@ -216,6 +216,8 @@ fun CameraScreen(
                 onPinch = viewModel::onPinch,
                 shapeBlur = shapeBlur.value,
                 modifier = Modifier.align(Alignment.TopCenter).then(previewArea),
+                onInsetReady = viewModel::onInsetSurfaceReady,
+                onInsetDestroyed = viewModel::onInsetSurfaceDestroyed,
                 overlay = {
                     if (state.mode == CaptureMode.SKY) {
                         SkyOverlay(
@@ -336,6 +338,8 @@ private fun PreviewArea(
     onPinch: (Float) -> Unit,
     shapeBlur: Float = 0f,
     modifier: Modifier = Modifier,
+    onInsetReady: (SurfacePreviewTarget) -> Unit = {},
+    onInsetDestroyed: () -> Unit = {},
     /** Drawn over the camera's whole (partly clipped) picture, in its coordinates. */
     overlay: @Composable () -> Unit = {},
 ) {
@@ -376,6 +380,28 @@ private fun PreviewArea(
                 overlay()
             }
         }
+        // Dual capture: the other camera's picture in the corner, where it will be in the photo.
+        val insetSize = state.dualInsetSize
+        if (state.mode == CaptureMode.DUAL && insetSize != null) {
+            val insetWidth = minOf(maxWidth, maxHeight) / 3
+            val insetAspect = minOf(insetSize.width, insetSize.height).toFloat() / maxOf(insetSize.width, insetSize.height)
+            val shape = RoundedCornerShape(12.dp)
+            CameraPreview(
+                previewSize = insetSize,
+                look = ShotLook.NORMAL,
+                enhance = { null },
+                iso = { null },
+                live = state.dualOpen,
+                onSurfaceReady = onInsetReady,
+                onSurfaceDestroyed = onInsetDestroyed,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(12.dp)
+                    .size(insetWidth, insetWidth / insetAspect)
+                    .clip(shape)
+                    .border(2.dp, Color.White, shape),
+            )
+        }
         if (state.cameraSettings.grid) GridOverlay(Modifier.fillMaxSize())
         if (state.cameraSettings.leveller) LevellerOverlay(Modifier.fillMaxSize())
         Row(
@@ -390,6 +416,7 @@ private fun PreviewArea(
         if (state.nightCapturing) HoldStillOverlay()
         if (state.slowMotionUnavailable) PreviewNote(stringResource(R.string.slow_motion_unavailable))
         if (state.highResUnavailable) PreviewNote(stringResource(R.string.highres_unavailable))
+        if (state.dualUnavailable) PreviewNote(stringResource(R.string.dual_unavailable))
         if (state.highResActive) {
             state.selectedCamera?.highResJpegSize?.let { size ->
                 PreviewNote(stringResource(R.string.highres_note, size.megapixels.roundToInt()))

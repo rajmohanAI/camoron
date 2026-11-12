@@ -6,6 +6,8 @@ import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.MediaRepository
 import com.camoron.domain.repository.PhotoProcessor
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -42,6 +44,7 @@ class CaptureAndSavePhoto @Inject constructor(
         nightFrames: Int = 0,
         detailFrames: Int = 0,
         onCaptured: (CapturedImage) -> Unit = {},
+        inset: (suspend () -> CapturedImage?)? = null,
     ): String {
         if (detailFrames > 1) {
             val burst = retryOnce { camera.captureRawBurst(deviceRotationDegrees, detailFrames) }
@@ -53,10 +56,16 @@ class CaptureAndSavePhoto @Inject constructor(
             onCaptured(frames.first())
             return saving.withLock { media.save(adjust(processor.mergeNight(frames, adjustments.cropAspect), adjustments)) }
         }
-        val bundle = retryOnce { camera.capture(deviceRotationDegrees, includeRaw) }
+        // Dual capture takes the second camera's photo at the same moment.
+        val (bundle, insetPhoto) = coroutineScope {
+            val second = inset?.let { async { runCatching { it() }.getOrNull() } }
+            val main = retryOnce { camera.capture(deviceRotationDegrees, includeRaw) }
+            main to second?.await()
+        }
         onCaptured(bundle.primary)
+        val withInset = if (insetPhoto != null) adjustments.copy(inset = insetPhoto) else adjustments
         return saving.withLock {
-            val uri = media.save(adjust(bundle.primary, adjustments))
+            val uri = media.save(adjust(bundle.primary, withInset))
             bundle.raw?.let { media.save(it) }
             uri
         }

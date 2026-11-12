@@ -76,6 +76,21 @@ class CaptureAndSavePhotoTest {
     private fun useCase(includeDng: Boolean) = CaptureAndSavePhoto(camera(includeDng), media, processor)
 
     @Test
+    fun `dual capture draws the second camera's photo on the main one`() = runTest {
+        val front = CapturedImage(byteArrayOf(4), ImageFormat.JPEG, PixelSize(1600, 1200), 0L)
+        useCase(includeDng = false)(0, inset = { front })
+        assertThat(processed.single().inset).isEqualTo(front)
+        assertThat(saved).hasSize(1)
+    }
+
+    @Test
+    fun `dual capture keeps the main photo when the second camera fails`() = runTest {
+        useCase(includeDng = false)(0, inset = { error("second camera gone") })
+        assertThat(processed).isEmpty()
+        assertThat(saved).hasSize(1)
+    }
+
+    @Test
     fun `a failed capture is retried once`() = runTest {
         failuresLeft = 1
         var captured: CapturedImage? = null

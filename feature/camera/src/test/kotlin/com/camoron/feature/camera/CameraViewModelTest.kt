@@ -726,6 +726,18 @@ class CameraViewModelTest {
     }
 
     @Test
+    fun `dual says so where the phone won't run both cameras`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.DUAL)
+        assertThat(vm.uiState.value.dualUnavailable).isTrue()
+        assertThat(vm.uiState.value.dualOpen).isFalse()
+
+        vm.setMode(CaptureMode.PHOTO)
+        assertThat(vm.uiState.value.dualUnavailable).isFalse()
+    }
+
+    @Test
     fun `high res says so on a camera with nothing bigger`() = runTest {
         val vm = viewModel()
         vm.onSurfaceReady(Target(1440, 1080))

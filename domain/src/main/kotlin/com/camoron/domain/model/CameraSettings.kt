@@ -66,9 +66,14 @@ data class PhotoAdjustments(
     val location: GeoPoint? = null,
     /** Geo Tag: the place and time printed on the photo; null for none. */
     val stamp: GeoStamp? = null,
+    /** Dual capture: the other camera's photo, drawn in a corner of this one. */
+    val inset: CapturedImage? = null,
+    /** Mirror [inset], as a front camera's preview appears. */
+    val insetMirror: Boolean = false,
 ) {
     val isIdentity: Boolean
-        get() = cropAspect == null && !mirror && look == ShotLook.NORMAL && !enhance && !portrait && location == null && stamp == null
+        get() = cropAspect == null && !mirror && look == ShotLook.NORMAL && !enhance && !portrait && location == null &&
+            stamp == null && inset == null
 
     companion object {
         val NONE = PhotoAdjustments()

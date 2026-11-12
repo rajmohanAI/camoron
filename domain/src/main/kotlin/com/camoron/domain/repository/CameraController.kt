@@ -63,6 +63,24 @@ interface CameraController {
      * With [highRes] (on a camera with a [com.camoron.domain.model.CameraCapabilities.highResJpegSize])
      * photos are the largest the camera can take, at 1x zoom and without RAW or the extension.
      */
+    /**
+     * Dual capture: preview size for the second camera, small and 4:3, or null where this phone
+     * can't stream [cameraId] beside the open camera.
+     */
+    suspend fun companionPreviewSize(cameraId: String): PixelSize? = null
+
+    /**
+     * Dual capture: opens [cameraId] alongside the open camera, streaming into [target]. Returns
+     * false (with nothing left open) where the phone can't run both. Closing or reopening the main
+     * camera closes it too.
+     */
+    suspend fun openCompanion(cameraId: String, target: PreviewTarget): Boolean = false
+
+    /** Dual capture: a photo from the second camera, or null if it isn't open or the shot failed. */
+    suspend fun captureCompanion(deviceRotationDegrees: Int): CapturedImage? = null
+
+    suspend fun closeCompanion() = Unit
+
     suspend fun open(
         cameraId: String,
         target: PreviewTarget,

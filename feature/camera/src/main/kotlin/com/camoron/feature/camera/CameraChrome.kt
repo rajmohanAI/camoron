@@ -589,6 +589,7 @@ internal fun modeLabel(mode: CaptureMode): Int = when (mode) {
     CaptureMode.PORTRAIT -> R.string.mode_portrait
     CaptureMode.DETAIL -> R.string.mode_detail
     CaptureMode.HIGHRES -> R.string.mode_highres
+    CaptureMode.DUAL -> R.string.mode_dual
     CaptureMode.GEOTAG -> R.string.mode_geotag
     CaptureMode.PRO -> R.string.mode_pro
     CaptureMode.PANORAMA -> R.string.mode_panorama
