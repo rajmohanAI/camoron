@@ -57,10 +57,18 @@ internal val MORE_MODES = listOf(
 internal fun modeRowEntries(selected: CaptureMode): List<CaptureMode?> =
     MAIN_MODES + listOfNotNull(selected.takeIf { it in MORE_MODES }) + listOf(null)
 
-/** The More sheet: every extra mode as an icon and a name, like the phone's own camera. */
+/** A tool in the More sheet that isn't a camera mode, such as a scanner. */
+internal class MoreTool(val label: Int, val icon: ImageVector, val onClick: () -> Unit)
+
+/** The More sheet: every extra mode, then the tools, each as an icon and a name, like the phone's own camera. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun MoreModesSheet(selected: CaptureMode, onSelect: (CaptureMode) -> Unit, onDismiss: () -> Unit) {
+internal fun MoreModesSheet(
+    selected: CaptureMode,
+    onSelect: (CaptureMode) -> Unit,
+    onDismiss: () -> Unit,
+    tools: List<MoreTool> = emptyList(),
+) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -73,30 +81,27 @@ internal fun MoreModesSheet(selected: CaptureMode, onSelect: (CaptureMode) -> Un
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             items(MORE_MODES) { mode ->
-                val isSelected = mode == selected
-                Column(
-                    Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .clickable(role = Role.Button) { onSelect(mode) }
-                        .padding(vertical = 14.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Icon(
-                        modeIcon(mode),
-                        contentDescription = null,
-                        tint = if (isSelected) Glass.Accent else Color.White,
-                        modifier = Modifier.size(30.dp),
-                    )
-                    Text(
-                        stringResource(modeLabel(mode)),
-                        color = if (isSelected) Glass.Accent else Color.White,
-                        fontSize = 14.sp,
-                        textAlign = TextAlign.Center,
-                    )
-                }
+                MoreTile(modeIcon(mode), stringResource(modeLabel(mode)), mode == selected) { onSelect(mode) }
+            }
+            items(tools) { tool ->
+                MoreTile(tool.icon, stringResource(tool.label), selected = false, onClick = tool.onClick)
             }
         }
+    }
+}
+
+@Composable
+private fun MoreTile(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(vertical = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = if (selected) Glass.Accent else Color.White, modifier = Modifier.size(30.dp))
+        Text(label, color = if (selected) Glass.Accent else Color.White, fontSize = 14.sp, textAlign = TextAlign.Center)
     }
 }
 

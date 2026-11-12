@@ -981,6 +981,20 @@ class CameraViewModel @Inject constructor(
         }
     }
 
+    /** Saves pages from the document scanner to the gallery, the newest shown in the thumbnail. */
+    fun saveScannedPages(pages: List<ScannedPage>) {
+        viewModelScope.launch {
+            var last: String? = null
+            for (page in pages) {
+                val image = CapturedImage(page.jpeg, com.camoron.domain.model.ImageFormat.JPEG, PixelSize(page.width, page.height), System.currentTimeMillis())
+                runCatching { media.save(image) }
+                    .onSuccess { last = it }
+                    .onFailure { DiagnosticLog.record(TAG, "Couldn't save a scanned page", it) }
+            }
+            last?.let { uri -> _uiState.update { it.copy(lastCaptureUri = uri, event = CameraEvent.Saved(uri)) } }
+        }
+    }
+
     /** Adds a small copy of a panorama frame to the guide's strip. */
     private fun addPanoramaThumbnail(frame: CapturedImage, mirror: Boolean) {
         viewModelScope.launch(Dispatchers.Default) {
@@ -1207,6 +1221,9 @@ internal fun distanceMetres(a: GeoPoint, b: GeoPoint): Double {
 }
 
 private const val ZOOM_EPSILON = 0.01f
+
+/** A page from the document scanner: its JPEG and size. */
+class ScannedPage(val jpeg: ByteArray, val width: Int, val height: Int)
 
 /**
  * The panorama guide: which way the sweep goes (+1 or −1, 0 until the user has turned far enough to

@@ -54,6 +54,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
@@ -487,10 +489,18 @@ internal fun MacroBadge(modifier: Modifier = Modifier) {
  * are under More, and the one in use joins the row while it is chosen.
  */
 @Composable
-internal fun ModeCarousel(selected: CaptureMode, onSelect: (CaptureMode) -> Unit) {
+internal fun ModeCarousel(
+    selected: CaptureMode,
+    onSelect: (CaptureMode) -> Unit,
+    onDocumentPages: (List<Uri>) -> Unit = {},
+) {
     val listState = rememberLazyListState()
     val haptics = rememberHaptics()
     var moreOpen by rememberSaveable { mutableStateOf(false) }
+    var scannedCode by rememberSaveable { mutableStateOf<String?>(null) }
+    val scanQr = rememberQrScanner { scannedCode = it }
+    val scanDocument = rememberDocumentScanner(onDocumentPages)
+    scannedCode?.let { QrResultDialog(it, onDismiss = { scannedCode = null }) }
     val entries = modeRowEntries(selected)
     val index = entries.indexOf(selected)
     if (moreOpen) {
@@ -502,6 +512,16 @@ internal fun ModeCarousel(selected: CaptureMode, onSelect: (CaptureMode) -> Unit
                 onSelect(mode)
             },
             onDismiss = { moreOpen = false },
+            tools = listOf(
+                MoreTool(R.string.tool_qr, Icons.Filled.QrCodeScanner) {
+                    moreOpen = false
+                    scanQr()
+                },
+                MoreTool(R.string.tool_document, Icons.Filled.DocumentScanner) {
+                    moreOpen = false
+                    scanDocument()
+                },
+            ),
         )
     }
     // Keep the selected mode in the middle, like the phone's own camera, so modes at either end
