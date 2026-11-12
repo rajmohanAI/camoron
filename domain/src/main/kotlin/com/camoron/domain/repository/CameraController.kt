@@ -59,6 +59,9 @@ interface CameraController {
      * the session is a Camera2 Extensions session instead: captures come back already processed by
      * the phone's own pipeline,
      * and RAW, histogram, manual controls, zoom, flash and focus tracking are unavailable.
+     *
+     * With [highRes] (on a camera with a [com.camoron.domain.model.CameraCapabilities.highResJpegSize])
+     * photos are the largest the camera can take, at 1x zoom and without RAW or the extension.
      */
     suspend fun open(
         cameraId: String,
@@ -66,6 +69,7 @@ interface CameraController {
         rawEnabled: Boolean = false,
         aspect: StillAspect = StillAspect.FOUR_THREE,
         extension: CameraExtension? = null,
+        highRes: Boolean = false,
     )
 
     /** Flash for still captures. ON/AUTO run an exposure precapture so the flash is metered. */

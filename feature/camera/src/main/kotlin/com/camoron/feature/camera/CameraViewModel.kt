@@ -85,6 +85,11 @@ enum class CaptureMode(val video: VideoKind? = null) {
     PORTRAIT,
     /** Our own multi-frame RAW pipeline: a burst merged and developed on the phone, for more detail. */
     DETAIL,
+    /**
+     * The sensor's full resolution, e.g. 50 MP where Photo takes 12.5 MP: 4:3, at 1x, saved as the
+     * camera took it, since looks and optimisation can't fit a picture that size in memory.
+     */
+    HIGHRES,
     /** A photo with where and when it was taken printed on it, like a site or survey photo. */
     GEOTAG,
     PRO,
@@ -169,6 +174,21 @@ data class CameraUiState(
 
     /** Timer and aspect ratio belong to photos; a panorama takes its own shape. */
     val showPhotoControls: Boolean get() = !mode.isVideo && mode != CaptureMode.PANORAMA
+
+    /** High-Res on a camera that can take bigger photos than usual. */
+    val highResActive: Boolean
+        get() = mode == CaptureMode.HIGHRES && selectedCamera?.highResJpegSize != null &&
+            (cameraState as? CameraState.Previewing)?.capabilities?.let { it.highResJpegSize != null } != false
+
+    /** High-Res is open on a camera (or phone) that has no bigger photos to give. */
+    val highResUnavailable: Boolean
+        get() = mode == CaptureMode.HIGHRES && cameraState is CameraState.Previewing && !highResActive
+
+    /** The photo shape in use: High-Res is always the sensor's full 4:3. */
+    val photoAspect: AspectRatioSetting
+        get() = if (highResActive) AspectRatioSetting.RATIO_3_4 else cameraSettings.aspectRatio
+
+    val showAspectControl: Boolean get() = showPhotoControls && !highResActive
 
     /** Pro has the full set of dials; the other modes keep exposure automatic. */
     val showExposureControl: Boolean get() = false
@@ -369,6 +389,7 @@ class CameraViewModel @Inject constructor(
         val aspect: com.camoron.domain.model.StillAspect,
         val extension: CameraExtension?,
         val video: VideoSpec?,
+        val highRes: Boolean,
     )
 
     @Volatile
@@ -578,6 +599,7 @@ class CameraViewModel @Inject constructor(
     /** A zoom button: zooms the open camera, or switches to a separate lens such as an ultra-wide. */
     fun selectZoomPreset(preset: ZoomPreset) {
         val state = _uiState.value
+        if (state.highResActive) return
         if (state.selectedCamera?.cameraId == preset.cameraId) {
             setZoom(preset.zoomRatio)
             return
@@ -643,6 +665,14 @@ class CameraViewModel @Inject constructor(
             syncLocation()
             syncSky()
             syncGeoPlace()
+        }
+        if (mode == CaptureMode.HIGHRES || before.mode == CaptureMode.HIGHRES) {
+            // High-Res has its own photo size and shape, at 1x on this side's main camera.
+            val selected = before.selectedCamera ?: return
+            val target = if (mode == CaptureMode.HIGHRES) profile.bestCamera(selected.lensFacing) ?: selected else selected
+            viewModelScope.launch { select(target) }
+            applySettings(_uiState.value.modeSettings)
+            return
         }
         if (_uiState.value.videoSpec != before.videoSpec) {
             // Photo and video sessions are set up differently (and each video kind has its own frame rate).
@@ -1032,7 +1062,18 @@ class CameraViewModel @Inject constructor(
     }
 
     /** Makes the saved photo match the preview's shape, and mirror it for selfies when asked. */
-    private fun adjustmentsFor(state: CameraUiState) = PhotoAdjustments(
+    private fun adjustmentsFor(state: CameraUiState): PhotoAdjustments {
+        if (state.highResActive) {
+            // Saved as the camera took it: decoding a 50 MP picture to touch it up doesn't fit in memory.
+            return PhotoAdjustments(
+                cropAspect = null,
+                location = if (state.cameraSettings.geotag) geoFix(state) else null,
+            )
+        }
+        return normalAdjustments(state)
+    }
+
+    private fun normalAdjustments(state: CameraUiState) = PhotoAdjustments(
         cropAspect = when (state.cameraSettings.aspectRatio) {
             AspectRatioSetting.RATIO_3_4 -> 3f / 4
             AspectRatioSetting.RATIO_9_16 -> 9f / 16
@@ -1081,6 +1122,8 @@ class CameraViewModel @Inject constructor(
     }
 
     private fun setZoom(ratio: Float) {
+        // High-Res photos are the whole sensor, so the preview stays at 1x to match.
+        if (_uiState.value.highResActive) return
         _uiState.update { it.copy(zoomRatio = ratio) }
         viewModelScope.launch { camera.setZoom(ratio) }
     }
@@ -1099,7 +1142,7 @@ class CameraViewModel @Inject constructor(
 
     private suspend fun select(capabilities: CameraCapabilities, zoom: Float = 1f) {
         cancelTimer()
-        val aspect = _uiState.value.cameraSettings.aspectRatio.stillAspect
+        val aspect = _uiState.value.copy(selectedCamera = capabilities).photoAspect.stillAspect
         val extension = _uiState.value.copy(selectedCamera = capabilities).wantedExtension
         val video = _uiState.value.videoSpec
         val size = runCatching {
@@ -1146,9 +1189,10 @@ class CameraViewModel @Inject constructor(
             selected.cameraId,
             target,
             raw = state.rawStream,
-            aspect = state.cameraSettings.aspectRatio.stillAspect,
+            aspect = state.photoAspect.stillAspect,
             extension = state.activeExtension,
             video = state.videoSpec,
+            highRes = state.mode == CaptureMode.HIGHRES && selected.highResJpegSize != null,
         )
         // Several events (surface sized, camera selected, app resumed) can ask for the same session.
         if (key == openKey) return
@@ -1164,6 +1208,7 @@ class CameraViewModel @Inject constructor(
                     rawEnabled = key.raw,
                     aspect = key.aspect,
                     extension = key.extension,
+                    highRes = key.highRes,
                 )
             }
             val settings = _uiState.value.modeSettings
@@ -1183,7 +1228,7 @@ class CameraViewModel @Inject constructor(
         val wanted = state.wantedExtension
         if (wanted == state.activeExtension) return false
         viewModelScope.launch {
-            val aspect = state.cameraSettings.aspectRatio.stillAspect
+            val aspect = state.photoAspect.stillAspect
             val size = runCatching { camera.previewSize(selected.cameraId, aspect, wanted) }.getOrNull()
             _uiState.update { it.copy(previewSize = size, activeExtension = wanted) }
             openIfReady()

@@ -93,4 +93,25 @@ class CapabilityMapperTest {
         assertThat(caps.zoomRange.endInclusive).isEqualTo(8f)
         assertThat(caps.zoomRange.start).isEqualTo(1f)
     }
+
+    @Test
+    fun `high res is the full sensor mode, a bigger than usual size, or nothing`() {
+        // A 12 MP camera has nothing more to give.
+        assertThat(mapper.map("0", fullRaw).highResJpegSize).isNull()
+
+        // 50 MP offered only in the sensor's full-resolution mode.
+        val binned = fullRaw.copy(maxResolutionJpegSizes = listOf(PixelSize(8160, 6144), PixelSize(4080, 3072)))
+        mapper.map("0", binned).let {
+            assertThat(it.highResJpegSize).isEqualTo(PixelSize(8160, 6144))
+            assertThat(it.highResNeedsMaximumResolution).isTrue()
+            assertThat(it.maxJpegSize).isEqualTo(PixelSize(4032, 3024))
+        }
+
+        // 50 MP offered as a normal output size.
+        val large = fullRaw.copy(jpegSizes = listOf(PixelSize(8160, 6144), PixelSize(4080, 3072)))
+        mapper.map("0", large).let {
+            assertThat(it.highResJpegSize).isEqualTo(PixelSize(8160, 6144))
+            assertThat(it.highResNeedsMaximumResolution).isFalse()
+        }
+    }
 }

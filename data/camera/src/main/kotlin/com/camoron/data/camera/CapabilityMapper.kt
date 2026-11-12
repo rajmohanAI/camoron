@@ -44,6 +44,8 @@ internal data class RawCharacteristics(
     val distortionCorrectionModes: Set<Int> = emptySet(),
     /** Sizes the camera can stream to a GPU texture, which is where video frames go. */
     val textureSizes: List<PixelSize> = emptyList(),
+    /** JPEG sizes in the sensor's full-resolution mode (Android 12+, ultra high resolution sensors). */
+    val maxResolutionJpegSizes: List<PixelSize> = emptyList(),
 )
 
 class CapabilityMapper @Inject constructor() {
@@ -60,6 +62,10 @@ class CapabilityMapper @Inject constructor() {
             CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING in raw.capabilities &&
             CameraMetadata.CONTROL_AWB_MODE_OFF in raw.awbModes
         val maxJpeg = raw.jpegSizes.maxByOrNull { it.width.toLong() * it.height } ?: PixelSize(0, 0)
+        // High-Res: the sensor's full-resolution mode if it has one, or a normal size bigger than usual.
+        val fullMode = raw.maxResolutionJpegSizes.maxByOrNull { it.pixels }
+            ?.takeIf { it.pixels > maxOf(CameraCapabilities.STANDARD_STILL_PIXELS, maxJpeg.pixels) }
+        val highRes = fullMode ?: maxJpeg.takeIf { it.pixels > CameraCapabilities.STANDARD_STILL_PIXELS }
 
         return CameraCapabilities(
             cameraId = cameraId,
@@ -100,8 +106,12 @@ class CapabilityMapper @Inject constructor() {
             supportsHqNoiseReduction = CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY in raw.noiseReductionModes,
             supportsDistortionCorrection = DISTORTION_CORRECTION_HIGH_QUALITY in raw.distortionCorrectionModes,
             videoResolutions = VideoResolution.entries.filter { it.size in raw.textureSizes }.toSet(),
+            highResJpegSize = highRes,
+            highResNeedsMaximumResolution = fullMode != null,
         )
     }
+
+    private val PixelSize.pixels: Long get() = width.toLong() * height
 
     private fun hardwareLevel(value: Int?): HardwareLevel = when (value) {
         CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED -> HardwareLevel.LIMITED
@@ -166,12 +176,23 @@ class CapabilityMapper @Inject constructor() {
             noiseReductionModes = c.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)
                 ?.toSet().orEmpty(),
             textureSizes = map?.getOutputSizes(SurfaceTexture::class.java)?.map { PixelSize(it.width, it.height) }.orEmpty(),
+            maxResolutionJpegSizes = maxResolutionJpegSizes(c),
             distortionCorrectionModes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 c.get(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES)?.toSet().orEmpty()
             } else {
                 emptySet()
             },
         )
+    }
+
+    private fun maxResolutionJpegSizes(c: CameraCharacteristics): List<PixelSize> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return emptyList()
+        val capabilities = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: return emptyList()
+        if (CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_ULTRA_HIGH_RESOLUTION_SENSOR !in capabilities) return emptyList()
+        return c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION)
+            ?.getOutputSizes(ImageFormat.JPEG)
+            ?.map { PixelSize(it.width, it.height) }
+            .orEmpty()
     }
 
     internal companion object {

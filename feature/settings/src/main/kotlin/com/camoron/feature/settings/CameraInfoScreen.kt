@@ -164,6 +164,11 @@ internal fun describeCamera(c: CameraCapabilities): String = buildString {
     appendLine("Hardware distortion correction: ${yesNo(c.supportsDistortionCorrection)}")
     if (c.videoFrameRates.isNotEmpty()) appendLine("Frame rates: ${c.videoFrameRates.sorted().joinToString()} fps")
     appendLine("Slow motion: ${yesNo(c.supportsHighSpeedVideo)}")
+    val highRes = c.highResJpegSize?.let {
+        val mode = if (c.highResNeedsMaximumResolution) ", full-resolution sensor mode" else ""
+        String.format(Locale.US, "%.1f MP (%dx%d%s)", it.megapixels, it.width, it.height, mode)
+    }
+    appendLine("High-Res photos: ${highRes ?: "no"}")
     appendLine("Face detection: ${yesNo(c.supportsFaceDetection)}")
     append("Maker extensions: ${c.extensions.joinToString().ifEmpty { "none" }}")
 }
