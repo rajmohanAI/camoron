@@ -41,7 +41,7 @@ internal object GeoStamper {
     }
 
     /** A writable upright copy, or [bitmap] itself when it is already upright and writable. */
-    private fun upright(bitmap: Bitmap, rotationDegrees: Int, mirror: Boolean): Bitmap {
+    fun upright(bitmap: Bitmap, rotationDegrees: Int, mirror: Boolean): Bitmap {
         val turn = ((rotationDegrees % 360) + 360) % 360
         if (turn == 0 && !mirror && bitmap.isMutable) return bitmap
         val sideways = turn == 90 || turn == 270

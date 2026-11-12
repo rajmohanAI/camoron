@@ -90,6 +90,8 @@ enum class CaptureMode(val video: VideoKind? = null) {
      * camera took it, since looks and optimisation can't fit a picture that size in memory.
      */
     HIGHRES,
+    /** Front and back cameras at once: the other side's picture in a corner of the photo. */
+    DUAL,
     /** A photo with where and when it was taken printed on it, like a site or survey photo. */
     GEOTAG,
     PRO,
@@ -111,6 +113,12 @@ data class CameraUiState(
     val isCapturing: Boolean = false,
     /** Photos taken whose enhancement and saving are still running. */
     val photosSaving: Int = 0,
+    /** Dual capture: the second camera's preview size, null until known or where it can't run. */
+    val dualInsetSize: PixelSize? = null,
+    /** Dual capture: the second camera is streaming beside the main one. */
+    val dualOpen: Boolean = false,
+    /** Dual capture: this phone wouldn't run both cameras together. */
+    val dualFailed: Boolean = false,
     /** The latest shot, shown in the thumbnail the moment it is taken, before the photo is saved. */
     val instantThumbnail: ImageBitmap? = null,
     /** The saved photo [instantThumbnail] stands for, once it is saved. */
@@ -189,6 +197,9 @@ data class CameraUiState(
         get() = if (highResActive) AspectRatioSetting.RATIO_3_4 else cameraSettings.aspectRatio
 
     val showAspectControl: Boolean get() = showPhotoControls && !highResActive
+
+    /** Dual capture is open, but the phone won't run the second camera beside this one. */
+    val dualUnavailable: Boolean get() = mode == CaptureMode.DUAL && dualFailed
 
     /** Pro has the full set of dials; the other modes keep exposure automatic. */
     val showExposureControl: Boolean get() = false
@@ -365,6 +376,10 @@ class CameraViewModel @Inject constructor(
 
     private var profile = DeviceProfile(emptyList())
     private var surface: PreviewTarget? = null
+
+    /** Dual capture's corner preview, for the second camera. */
+    private var insetSurface: PreviewTarget? = null
+    private var companionJob: Job? = null
     private var timerJob: Job? = null
 
     /** Set to end the panorama being swept. */
@@ -448,6 +463,60 @@ class CameraViewModel @Inject constructor(
     fun onSurfaceDestroyed() {
         surface = null
         closeCamera()
+    }
+
+    fun onInsetSurfaceReady(target: PreviewTarget) {
+        insetSurface = target
+        syncCompanion()
+    }
+
+    fun onInsetSurfaceDestroyed() {
+        insetSurface = null
+        syncCompanion()
+    }
+
+    /** The camera on the other side from the open one, for Dual capture. */
+    private fun companionFor(state: CameraUiState): CameraCapabilities? {
+        val selected = state.selectedCamera ?: return null
+        val facing = if (selected.lensFacing == LensFacing.FRONT) LensFacing.BACK else LensFacing.FRONT
+        return profile.bestCamera(facing)
+    }
+
+    /** Dual capture: finds the second camera's preview size, so its corner preview can be laid out. */
+    private fun prepareDual() {
+        val state = _uiState.value
+        if (state.mode != CaptureMode.DUAL) return
+        val other = companionFor(state)
+        viewModelScope.launch {
+            val size = other?.let { runCatching { camera.companionPreviewSize(it.cameraId) }.getOrNull() }
+            if (_uiState.value.mode != CaptureMode.DUAL) return@launch
+            if (size == null) DiagnosticLog.info(TAG, "Dual capture isn't offered by this phone for camera ${other?.cameraId}")
+            _uiState.update { it.copy(dualInsetSize = size, dualFailed = size == null, dualOpen = false) }
+            syncCompanion()
+        }
+    }
+
+    /** Opens the second camera when Dual capture is on and everything is ready, or closes it. */
+    private fun syncCompanion() {
+        val state = _uiState.value
+        companionJob?.cancel()
+        val target = insetSurface
+        val size = state.dualInsetSize
+        val other = companionFor(state)
+        val wanted = state.mode == CaptureMode.DUAL && foreground && other != null && size != null && target != null &&
+            target.width == size.width && target.height == size.height && state.cameraState is CameraState.Previewing
+        if (!wanted) {
+            if (state.dualOpen) {
+                _uiState.update { it.copy(dualOpen = false) }
+                companionJob = viewModelScope.launch { camera.closeCompanion() }
+            }
+            return
+        }
+        if (other == null || target == null) return
+        companionJob = viewModelScope.launch {
+            val ok = camera.openCompanion(other.cameraId, target)
+            _uiState.update { it.copy(dualOpen = ok, dualFailed = !ok) }
+        }
     }
 
     /** The app came to the front (true) or went to the background (false). */
@@ -551,6 +620,8 @@ class CameraViewModel @Inject constructor(
         panoramaStop = true
         retryJob?.cancel()
         openKey = null
+        companionJob?.cancel()
+        _uiState.update { it.copy(dualOpen = false) }
         viewModelScope.launch {
             // A recording in progress is saved before the camera goes.
             finishRecording()
@@ -593,6 +664,8 @@ class CameraViewModel @Inject constructor(
                 camera.setMacro(false)
             }
             select(target)
+            // The other side's camera is now the corner one.
+            prepareDual()
         }
     }
 
@@ -665,6 +738,12 @@ class CameraViewModel @Inject constructor(
             syncLocation()
             syncSky()
             syncGeoPlace()
+        }
+        if (mode == CaptureMode.DUAL) prepareDual()
+        if (before.mode == CaptureMode.DUAL) {
+            _uiState.update { it.copy(dualInsetSize = null, dualOpen = false, dualFailed = false) }
+            syncCompanion()
+            viewModelScope.launch { camera.closeCompanion() }
         }
         if (mode == CaptureMode.HIGHRES || before.mode == CaptureMode.HIGHRES) {
             // High-Res has its own photo size and shape, at 1x on this side's main camera.
@@ -988,7 +1067,12 @@ class CameraViewModel @Inject constructor(
             showInstantThumbnail(photo, adjustments.mirror)
         }
         val uri = runCatching {
-            captureAndSave(deviceRotation, state.rawActive, adjustments, frames, detailFrames, onCaptured = ready)
+            val inset: (suspend () -> CapturedImage?)? = if (state.mode == CaptureMode.DUAL && state.dualOpen) {
+                { camera.captureCompanion(deviceRotation) }
+            } else {
+                null
+            }
+            captureAndSave(deviceRotation, state.rawActive, adjustments, frames, detailFrames, onCaptured = ready, inset = inset)
         }.onFailure { DiagnosticLog.record(TAG, "Couldn't take the photo", it) }.getOrNull()
         if (uri != null) {
             DiagnosticLog.info(
@@ -1087,6 +1171,8 @@ class CameraViewModel @Inject constructor(
         portraitAperture = state.portraitAperture,
         location = if (state.cameraSettings.geotag || state.mode == CaptureMode.GEOTAG) geoFix(state) else null,
         stamp = if (state.mode == CaptureMode.GEOTAG) geoStamp(state) else null,
+        insetMirror = state.mode == CaptureMode.DUAL && companionFor(state)?.lensFacing == LensFacing.FRONT &&
+            state.cameraSettings.selfieMirror,
     )
 
     /** Save location wants a recent fix; Geo Tag settles for the last known one rather than none. */
@@ -1215,6 +1301,11 @@ class CameraViewModel @Inject constructor(
             if (state.mode == CaptureMode.PRO || settings != ManualSettings.AUTO) camera.applySettings(settings)
             val zoom = _uiState.value.zoomRatio
             if (zoom != 1f) camera.setZoom(zoom)
+            // Reopening the main camera closes Dual capture's second one; bring it back.
+            if (_uiState.value.mode == CaptureMode.DUAL) {
+                _uiState.update { it.copy(dualOpen = false) }
+                syncCompanion()
+            }
         }
     }
 

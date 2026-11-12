@@ -852,6 +852,8 @@ class Camera2Controller @Inject constructor(
         rawEnabled: Boolean,
         aspect: StillAspect,
         highRes: Boolean = false,
+        stillPixelCap: Long = MAX_STILL_PIXELS,
+        analysis: Boolean = true,
     ): Boolean {
         val reused = closeLocked(reuseFor = cameraId)
         _state.value = CameraState.Opening(cameraId)
@@ -870,7 +872,7 @@ class Camera2Controller @Inject constructor(
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
             val jpegSizes = streams?.getOutputSizes(AndroidImageFormat.JPEG)?.map { PixelSize(it.width, it.height) }
             val jpegSize = highResSize ?: jpegSizes?.takeIf { it.isNotEmpty() }
-                ?.let { CameraMath.chooseStillSize(it, effectiveAspect(caps, aspect), MAX_STILL_PIXELS) }
+                ?.let { CameraMath.chooseStillSize(it, effectiveAspect(caps, aspect), stillPixelCap) }
                 ?: caps.maxJpegSize
 
             // Camera2 guarantees preview + one full-size output + one more stream: RAW when the user
@@ -879,7 +881,7 @@ class Camera2Controller @Inject constructor(
                 ?.maxByOrNull { it.width.toLong() * it.height }
                 ?.takeIf { rawEnabled && caps.supportsRaw && highResSize == null }
             // Only preview plus a full-resolution-mode photo is a combination every such phone takes.
-            val analysisSize = if (rawSize == null && !maximumResolution) {
+            val analysisSize = if (rawSize == null && !maximumResolution && analysis) {
                 streams?.getOutputSizes(AndroidImageFormat.YUV_420_888)
                     ?.map { PixelSize(it.width, it.height) }
                     ?.let(CameraMath::chooseAnalysisSize)
@@ -1508,6 +1510,163 @@ class Camera2Controller @Inject constructor(
         locked { closeLocked() }
     }
 
+    /** Dual capture's second camera, streaming beside [active]. */
+    private class CompanionCamera(
+        val device: CameraDevice,
+        val session: CameraCaptureSession,
+        val previewSurface: Surface,
+        val jpegReader: ImageReader,
+        val sensorOrientation: Int,
+        val isFront: Boolean,
+    )
+
+    @Volatile
+    private var companion: CompanionCamera? = null
+
+    /** Shots from the second camera, kept apart from [mutex] so both cameras can shoot at once. */
+    private val companionMutex = Mutex()
+
+    private fun closeCompanionNow() {
+        val open = companion ?: return
+        companion = null
+        runCatching { open.session.stopRepeating() }
+        runCatching { open.session.close() }
+        runCatching { open.device.close() }
+        runCatching { open.jpegReader.close() }
+    }
+
+    /** [cameraId] is in one of the sets of cameras the phone says can stream at the same time. */
+    private fun streamsConcurrently(cameraId: String, with: String? = null): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        return runCatching {
+            manager.concurrentCameraIds.any { ids -> cameraId in ids && (with == null || with in ids) && ids.size > 1 }
+        }.getOrDefault(false)
+    }
+
+    override suspend fun companionPreviewSize(cameraId: String): PixelSize? = withContext(processing) {
+        if (!streamsConcurrently(cameraId)) return@withContext null
+        val sizes = characteristicsOf(cameraId).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?.getOutputSizes(SurfaceTexture::class.java)
+            ?.map { PixelSize(it.width, it.height) }
+            .orEmpty()
+        if (sizes.isEmpty()) return@withContext null
+        CameraMath.choosePreviewSize(sizes, StillAspect.FOUR_THREE.ratio, maxLongEdge = COMPANION_PREVIEW_LONG_EDGE, maxShortEdge = COMPANION_PREVIEW_LONG_EDGE)
+    }
+
+    override suspend fun openCompanion(cameraId: String, target: PreviewTarget): Boolean = locked {
+        closeCompanionNow()
+        val surface = (target as? SurfacePreviewTarget)?.surface ?: return@locked false
+        val main = active ?: return@locked false
+        if (main.video != null || main.jpegReader == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return@locked false
+        if (!streamsConcurrently(cameraId, with = main.device.id)) {
+            DiagnosticLog.info(TAG, "Dual capture: cameras ${main.device.id} and $cameraId can't stream together on this phone")
+            return@locked false
+        }
+        val streams = characteristicsOf(cameraId).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val jpegSize = streams?.getOutputSizes(AndroidImageFormat.JPEG)
+            ?.map { PixelSize(it.width, it.height) }
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { CameraMath.chooseStillSize(it, StillAspect.FOUR_THREE, CONCURRENT_STILL_PIXELS) }
+            ?: return@locked false
+        val jpegReader = ImageReader.newInstance(jpegSize.width, jpegSize.height, AndroidImageFormat.JPEG, MAX_IMAGES)
+
+        // Phones only promise both cameras at once with modest stream sizes; if the open session's
+        // full-size photos are too much alongside, reopen it with photos the phone can manage.
+        if (!concurrentSupported(main, cameraId, listOf(surface, jpegReader.surface))) {
+            val mainId = main.device.id
+            val aspect = main.jpegReader.let { if (CameraMath.aspectOf(PixelSize(it.width, it.height)) > 1.5) StillAspect.SIXTEEN_NINE else StillAspect.FOUR_THREE }
+            DiagnosticLog.info(TAG, "Dual capture: reopening camera $mainId with smaller photos so both cameras can run")
+            openLocked(mainId, main.previewSurface, rawEnabled = false, aspect, stillPixelCap = CONCURRENT_STILL_PIXELS, analysis = false)
+            if (active == null) {
+                runCatching { jpegReader.close() }
+                return@locked false
+            }
+        }
+
+        var device: CameraDevice? = null
+        try {
+            device = openDevice(cameraId)
+            val session = createSession(device, listOf(surface, jpegReader.surface))
+            val characteristics = characteristicsOf(cameraId)
+            val opened = CompanionCamera(
+                device = device,
+                session = session,
+                previewSurface = surface,
+                jpegReader = jpegReader,
+                sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90,
+                isFront = characteristics.get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_FRONT,
+            )
+            val preview = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(surface)
+                set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            }.build()
+            session.setRepeatingRequest(preview, null, handler)
+            companion = opened
+            DiagnosticLog.info(TAG, "Dual capture: camera $cameraId open beside ${active?.device?.id}, photos ${jpegSize.width}x${jpegSize.height}")
+            true
+        } catch (e: Exception) {
+            DiagnosticLog.record(TAG, "Dual capture: couldn't open camera $cameraId beside the main one", e)
+            runCatching { device?.close() }
+            runCatching { jpegReader.close() }
+            if (e is CancellationException) throw e
+            false
+        }
+    }
+
+    /** Whether the phone says the open session and the second camera's outputs can run together. */
+    private fun concurrentSupported(main: ActiveCamera, companionId: String, companionSurfaces: List<Surface>): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        val callback = object : CameraCaptureSession.StateCallback() {
+            override fun onConfigured(session: CameraCaptureSession) = Unit
+            override fun onConfigureFailed(session: CameraCaptureSession) = Unit
+        }
+        fun config(surfaces: List<Surface>) =
+            SessionConfiguration(SessionConfiguration.SESSION_REGULAR, surfaces.map(::OutputConfiguration), executor, callback)
+        val mainSurfaces = listOfNotNull(main.previewSurface, main.jpegReader?.surface, main.rawReader?.surface, main.analysisReader?.surface)
+        return runCatching {
+            manager.isConcurrentSessionConfigurationSupported(
+                mapOf(main.device.id to config(mainSurfaces), companionId to config(companionSurfaces)),
+            )
+        }.onFailure { DiagnosticLog.record(TAG, "Dual capture: couldn't ask whether both sessions fit", it) }
+            .getOrDefault(false)
+    }
+
+    override suspend fun captureCompanion(deviceRotationDegrees: Int): CapturedImage? = companionMutex.withLock {
+        val open = companion ?: return@withLock null
+        val bytes = CompletableDeferred<ByteArray>()
+        open.jpegReader.acquireLatestImage()?.close()
+        open.jpegReader.setOnImageAvailableListener({ r ->
+            r.acquireNextImage()?.use { image ->
+                val buffer = image.planes[0].buffer
+                bytes.complete(ByteArray(buffer.remaining()).also(buffer::get))
+            }
+        }, handler)
+        try {
+            val request = open.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                addTarget(open.jpegReader.surface)
+                set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY)
+                set(
+                    CaptureRequest.JPEG_ORIENTATION,
+                    CameraMath.jpegOrientation(open.sensorOrientation, deviceRotationDegrees, open.isFront),
+                )
+            }.build()
+            open.session.capture(request, null, handler)
+            val jpeg = withTimeoutOrNull(CAPTURE_TIMEOUT_MS) { bytes.await() } ?: return@withLock null
+            CapturedImage(jpeg, ImageFormat.JPEG, PixelSize(open.jpegReader.width, open.jpegReader.height), System.currentTimeMillis())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DiagnosticLog.record(TAG, "Dual capture: the second camera's photo failed", e)
+            null
+        } finally {
+            runCatching { open.jpegReader.setOnImageAvailableListener(null, null) }
+        }
+    }
+
+    override suspend fun closeCompanion() {
+        locked { closeCompanionNow() }
+    }
+
     /**
      * Closes the open session. When the next session is for [reuseFor], the same camera, its device
      * is kept open and returned: switching between photo, Pro and video then skips reopening the
@@ -1515,6 +1674,8 @@ class Camera2Controller @Inject constructor(
      */
     private suspend fun closeLocked(reuseFor: String? = null): CameraDevice? {
         var kept: CameraDevice? = null
+        // Dual capture's second camera can't outlive the session it runs beside.
+        closeCompanionNow()
         if (recording != null) stopRecordingLocked()
         activeExtension?.let { opened ->
             activeExtension = null
@@ -1582,6 +1743,11 @@ class Camera2Controller @Inject constructor(
     /** Called on the camera thread when an already-open device is taken away from us. */
     private fun onLostDevice(device: CameraDevice, error: CameraError) {
         DiagnosticLog.record(TAG, "Camera ${device.id} was taken away: $error")
+        companion?.takeIf { it.device == device }?.let { lost ->
+            companion = null
+            runCatching { lost.jpegReader.close() }
+            return
+        }
         active?.takeIf { it.device == device }?.healthy = false
         activeExtension?.takeIf { it.device == device }?.let { opened ->
             activeExtension = null
@@ -1891,6 +2057,10 @@ class Camera2Controller @Inject constructor(
          * would be noisier, slow to take and too big to optimise on the phone.
          */
         const val MAX_STILL_PIXELS = CameraCapabilities.STANDARD_STILL_PIXELS
+
+        /** Phones promise two cameras at once only up to 1440p streams (Android 11's s1440p). */
+        const val CONCURRENT_STILL_PIXELS = 1920L * 1440
+        const val COMPANION_PREVIEW_LONG_EDGE = 1280
         const val JPEG_QUALITY: Byte = 95
         const val FOCUS_REGION_FRACTION = 0.15f
         const val DEFAULT_EXPOSURE_NS = 16_666_667L // 1/60 s
