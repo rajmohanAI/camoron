@@ -113,6 +113,8 @@ data class CameraUiState(
     val rawEnabled: Boolean = false,
     /** Portrait's exposure compensation, in the camera's steps; auto exposure does the rest. */
     val portraitExposure: Int = 0,
+    /** Portrait's lens opening (f-number) for the background blur; smaller blurs more. */
+    val portraitAperture: Float = PhotoAdjustments.DEFAULT_APERTURE,
     /** Seconds left on the self-timer, or null when no countdown is running. */
     val countdown: Int? = null,
     /** The screen is lit white to act as a flash for the front camera. */
@@ -158,11 +160,19 @@ data class CameraUiState(
         get() = mode.isVideo && mode != CaptureMode.SLOW_MOTION &&
             selectedCamera?.videoResolutions?.contains(VideoResolution.UHD) == true
 
+    /** Slo-mo is open, but the phone keeps high-speed filming for its own camera app. */
+    val slowMotionUnavailable: Boolean
+        get() = mode == CaptureMode.SLOW_MOTION &&
+            (cameraState as? CameraState.Previewing)?.capabilities?.supportsHighSpeedVideo == false
+
     /** Timer and aspect ratio belong to photos; a panorama takes its own shape. */
     val showPhotoControls: Boolean get() = !mode.isVideo && mode != CaptureMode.PANORAMA
 
-    /** Portrait has its own exposure slider; Pro has the full set of dials. */
-    val showExposureControl: Boolean get() = mode == CaptureMode.PORTRAIT
+    /** Pro has the full set of dials; the other modes keep exposure automatic. */
+    val showExposureControl: Boolean get() = false
+
+    /** Portrait's slider sets how strongly the background is blurred. */
+    val showApertureControl: Boolean get() = mode == CaptureMode.PORTRAIT
 
     /** What the camera's exposure should be in the current mode. */
     val modeSettings: ManualSettings
@@ -694,6 +704,10 @@ class CameraViewModel @Inject constructor(
     fun setExposureCompensation(steps: Int) = updateSettings { it.copy(exposureCompensation = steps) }
     fun setWhiteBalance(wb: WhiteBalance) = updateSettings { it.copy(whiteBalance = wb) }
 
+    fun setPortraitAperture(aperture: Float) {
+        _uiState.update { it.copy(portraitAperture = aperture) }
+    }
+
     fun setPortraitExposure(steps: Int) {
         _uiState.update { it.copy(portraitExposure = steps) }
         if (_uiState.value.mode == CaptureMode.PORTRAIT) applySettings(_uiState.value.modeSettings)
@@ -993,6 +1007,7 @@ class CameraViewModel @Inject constructor(
         enhance = state.cameraSettings.enhance,
         zoom = state.zoomRatio,
         portrait = state.mode == CaptureMode.PORTRAIT,
+        portraitAperture = state.portraitAperture,
         location = if (state.cameraSettings.geotag || state.mode == CaptureMode.GEOTAG) geoFix(state) else null,
         stamp = if (state.mode == CaptureMode.GEOTAG) geoStamp(state) else null,
     )

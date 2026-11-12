@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.pluralStringResource
@@ -146,6 +147,22 @@ internal fun PanoramaHint(frames: Int?) {
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.6f))
                 .padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+    }
+}
+
+/** A short note under the badges at the top of the preview. */
+@Composable
+internal fun PreviewNote(text: String) {
+    Box(Modifier.fillMaxSize().padding(top = 56.dp, start = 16.dp, end = 16.dp), contentAlignment = Alignment.TopCenter) {
+        Text(
+            text,
+            color = Color.White,
+            fontSize = 13.sp,
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color.Black.copy(alpha = 0.6f))
+                .padding(horizontal = 14.dp, vertical = 8.dp),
         )
     }
 }

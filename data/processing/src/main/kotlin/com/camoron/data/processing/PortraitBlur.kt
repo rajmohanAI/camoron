@@ -32,13 +32,14 @@ class PortraitBlur @Inject constructor(
     /**
      * Blurs the background of [bitmap] (mutable ARGB_8888) in place. [rotationDegrees] turns its
      * pixels upright, as the model expects people the right way up. Returns false, leaving the
-     * photo as it was, when nobody is in it or the model couldn't run. Blocking.
+     * photo as it was, when nobody is in it or the model couldn't run. [strength] scales the blur:
+     * 1 is about an f/1.8 lens, 2 twice as soft, 0.25 barely softened. Blocking.
      */
     @Synchronized
-    fun blur(bitmap: Bitmap, rotationDegrees: Int): Boolean {
+    fun blur(bitmap: Bitmap, rotationDegrees: Int, strength: Float = 1f): Boolean {
         if (failed) return false
         return try {
-            DiagnosticLog.timed(TAG, "Portrait blur of ${bitmap.width}x${bitmap.height}") { run(bitmap, rotationDegrees) }
+            DiagnosticLog.timed(TAG, "Portrait blur of ${bitmap.width}x${bitmap.height}") { run(bitmap, rotationDegrees, strength) }
         } catch (e: OutOfMemoryError) {
             DiagnosticLog.record(TAG, "Not enough memory for the portrait blur", e)
             false
@@ -52,7 +53,7 @@ class PortraitBlur @Inject constructor(
         }
     }
 
-    private fun run(bitmap: Bitmap, rotationDegrees: Int): Boolean {
+    private fun run(bitmap: Bitmap, rotationDegrees: Int, strength: Float): Boolean {
         val probability = segment(bitmap, rotationDegrees)
         val coverage = PortraitMath.coverage(probability)
         if (coverage < MIN_COVERAGE) {
@@ -82,7 +83,7 @@ class PortraitBlur @Inject constructor(
             planes[2][i] = PortraitMath.toLinear(b)
         }
         val mask = PortraitMath.refineMask(probability, MODEL_SIZE, guide, ww, wh)
-        val radius = max(1, (max(ww, wh) * BLUR_RADIUS).roundToInt())
+        val radius = max(1, (max(ww, wh) * BLUR_RADIUS * strength).roundToInt())
         val blurred = PortraitMath.blurBackground(planes, mask, ww, wh, radius)
         composite(bitmap, mask, blurred, ww, wh)
         return true
