@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MovieCreation
 import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Panorama
+import androidx.compose.material.icons.filled.PhotoSizeSelectLarge
 import androidx.compose.material.icons.filled.SlowMotionVideo
 import androidx.compose.material.icons.filled.Timelapse
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,6 +43,7 @@ internal val MAIN_MODES = listOf(CaptureMode.VIDEO, CaptureMode.PHOTO, CaptureMo
 /** The modes under More, in the order the More sheet shows them. */
 internal val MORE_MODES = listOf(
     CaptureMode.DETAIL,
+    CaptureMode.HIGHRES,
     CaptureMode.GEOTAG,
     CaptureMode.PANORAMA,
     CaptureMode.SKY,
@@ -107,6 +109,7 @@ private fun MoreTile(icon: ImageVector, label: String, selected: Boolean, onClic
 
 private fun modeIcon(mode: CaptureMode): ImageVector = when (mode) {
     CaptureMode.DETAIL -> Icons.Filled.HighQuality
+    CaptureMode.HIGHRES -> Icons.Filled.PhotoSizeSelectLarge
     CaptureMode.GEOTAG -> Icons.Filled.LocationOn
     CaptureMode.PANORAMA -> Icons.Filled.Panorama
     CaptureMode.SKY -> Icons.Filled.NightsStay

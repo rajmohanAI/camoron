@@ -182,6 +182,8 @@ internal fun TopMenu(
                     }
                 }
             }
+        }
+        if (state.showAspectControl) {
             val (ratioLabel, frameShape) = when (settings.aspectRatio) {
                 AspectRatioSetting.RATIO_3_4 -> R.string.ratio_3_4 to (18.dp to 24.dp)
                 AspectRatioSetting.RATIO_9_16 -> R.string.ratio_9_16 to (16.dp to 28.dp)
@@ -586,6 +588,7 @@ internal fun modeLabel(mode: CaptureMode): Int = when (mode) {
     CaptureMode.PHOTO -> R.string.mode_photo
     CaptureMode.PORTRAIT -> R.string.mode_portrait
     CaptureMode.DETAIL -> R.string.mode_detail
+    CaptureMode.HIGHRES -> R.string.mode_highres
     CaptureMode.GEOTAG -> R.string.mode_geotag
     CaptureMode.PRO -> R.string.mode_pro
     CaptureMode.PANORAMA -> R.string.mode_panorama

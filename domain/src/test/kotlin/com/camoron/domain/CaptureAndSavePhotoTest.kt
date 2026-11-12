@@ -179,6 +179,7 @@ class CaptureAndSavePhotoTest {
             rawEnabled: Boolean,
             aspect: StillAspect,
             extension: CameraExtension?,
+            highRes: Boolean,
         ) = Unit
         override suspend fun captureBurst(deviceRotationDegrees: Int, frames: Int) = List(frames) { jpeg }
         override suspend fun captureRawBurst(deviceRotationDegrees: Int, frames: Int) = RawBurst(

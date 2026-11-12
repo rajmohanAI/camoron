@@ -232,6 +232,8 @@ class Camera2Controller @Inject constructor(
         val rawReader: ImageReader?,
         val analysisReader: ImageReader?,
         val video: VideoSession? = null,
+        /** Photos come from the sensor's full-resolution mode (High-Res), so each shot asks for it. */
+        val maximumResolution: Boolean = false,
     ) {
         var settings: ManualSettings = ManualSettings.AUTO
         @Volatile
@@ -413,10 +415,16 @@ class Camera2Controller @Inject constructor(
         rawEnabled: Boolean,
         aspect: StillAspect,
         extension: CameraExtension?,
+        highRes: Boolean,
     ) {
         locked {
             val surface = (target as? SurfacePreviewTarget)?.surface
                 ?: error("Camera2Controller needs a SurfacePreviewTarget")
+            if (highRes && capabilitiesOf(cameraId).highResJpegSize != null) {
+                if (openLocked(cameraId, surface, rawEnabled = false, StillAspect.FOUR_THREE, highRes = true)) return@locked
+                // The phone wouldn't stream its full-size photos to us after all; take normal ones.
+                capabilitiesCache[cameraId] = capabilitiesOf(cameraId).copy(highResJpegSize = null, highResNeedsMaximumResolution = false)
+            }
             if (extension != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                 openExtensionLocked(cameraId, surface, aspect, extension)
             ) {
@@ -834,7 +842,17 @@ class Camera2Controller @Inject constructor(
         }
     }
 
-    private suspend fun openLocked(cameraId: String, surface: Surface, rawEnabled: Boolean, aspect: StillAspect) {
+    /**
+     * Opens a photo session. With [highRes], photos are the camera's largest; if that session
+     * can't be set up, everything is released and false returned so a normal one can be opened.
+     */
+    private suspend fun openLocked(
+        cameraId: String,
+        surface: Surface,
+        rawEnabled: Boolean,
+        aspect: StillAspect,
+        highRes: Boolean = false,
+    ): Boolean {
         val reused = closeLocked(reuseFor = cameraId)
         _state.value = CameraState.Opening(cameraId)
 
@@ -847,8 +865,11 @@ class Camera2Controller @Inject constructor(
             val streams = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             device = reused ?: openDevice(cameraId)
 
+            val highResSize = caps.highResJpegSize?.takeIf { highRes }
+            val maximumResolution = highResSize != null && caps.highResNeedsMaximumResolution &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
             val jpegSizes = streams?.getOutputSizes(AndroidImageFormat.JPEG)?.map { PixelSize(it.width, it.height) }
-            val jpegSize = jpegSizes?.takeIf { it.isNotEmpty() }
+            val jpegSize = highResSize ?: jpegSizes?.takeIf { it.isNotEmpty() }
                 ?.let { CameraMath.chooseStillSize(it, effectiveAspect(caps, aspect), MAX_STILL_PIXELS) }
                 ?: caps.maxJpegSize
 
@@ -856,8 +877,9 @@ class Camera2Controller @Inject constructor(
             // wants DNGs, otherwise a small YUV stream for the histogram.
             val rawSize = streams?.getOutputSizes(AndroidImageFormat.RAW_SENSOR)
                 ?.maxByOrNull { it.width.toLong() * it.height }
-                ?.takeIf { rawEnabled && caps.supportsRaw }
-            val analysisSize = if (rawSize == null) {
+                ?.takeIf { rawEnabled && caps.supportsRaw && highResSize == null }
+            // Only preview plus a full-resolution-mode photo is a combination every such phone takes.
+            val analysisSize = if (rawSize == null && !maximumResolution) {
                 streams?.getOutputSizes(AndroidImageFormat.YUV_420_888)
                     ?.map { PixelSize(it.width, it.height) }
                     ?.let(CameraMath::chooseAnalysisSize)
@@ -881,8 +903,22 @@ class Camera2Controller @Inject constructor(
             val rawReader = rawSize?.let {
                 ImageReader.newInstance(it.width, it.height, AndroidImageFormat.RAW_SENSOR, MAX_IMAGES).also(readers::add)
             }
-            val session = createSession(device, listOfNotNull(surface, jpegReader.surface, rawReader?.surface, analysisReader?.surface))
-            val camera = ActiveCamera(caps, characteristics, device, session, surface, jpegReader, rawReader, analysisReader)
+            val session = createSession(
+                device,
+                listOfNotNull(surface, jpegReader.surface, rawReader?.surface, analysisReader?.surface),
+                maximumResolution = if (maximumResolution) setOf(jpegReader.surface) else emptySet(),
+            )
+            val camera = ActiveCamera(
+                caps,
+                characteristics,
+                device,
+                session,
+                surface,
+                jpegReader,
+                rawReader,
+                analysisReader,
+                maximumResolution = maximumResolution,
+            )
             active = camera
             startRepeating(camera)
             if (macroEnabled && caps.supportsMacro && caps.supportsMacroAf) triggerFocus(camera)
@@ -890,12 +926,13 @@ class Camera2Controller @Inject constructor(
             DiagnosticLog.info(
                 TAG,
                 "Opened camera $cameraId in ${SystemClock.elapsedRealtime() - started} ms: asked $aspect, " +
-                    "photos ${jpegSize.width}x${jpegSize.height}, " +
+                    "photos ${jpegSize.width}x${jpegSize.height}${if (highResSize != null) " (High-Res${if (maximumResolution) ", full-resolution sensor mode" else ""})" else ""}, " +
                     "analysis ${analysisSize?.let { "${it.width}x${it.height}" }}, " +
                     "maker modes ${caps.extensions.ifEmpty { "none" }}",
             )
+            return true
         } catch (e: Exception) {
-            DiagnosticLog.record(TAG, "Failed to open camera $cameraId", e)
+            DiagnosticLog.record(TAG, if (highRes) "Failed to open camera $cameraId for High-Res photos" else "Failed to open camera $cameraId", e)
             readers.forEach { runCatching { it.close() } }
             (device ?: reused)?.close()
             active = null
@@ -903,7 +940,9 @@ class Camera2Controller @Inject constructor(
                 _state.value = CameraState.Closed
                 throw e
             }
+            if (highRes) return false
             _state.value = CameraState.Error(e.toCameraError())
+            return true
         }
     }
 
@@ -1146,6 +1185,7 @@ class Camera2Controller @Inject constructor(
             set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY)
             set(CaptureRequest.JPEG_ORIENTATION, rotation)
             applyStillProcessing(camera, this)
+            if (camera.maximumResolution && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) asMaximumResolution(this)
             // With manual exposure the AE routine is off, so fire the flash directly for this frame.
             if (camera.capabilities.hasFlash && flashMode == FlashMode.ON && isManualExposure(camera)) {
                 set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_SINGLE)
@@ -1383,6 +1423,20 @@ class Camera2Controller @Inject constructor(
     }
 
     /** The camera's best noise reduction and sharpening for stills, where offered. */
+    /**
+     * A shot from the sensor's full-resolution mode. Its regions and crop are in that mode's own
+     * coordinates, so the preview's are dropped and the whole sensor is taken at 1x.
+     */
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun asMaximumResolution(builder: CaptureRequest.Builder) {
+        builder.set(CaptureRequest.SENSOR_PIXEL_MODE, CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION)
+        builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1f)
+        builder.set(CaptureRequest.SCALER_CROP_REGION, null)
+        builder.set(CaptureRequest.CONTROL_AF_REGIONS, null)
+        builder.set(CaptureRequest.CONTROL_AE_REGIONS, null)
+        builder.set(CaptureRequest.CONTROL_AWB_REGIONS, null)
+    }
+
     private fun applyStillProcessing(camera: ActiveCamera, builder: CaptureRequest.Builder) {
         if (camera.capabilities.supportsHqNoiseReduction) {
             builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY)
@@ -1545,7 +1599,12 @@ class Camera2Controller @Inject constructor(
         }
     }
 
-    private suspend fun createSession(device: CameraDevice, surfaces: List<Surface>): CameraCaptureSession =
+    /** [maximumResolution] are the outputs fed from the sensor's full-resolution mode (Android 12+). */
+    private suspend fun createSession(
+        device: CameraDevice,
+        surfaces: List<Surface>,
+        maximumResolution: Set<Surface> = emptySet(),
+    ): CameraCaptureSession =
         suspendCancellableCoroutine { cont ->
             val callback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
@@ -1560,7 +1619,13 @@ class Camera2Controller @Inject constructor(
                 device.createCaptureSession(
                     SessionConfiguration(
                         SessionConfiguration.SESSION_REGULAR,
-                        surfaces.map(::OutputConfiguration),
+                        surfaces.map { surface ->
+                            OutputConfiguration(surface).apply {
+                                if (surface in maximumResolution && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                    addSensorPixelModeUsed(CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION)
+                                }
+                            }
+                        },
                         executor,
                         callback,
                     ),
@@ -1825,7 +1890,7 @@ class Camera2Controller @Inject constructor(
          * photos binned to around 12.5 MP, as their own camera apps do by default; full-size photos
          * would be noisier, slow to take and too big to optimise on the phone.
          */
-        const val MAX_STILL_PIXELS = 16_800_000L
+        const val MAX_STILL_PIXELS = CameraCapabilities.STANDARD_STILL_PIXELS
         const val JPEG_QUALITY: Byte = 95
         const val FOCUS_REGION_FRACTION = 0.15f
         const val DEFAULT_EXPOSURE_NS = 16_666_667L // 1/60 s

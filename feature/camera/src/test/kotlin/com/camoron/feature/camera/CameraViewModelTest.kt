@@ -707,6 +707,35 @@ class CameraViewModelTest {
     }
 
     @Test
+    fun `high res opens the full sensor at 1x and goes back for photo`() = runTest {
+        controller.all = listOf(back.copy(highResJpegSize = PixelSize(8160, 6144), highResNeedsMaximumResolution = true), front)
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        assertThat(controller.openedHighRes.last()).isFalse()
+
+        vm.setMode(CaptureMode.HIGHRES)
+        assertThat(controller.openedHighRes.last()).isTrue()
+        assertThat(vm.uiState.value.highResActive).isTrue()
+        assertThat(vm.uiState.value.showAspectControl).isFalse()
+        vm.onPinch(2f)
+        assertThat(vm.uiState.value.zoomRatio).isEqualTo(1f)
+
+        vm.setMode(CaptureMode.PHOTO)
+        assertThat(controller.openedHighRes.last()).isFalse()
+        assertThat(vm.uiState.value.showAspectControl).isTrue()
+    }
+
+    @Test
+    fun `high res says so on a camera with nothing bigger`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.HIGHRES)
+        assertThat(controller.openedHighRes.last()).isFalse()
+        assertThat(vm.uiState.value.highResActive).isFalse()
+        assertThat(vm.uiState.value.highResUnavailable).isTrue()
+    }
+
+    @Test
     fun `night on uses the maker's night mode where the camera has one`() = runTest {
         controller.all = listOf(back.copy(extensions = setOf(CameraExtension.NIGHT)), front)
         val vm = viewModel()
@@ -989,6 +1018,7 @@ class CameraViewModelTest {
         val flashModes = mutableListOf<FlashMode>()
         val previewAspects = mutableListOf<StillAspect>()
         val openedWithAspect = mutableListOf<StillAspect>()
+        val openedHighRes = mutableListOf<Boolean>()
         var mustPlayShutterSound = false
 
         override suspend fun cameras() = all
@@ -1005,11 +1035,13 @@ class CameraViewModelTest {
             rawEnabled: Boolean,
             aspect: StillAspect,
             extension: CameraExtension?,
+            highRes: Boolean,
         ) {
             opened += cameraId
             openedWithExtension += extension
             openedWithRaw += rawEnabled
             openedWithAspect += aspect
+            openedHighRes += highRes
             state.value = CameraState.Previewing(all.first { it.cameraId == cameraId }, ManualSettings.AUTO, null)
         }
         override suspend fun setFlashMode(mode: FlashMode) {

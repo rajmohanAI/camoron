@@ -11,6 +11,7 @@ import android.media.MediaActionSound
 import android.view.OrientationEventListener
 import android.view.Surface
 import android.net.Uri
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import android.view.TextureView
 import android.view.WindowManager
@@ -173,7 +174,7 @@ fun CameraScreen(
                 .background(Color.Black)
                 .onSizeChanged { if (it.height > 0) viewModel.onDisplayAspect(it.width.toFloat() / it.height) },
         ) {
-            val aspect = state.cameraSettings.aspectRatio
+            val aspect = state.photoAspect
             // Every photo shape fills the width, like the phone's own camera: taller shapes show a
             // bigger picture, and full screen runs behind the controls. The preview always shows
             // exactly the frame being saved. Video is always 16:9.
@@ -282,13 +283,16 @@ fun CameraScreen(
                             modifier = Modifier.padding(horizontal = 12.dp).glass(RoundedCornerShape(20.dp)),
                         )
                     }
-                    LensRow(
-                        state = state,
-                        onMacro = viewModel::toggleMacro,
-                        onPreset = viewModel::selectZoomPreset,
-                        onLook = viewModel::setLook,
-                        modifier = Modifier.padding(vertical = 8.dp),
-                    )
+                    // High-Res is the whole sensor at 1x, without looks.
+                    if (!state.highResActive) {
+                        LensRow(
+                            state = state,
+                            onMacro = viewModel::toggleMacro,
+                            onPreset = viewModel::selectZoomPreset,
+                            onLook = viewModel::setLook,
+                            modifier = Modifier.padding(vertical = 8.dp),
+                        )
+                    }
                     BottomBar(
                         state = state,
                         onModeChange = viewModel::setMode,
@@ -359,8 +363,9 @@ private fun PreviewArea(
                 // Video frames arrive already enhanced by the camera's renderer.
                 CameraPreview(
                     previewSize = bufferSize,
-                    look = if (state.mode.isVideo) ShotLook.NORMAL else state.cameraSettings.look,
-                    enhance = if (state.mode.isVideo) ({ null }) else enhance,
+                    // High-Res photos are saved as the camera took them, so the preview shows them that way.
+                    look = if (state.mode.isVideo || state.highResActive) ShotLook.NORMAL else state.cameraSettings.look,
+                    enhance = if (state.mode.isVideo || state.highResActive) ({ null }) else enhance,
                     iso = { (state.cameraState as? CameraState.Previewing)?.liveExposure?.iso },
                     live = state.cameraState is CameraState.Previewing,
                     onSurfaceReady = onSurfaceReady,
@@ -384,6 +389,12 @@ private fun PreviewArea(
         state.countdown?.let { CountdownOverlay(it) }
         if (state.nightCapturing) HoldStillOverlay()
         if (state.slowMotionUnavailable) PreviewNote(stringResource(R.string.slow_motion_unavailable))
+        if (state.highResUnavailable) PreviewNote(stringResource(R.string.highres_unavailable))
+        if (state.highResActive) {
+            state.selectedCamera?.highResJpegSize?.let { size ->
+                PreviewNote(stringResource(R.string.highres_note, size.megapixels.roundToInt()))
+            }
+        }
         if (state.mode == CaptureMode.GEOTAG) GeoTagCard(state, Modifier.align(Alignment.BottomCenter).padding(12.dp))
         if (state.mode == CaptureMode.PANORAMA) PanoramaHint(state.panoramaFrames)
         state.panoramaGuide?.let { PanoramaGuideOverlay(it) }

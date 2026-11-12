@@ -78,6 +78,17 @@ data class CameraCapabilities(
      * when 1080p is missing; 4K is only listed when the phone's video encoder handles it too.
      */
     val videoResolutions: Set<VideoResolution> = emptySet(),
+    /**
+     * Largest photo this camera can take, when it is bigger than the ones Camoron normally takes
+     * ([STANDARD_STILL_PIXELS]), e.g. the full 50 MP of a sensor that bins to 12.5 MP. Null when
+     * the phone doesn't let apps have more.
+     */
+    val highResJpegSize: PixelSize? = null,
+    /**
+     * [highResJpegSize] needs the sensor switched to its full-resolution mode for the shot
+     * (Android 12's ultra high resolution sensor), rather than being a normal output size.
+     */
+    val highResNeedsMaximumResolution: Boolean = false,
 ) {
     /** Zoom the camera can reach on its own, through its zoom ratio or by cropping. */
     val zoomRange: ClosedFloatingPointRange<Float>
@@ -106,5 +117,12 @@ data class CameraCapabilities(
     companion object {
         /** 10 diopters is a 10 cm closest focus distance. */
         const val MACRO_MIN_DIOPTERS = 10f
+
+        /**
+         * Largest photo normally taken, about 16 MP. 50 to 200 MP sensors give their cleanest,
+         * best-exposed photos binned to around 12.5 MP, as their own camera apps do by default;
+         * full-size photos are left to High-Res mode.
+         */
+        const val STANDARD_STILL_PIXELS = 16_800_000L
     }
 }
