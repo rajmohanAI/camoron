@@ -143,6 +143,8 @@ data class CameraUiState(
     val geoPoint: GeoPoint? = null,
     /** Frames taken so far while a panorama is being swept, or null when none is. */
     val panoramaFrames: Int? = null,
+    /** Where the sweep is heading, for the on-screen guide; null when no panorama is being swept. */
+    val panoramaGuide: PanoramaGuide? = null,
     /** System.nanoTime() when the current recording started, or null when not recording. */
     val recordingStartedNanos: Long? = null,
     val event: CameraEvent? = null,
@@ -771,7 +773,7 @@ class CameraViewModel @Inject constructor(
             return
         }
         panoramaStop = false
-        _uiState.update { it.copy(panoramaFrames = 0) }
+        _uiState.update { it.copy(panoramaFrames = 0, panoramaGuide = PanoramaGuide()) }
         viewModelScope.launch { sweepPanorama(state, selected) }
     }
 
@@ -808,12 +810,20 @@ class CameraViewModel @Inject constructor(
                     yaws += turned
                     shotAt = turned
                     _uiState.update { it.copy(panoramaFrames = frames.size) }
+                    addPanoramaThumbnail(frames.last(), state.cameraSettings.selfieMirror && front)
                 }
                 delay(PANORAMA_POLL_MS)
                 val now = rotation.cameraYaw(front) ?: continue
                 turned += PanoramaPlan.wrap(now - last)
                 last = now
                 if (direction == 0f && abs(turned - shotAt) >= step) direction = sign(turned - shotAt)
+                // Before the user has picked a way, show how far they've turned either way.
+                val progress = if (direction == 0f) abs(turned - shotAt) / step else (turned - shotAt) * direction / step
+                val leaning = if (direction != 0f) direction else sign(turned - shotAt)
+                _uiState.update { s ->
+                    val guide = s.panoramaGuide ?: PanoramaGuide()
+                    s.copy(panoramaGuide = guide.copy(direction = direction, leaning = leaning, progress = progress.coerceIn(0f, 1f)))
+                }
             }
         } catch (e: CancellationException) {
             throw e
@@ -823,7 +833,7 @@ class CameraViewModel @Inject constructor(
         } finally {
             rotation.stop()
             runCatching { camera.lockExposure(false) }
-            _uiState.update { it.copy(panoramaFrames = null) }
+            _uiState.update { it.copy(panoramaFrames = null, panoramaGuide = null) }
         }
         DiagnosticLog.info(TAG, "Panorama: ${frames.size} frames over %.0f° in ${SystemClock.elapsedRealtime() - started} ms".format(Math.toDegrees(abs(yaws.lastOrNull() ?: 0f).toDouble())))
         if (frames.size < 2) {
@@ -968,6 +978,18 @@ class CameraViewModel @Inject constructor(
                 instantThumbnailUri = if (uri != null && it.instantThumbnail != null) uri else it.instantThumbnailUri,
                 event = if (uri != null) CameraEvent.Saved(uri) else CameraEvent.CaptureFailed,
             )
+        }
+    }
+
+    /** Adds a small copy of a panorama frame to the guide's strip. */
+    private fun addPanoramaThumbnail(frame: CapturedImage, mirror: Boolean) {
+        viewModelScope.launch(Dispatchers.Default) {
+            val image = runCatching { InstantThumbnail.from(frame, mirror) }.getOrNull() ?: return@launch
+            _uiState.update { s ->
+                if (s.panoramaFrames == null) return@update s
+                val guide = s.panoramaGuide ?: PanoramaGuide()
+                s.copy(panoramaGuide = guide.copy(thumbnails = guide.thumbnails + image))
+            }
         }
     }
 
@@ -1185,6 +1207,18 @@ internal fun distanceMetres(a: GeoPoint, b: GeoPoint): Double {
 }
 
 private const val ZOOM_EPSILON = 0.01f
+
+/**
+ * The panorama guide: which way the sweep goes (+1 or −1, 0 until the user has turned far enough to
+ * choose), the way the phone is leaning before then, how far it has turned towards the next frame
+ * (0 to 1), and small copies of the frames taken so far.
+ */
+data class PanoramaGuide(
+    val direction: Float = 0f,
+    val leaning: Float = 0f,
+    val progress: Float = 0f,
+    val thumbnails: List<ImageBitmap> = emptyList(),
+)
 
 /**
  * ISO times shutter seconds at which Night on Auto kicks in, e.g. ISO 400 at 1/33 s or ISO 800 at

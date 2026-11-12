@@ -383,6 +383,7 @@ private fun PreviewArea(
         if (state.slowMotionUnavailable) PreviewNote(stringResource(R.string.slow_motion_unavailable))
         if (state.mode == CaptureMode.GEOTAG) GeoTagCard(state, Modifier.align(Alignment.BottomCenter).padding(12.dp))
         if (state.mode == CaptureMode.PANORAMA) PanoramaHint(state.panoramaFrames)
+        state.panoramaGuide?.let { PanoramaGuideOverlay(it) }
     }
 }
 
