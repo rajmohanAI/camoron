@@ -140,6 +140,7 @@ fun CameraScreen(
     KeepScreenOn(state.recording || state.panoramaSweeping)
     RequestMicrophone(state.mode.video?.recordsSound == true)
     RequestLocationForSky(state.mode == CaptureMode.SKY, viewModel::onLocationAllowed)
+    RequestLocationForSky(state.mode == CaptureMode.GEOTAG, viewModel::onLocationAllowed)
     val geotagOn = rememberGeotagSwitch(onAllowed = {
         viewModel.setGeotag(true)
         viewModel.onLocationAllowed()
@@ -372,6 +373,7 @@ private fun PreviewArea(
         }
         state.countdown?.let { CountdownOverlay(it) }
         if (state.nightCapturing) HoldStillOverlay()
+        if (state.mode == CaptureMode.GEOTAG) GeoTagCard(state, Modifier.align(Alignment.BottomCenter).padding(12.dp))
         if (state.mode == CaptureMode.PANORAMA) PanoramaHint(state.panoramaFrames)
     }
 }

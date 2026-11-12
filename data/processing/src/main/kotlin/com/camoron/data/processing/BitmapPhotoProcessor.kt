@@ -62,7 +62,7 @@ class BitmapPhotoProcessor @Inject constructor(
             val portrait = original.rotationDegrees.takeIf { adjustments.portrait }
 
             // A crop request for a shape the sensor already delivers needs no work at all.
-            if (crop == null && look == null && !enhance && !adjustments.mirror && portrait == null && adjustments.location == null) {
+            if (crop == null && look == null && !enhance && !adjustments.mirror && portrait == null && adjustments.location == null && adjustments.stamp == null) {
                 return@withContext image
             }
 
@@ -90,7 +90,26 @@ class BitmapPhotoProcessor @Inject constructor(
                     if (crop != null) size = PixelSize(crop.width, crop.height)
                 }
             }
-            val newOrientation = if (adjustments.mirror) PhotoMath.mirroredOrientation(orientation) else orientation
+            var newOrientation = if (adjustments.mirror) PhotoMath.mirroredOrientation(orientation) else orientation
+            adjustments.stamp?.let { stamp ->
+                val stamped = try {
+                    DiagnosticLog.timed(TAG, "Printing the Geo Tag card") {
+                        GeoStamper.stamp(bytes, original.rotationDegrees, adjustments.mirror, stamp)
+                    }
+                } catch (e: OutOfMemoryError) {
+                    DiagnosticLog.record(TAG, "Not enough memory to print the Geo Tag card; saving the photo without it", e)
+                    null
+                } catch (e: Exception) {
+                    DiagnosticLog.record(TAG, "Couldn't print the Geo Tag card; saving the photo without it", e)
+                    null
+                }
+                if (stamped != null) {
+                    bytes = stamped.first
+                    size = stamped.second
+                    // The card is printed on the upright picture, so the photo is stored upright.
+                    newOrientation = ExifInterface.ORIENTATION_NORMAL
+                }
+            }
             bytes = writeJpegExif(context, bytes, original.takeIf { bytes !== image.bytes }, newOrientation, size, adjustments.location)
             image.withBytes(bytes, size)
         }

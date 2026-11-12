@@ -34,6 +34,7 @@ import com.camoron.domain.model.VideoResolution
 import com.camoron.domain.model.VideoSpec
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.LocationProvider
+import com.camoron.domain.model.GeoPlace
 import com.camoron.domain.repository.MediaRepository
 import com.camoron.domain.repository.PendingVideo
 import com.camoron.domain.repository.PhotoProcessor
@@ -114,6 +115,7 @@ class CameraViewModelTest {
         }
         override fun current() = fix
         override fun approximate() = fix
+        override suspend fun place(point: GeoPoint) = GeoPlace("Westminster, England, United Kingdom", "1 Example Street, London")
     }
 
     @Before
@@ -362,6 +364,27 @@ class CameraViewModelTest {
 
         vm.setMode(CaptureMode.VIDEO)
         assertThat(vm.uiState.value.showGeotagControl).isFalse()
+    }
+
+    @Test
+    fun `geo tag mode prints the place and time and tags the location without save location`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.GEOTAG)
+        assertThat(location.following).isTrue()
+        assertThat(vm.uiState.value.showGeotagControl).isFalse()
+        assertThat(vm.uiState.value.geoPlace?.title).isEqualTo("Westminster, England, United Kingdom")
+
+        vm.onShutter()
+        val adjustments = processor.applied.last()
+        assertThat(adjustments.location).isEqualTo(GeoPoint(51.5, -0.12, 20.0))
+        assertThat(adjustments.stamp?.point).isEqualTo(GeoPoint(51.5, -0.12, 20.0))
+        assertThat(adjustments.stamp?.place?.address).isEqualTo("1 Example Street, London")
+
+        vm.setMode(CaptureMode.PHOTO)
+        assertThat(location.following).isFalse()
+        vm.onShutter()
+        assertThat(processor.applied.last().stamp).isNull()
     }
 
     @Test

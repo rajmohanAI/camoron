@@ -62,9 +62,11 @@ data class PhotoAdjustments(
     val portrait: Boolean = false,
     /** Where the photo was taken, written into its EXIF; null to leave it out. */
     val location: GeoPoint? = null,
+    /** Geo Tag: the place and time printed on the photo; null for none. */
+    val stamp: GeoStamp? = null,
 ) {
     val isIdentity: Boolean
-        get() = cropAspect == null && !mirror && look == ShotLook.NORMAL && !enhance && !portrait && location == null
+        get() = cropAspect == null && !mirror && look == ShotLook.NORMAL && !enhance && !portrait && location == null && stamp == null
 
     companion object {
         val NONE = PhotoAdjustments()

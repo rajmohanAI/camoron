@@ -162,7 +162,10 @@ internal class VideoRenderer(
             makeCurrent(previewEgl)
             input.updateTexImage()
             input.getTransformMatrix(texMatrix)
-            draw(previewSize, identity)
+            // Fill the preview surface whatever size its buffers really are: after a switch between
+            // video kinds they can still be the previous kind's size, and drawing at the expected
+            // size then left the picture in one corner with black beside and above it.
+            draw(surfaceSize(previewEgl) ?: previewSize, identity)
             EGL14.eglSwapBuffers(display, previewEgl)
 
             if (encoderEgl == EGL14.EGL_NO_SURFACE) return
@@ -176,6 +179,17 @@ internal class VideoRenderer(
             if (!reportedError) DiagnosticLog.record(TAG, "Couldn't draw a video frame", e)
             reportedError = true
         }
+    }
+
+    private val queried = IntArray(1)
+
+    /** The size [surface]'s buffers really are, or null if EGL won't say. */
+    private fun surfaceSize(surface: EGLSurface): PixelSize? {
+        if (!EGL14.eglQuerySurface(display, surface, EGL14.EGL_WIDTH, queried, 0)) return null
+        val width = queried[0]
+        if (!EGL14.eglQuerySurface(display, surface, EGL14.EGL_HEIGHT, queried, 0)) return null
+        val height = queried[0]
+        return if (width > 0 && height > 0) PixelSize(width, height) else null
     }
 
     private fun draw(size: PixelSize, position: FloatArray) {
