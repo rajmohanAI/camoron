@@ -85,6 +85,16 @@ object VideoMath {
     private const val SLOW_MOTION_FPS = 120
 
     /**
+     * Frames to make between each pair of camera frames. Slow motion filmed at 30 frames a second
+     * (where the phone won't open high-speed video to apps) gets one, so it still plays twice as
+     * slowly; at 60 or more the real frames already do that.
+     */
+    fun inBetweenFrames(kind: VideoKind, highSpeed: Boolean, cameraFps: Int?): Int =
+        if (kind == VideoKind.SLOW_MOTION && !highSpeed && (cameraFps ?: STANDARD_FPS) < 2 * VideoKind.SLOW_MOTION.outputFps) 1 else 0
+
+    private const val STANDARD_FPS = 30
+
+    /**
      * Rotation for the saved video. Frames are encoded landscape with the upright picture turned a
      * quarter turn when [contentTurned] (a sideways-mounted sensor, as on phones), and the phone's
      * own rotation while recording is added on top, the same way photos are oriented.

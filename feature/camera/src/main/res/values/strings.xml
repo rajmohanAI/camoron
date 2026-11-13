@@ -20,7 +20,7 @@
     <string name="highres_unavailable">This camera has no bigger photos to give, so High-Res takes normal photos here</string>
     <string name="dual_unavailable">This phone won\'t run the front and back cameras together here, so Dual takes normal photos</string>
     <string name="highres_note">%1$d MP photos · hold steady</string>
-    <string name="slow_motion_unavailable">This phone keeps slow motion for its own camera app, so Slo-mo films at normal speed here</string>
+    <string name="slow_motion_unavailable">This phone keeps high-speed video for its own camera app, so Slo-mo here plays 2× slower</string>
     <string name="geotag_finding">Finding your location…</string>
     <string name="geotag_no_permission">Allow location to print where photos are taken</string>
     <string name="mode_slow_motion">Slo-mo</string>

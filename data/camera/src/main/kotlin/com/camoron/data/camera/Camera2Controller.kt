@@ -758,7 +758,10 @@ class Camera2Controller @Inject constructor(
                 context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
             val recorder = withContext(processing) { startRecorder(output, video, hint, sound) }
             try {
-                withContext(processing) { video.renderer.startEncoding(recorder.surface, VideoMath.pacerFor(video.spec, video.fpsRange)) }
+                // Made frames double what the encoder takes in, so only up to 1080p.
+                val inBetween = VideoMath.inBetweenFrames(video.spec.kind, video.highSpeed, video.fpsRange?.last)
+                    .takeIf { maxOf(video.size.width, video.size.height) <= VideoResolution.FHD.width } ?: 0
+                withContext(processing) { video.renderer.startEncoding(recorder.surface, VideoMath.pacerFor(video.spec, video.fpsRange), inBetween) }
             } catch (e: Exception) {
                 runCatching { recorder.stop() }
                 recorder.release()
