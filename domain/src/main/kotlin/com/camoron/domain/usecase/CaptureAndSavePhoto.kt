@@ -25,6 +25,10 @@ class CaptureAndSavePhoto @Inject constructor(
     /** One photo is processed and saved at a time, so quick shots don't pile up full-size images in memory. */
     private val saving = Mutex()
 
+    /** Portrait's live viewfinder blur; see [PhotoProcessor.portraitPreview]. */
+    suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float): IntArray? =
+        processor.portraitPreview(pixels, width, height, strength)
+
     /**
      * Returns the gallery URI of the JPEG; the DNG, if any, is saved alongside it untouched (RAW keeps
      * the full sensor frame, so crop, look and mirror apply to the JPEG only).

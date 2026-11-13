@@ -819,6 +819,17 @@ class CameraViewModel @Inject constructor(
         _uiState.update { it.copy(portraitAperture = aperture) }
     }
 
+    /**
+     * Portrait's live viewfinder blur for a small copy of the picture, at the aperture the slider
+     * shows, so moving it changes the preview as it will change the photo. Null leaves it sharp.
+     */
+    suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int): IntArray? {
+        val aperture = _uiState.value.portraitAperture
+        return runCatching {
+            captureAndSave.portraitPreview(pixels, width, height, PhotoAdjustments.DEFAULT_APERTURE / aperture)
+        }.getOrNull()
+    }
+
     fun setPortraitExposure(steps: Int) {
         _uiState.update { it.copy(portraitExposure = steps) }
         if (_uiState.value.mode == CaptureMode.PORTRAIT) applySettings(_uiState.value.modeSettings)

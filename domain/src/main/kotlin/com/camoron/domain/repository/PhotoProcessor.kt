@@ -32,4 +32,11 @@ interface PhotoProcessor {
      * lens). Returns null when they can't be stitched.
      */
     suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?): CapturedImage?
+
+    /**
+     * Portrait's live look: [pixels] ([width]×[height] ARGB, upright, as on screen) come back as an
+     * overlay of the blurred background with the subject left transparent, blurred by [strength]
+     * (as for the photo: 1 is about f/1.8). Null when there is nothing to keep sharp.
+     */
+    suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float): IntArray? = null
 }

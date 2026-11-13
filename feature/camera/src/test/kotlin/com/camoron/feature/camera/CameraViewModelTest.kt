@@ -92,6 +92,11 @@ class CameraViewModelTest {
             merged += frames.size
             return frames.first()
         }
+        val previewStrengths = mutableListOf<Float>()
+        override suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float): IntArray? {
+            previewStrengths += strength
+            return IntArray(width * height)
+        }
         val developed = mutableListOf<Int>()
         override suspend fun developRaw(burst: RawBurst): CapturedImage {
             developed += burst.frames.size
@@ -269,6 +274,17 @@ class CameraViewModelTest {
         vm.onShutter()
         assertThat(processor.applied.last().portrait).isTrue()
         assertThat(controller.bursts).isEmpty()
+    }
+
+    @Test
+    fun `the portrait preview blurs as much as the aperture slider says`() = runTest {
+        val vm = viewModel()
+        vm.setMode(CaptureMode.PORTRAIT)
+        vm.setPortraitAperture(1.8f)
+        assertThat(vm.portraitPreview(IntArray(4), 2, 2)).hasLength(4)
+        vm.setPortraitAperture(3.6f)
+        vm.portraitPreview(IntArray(4), 2, 2)
+        assertThat(processor.previewStrengths).containsExactly(1f, 0.5f).inOrder()
     }
 
     @Test
