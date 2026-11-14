@@ -154,6 +154,9 @@ class BitmapPhotoProcessor @Inject constructor(
         }
     }
 
+    override suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float): IntArray? =
+        withContext(processing) { portraitBlur.preview(pixels, width, height, strength) }
+
     override suspend fun developRaw(burst: RawBurst): CapturedImage {
         val preview = burst.preview
         return withContext(processing) {

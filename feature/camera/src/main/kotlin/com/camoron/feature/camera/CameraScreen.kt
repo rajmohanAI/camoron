@@ -14,6 +14,8 @@ import android.net.Uri
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import android.view.TextureView
+import android.widget.ImageView
+import kotlinx.coroutines.delay
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -218,6 +220,7 @@ fun CameraScreen(
                 modifier = Modifier.align(Alignment.TopCenter).then(previewArea),
                 onInsetReady = viewModel::onInsetSurfaceReady,
                 onInsetDestroyed = viewModel::onInsetSurfaceDestroyed,
+                portrait = viewModel::portraitPreview,
                 overlay = {
                     if (state.mode == CaptureMode.SKY) {
                         SkyOverlay(
@@ -340,6 +343,8 @@ private fun PreviewArea(
     modifier: Modifier = Modifier,
     onInsetReady: (SurfacePreviewTarget) -> Unit = {},
     onInsetDestroyed: () -> Unit = {},
+    /** Portrait's live background blur; see [CameraPreview]. */
+    portrait: (suspend (IntArray, Int, Int) -> IntArray?)? = null,
     /** Drawn over the camera's whole (partly clipped) picture, in its coordinates. */
     overlay: @Composable () -> Unit = {},
 ) {
@@ -375,6 +380,8 @@ private fun PreviewArea(
                     onSurfaceReady = onSurfaceReady,
                     onSurfaceDestroyed = onSurfaceDestroyed,
                     modifier = Modifier.fillMaxSize().then(if (shapeBlur > 0f) Modifier.blur(SHAPE_BLUR * shapeBlur) else Modifier),
+                    portrait = portrait.takeIf { state.mode == CaptureMode.PORTRAIT },
+                    portraitKey = state.portraitAperture,
                 )
                 FocusIndicator(focusTarget, Modifier.fillMaxSize())
                 overlay()
@@ -445,8 +452,38 @@ private fun CameraPreview(
     onSurfaceReady: (SurfacePreviewTarget) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Portrait's live blur: given a small copy of the picture (ARGB, width, height), returns the
+     * blurred background with the subject left clear, drawn over the sharp preview. [portraitKey]
+     * changes when the blur should be redone straight away (the aperture moved).
+     */
+    portrait: (suspend (IntArray, Int, Int) -> IntArray?)? = null,
+    portraitKey: Any? = null,
 ) {
     val ready by rememberUpdatedState(onSurfaceReady)
+    var textureView by remember { mutableStateOf<PreviewTextureView?>(null) }
+    var portraitOverlay by remember { mutableStateOf<Bitmap?>(null) }
+    val portraitRun by rememberUpdatedState(portrait)
+    val portraitOn = portrait != null && live
+    LaunchedEffect(portraitOn, portraitKey, textureView) {
+        val view = textureView
+        if (!portraitOn || view == null) {
+            portraitOverlay = null
+            return@LaunchedEffect
+        }
+        while (true) {
+            val started = System.nanoTime()
+            val frame = view.portraitFrame()
+            val run = portraitRun
+            if (frame != null && run != null) {
+                val (pixels, w, h) = frame
+                val result = run(pixels, w, h)
+                portraitOverlay = result?.let { Bitmap.createBitmap(it, w, h, Bitmap.Config.ARGB_8888) }
+            }
+            val spentMs = (System.nanoTime() - started) / 1_000_000
+            delay((PORTRAIT_FRAME_MS - spentMs).coerceAtLeast(PORTRAIT_MIN_GAP_MS))
+        }
+    }
     val destroyed by rememberUpdatedState(onSurfaceDestroyed)
     var freeze by remember { mutableStateOf<ImageBitmap?>(null) }
     // The held frame fades into the live picture rather than vanishing in one step.
@@ -471,7 +508,7 @@ private fun CameraPreview(
                     onReady = { ready(it) },
                     onDestroyed = { destroyed() },
                     onFreeze = { freeze = it?.asImageBitmap() },
-                )
+                ).also { textureView = it }
             },
             update = { view ->
                 view.setBufferSize(previewSize)
@@ -481,6 +518,22 @@ private fun CameraPreview(
             },
             modifier = Modifier.fillMaxSize(),
         )
+        if (portraitOn) {
+            // Its own view, so the same look and enhancement as the picture beneath are drawn on it.
+            AndroidView(
+                factory = { ctx ->
+                    ImageView(ctx).apply {
+                        scaleType = ImageView.ScaleType.FIT_XY
+                        tag = PreviewFilter(this)
+                    }
+                },
+                update = { view ->
+                    view.setImageBitmap(portraitOverlay)
+                    (view.tag as PreviewFilter).update(look, enhance(), iso())
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
         shownFreeze?.let {
             // Cropped, never stretched: the camera may be switching to a differently shaped picture.
             Image(
@@ -494,6 +547,9 @@ private fun CameraPreview(
 }
 
 private val FREEZE_BLUR = 12.dp
+/** How often Portrait's live blur is redone, at most; slower phones simply take longer per frame. */
+private const val PORTRAIT_FRAME_MS = 100L
+private const val PORTRAIT_MIN_GAP_MS = 16L
 private const val UNFREEZE_FADE_MS = 220
 
 private class PreviewTextureView(
@@ -539,6 +595,18 @@ private class PreviewTextureView(
     }
 
     fun setFilter(look: ShotLook, enhance: EnhanceParams?, iso: Int?) = filter.update(look, enhance, iso)
+
+    /** A small copy of the live picture for Portrait's blur, or null while there's no live picture. */
+    fun portraitFrame(): Triple<IntArray, Int, Int>? {
+        if (frozen || !isAvailable || width == 0 || height == 0) return null
+        val w = (width / PORTRAIT_SCALE).coerceAtLeast(1)
+        val h = (height / PORTRAIT_SCALE).coerceAtLeast(1)
+        val bitmap = runCatching { getBitmap(w, h) }.getOrNull() ?: return null
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        bitmap.recycle()
+        return Triple(pixels, w, h)
+    }
 
     private fun freeze() {
         if (frozen || !isAvailable || width == 0 || height == 0) return
@@ -592,6 +660,8 @@ private class PreviewTextureView(
 
     private companion object {
         const val FREEZE_SCALE = 4
+        /** Portrait's live blur works on a quarter-size picture; the blur hides the difference. */
+        const val PORTRAIT_SCALE = 4
         const val UNFREEZE_FALLBACK_MS = 1500L
     }
 }

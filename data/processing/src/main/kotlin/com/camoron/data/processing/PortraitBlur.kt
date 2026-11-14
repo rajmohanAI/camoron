@@ -5,22 +5,29 @@ import android.graphics.Bitmap
 import android.graphics.Matrix
 import com.camoron.core.common.DiagnosticLog
 import com.camoron.core.common.timed
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
+import com.google.mlkit.vision.segmentation.subject.SubjectSegmenter
+import com.google.mlkit.vision.segmentation.subject.SubjectSegmenterOptions
 import dagger.hilt.android.qualifiers.ApplicationContext
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
- * Portrait: keeps the people in a photo sharp and blurs what is behind them, as a wide-aperture
- * lens would. An on-device model (MediaPipe's selfie multiclass segmenter, Apache 2.0) finds the
- * people; [PortraitMath] snaps its mask to the photo's edges and blurs the background without
- * the person's colours bleeding into it.
+ * Portrait: keeps the subject of a photo sharp and blurs what is behind it, as a wide-aperture
+ * lens would. An on-device model (MediaPipe's selfie multiclass segmenter, Apache 2.0) finds
+ * people; when there are none, ML Kit's subject segmenter finds the main object instead (a
+ * bottle, a cup, a pet). [PortraitMath] snaps the mask to the photo's edges and blurs the
+ * background without the subject's colours bleeding into it.
  */
 @Singleton
 class PortraitBlur @Inject constructor(
@@ -28,6 +35,9 @@ class PortraitBlur @Inject constructor(
 ) {
     private var interpreter: Interpreter? = null
     private var failed = false
+    private var subjectSegmenter: SubjectSegmenter? = null
+    private var subjectsFailed = false
+    private var previewFailed = false
 
     /**
      * Blurs the background of [bitmap] (mutable ARGB_8888) in place. [rotationDegrees] turns its
@@ -53,13 +63,90 @@ class PortraitBlur @Inject constructor(
         }
     }
 
-    private fun run(bitmap: Bitmap, rotationDegrees: Int, strength: Float): Boolean {
-        val probability = segment(bitmap, rotationDegrees)
-        val coverage = PortraitMath.coverage(probability)
-        if (coverage < MIN_COVERAGE) {
-            DiagnosticLog.info(TAG, "Nobody found for portrait (%.1f%% of the frame); kept as taken".format(coverage * 100))
-            return false
+    /**
+     * The live Portrait look for the viewfinder: [pixels] ([width]×[height] ARGB, already upright)
+     * come back as an overlay that holds the blurred background, with the subject left
+     * transparent so the sharp preview shows through it. Null when there is nothing to keep sharp
+     * or the models can't run. Blocking; meant for small frames (a few hundred pixels across).
+     */
+    @Synchronized
+    fun preview(pixels: IntArray, width: Int, height: Int, strength: Float): IntArray? {
+        if (failed || previewFailed || width <= 0 || height <= 0 || pixels.size < width * height) return null
+        return try {
+            val bitmap = Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+            val probability = keepMask(bitmap, 0, quiet = true)
+            bitmap.recycle()
+            if (probability == null) return null
+            val guide = FloatArray(width * height)
+            val planes = Array(3) { FloatArray(width * height) }
+            split(pixels, guide, planes)
+            val mask = PortraitMath.refineMask(probability, MODEL_SIZE, guide, width, height)
+            val radius = max(1, (max(width, height) * BLUR_RADIUS * strength).roundToInt())
+            val blurred = PortraitMath.blurBackground(planes, mask, width, height, radius)
+            IntArray(width * height) { i ->
+                val alpha = ((1f - mask[i].coerceIn(0f, 1f)) * 255f).roundToInt()
+                (alpha shl 24) or
+                    (PortraitMath.toSrgb(blurred[0][i]) shl 16) or
+                    (PortraitMath.toSrgb(blurred[1][i]) shl 8) or
+                    PortraitMath.toSrgb(blurred[2][i])
+            }
+        } catch (e: OutOfMemoryError) {
+            null
+        } catch (e: Exception) {
+            // Only the live look is lost; photos still get their blur.
+            DiagnosticLog.record(TAG, "Portrait preview failed; turning the live blur off", e)
+            previewFailed = true
+            null
         }
+    }
+
+    /**
+     * What to keep sharp, on a [MODEL_SIZE]² grid laid over [bitmap] as stored: the people if
+     * there are any, otherwise the main object. Null when neither finds anything.
+     */
+    private fun keepMask(bitmap: Bitmap, rotationDegrees: Int, quiet: Boolean = false): FloatArray? {
+        val people = segment(bitmap, rotationDegrees)
+        val peopleCoverage = PortraitMath.coverage(people)
+        if (peopleCoverage >= MIN_COVERAGE) return people
+        val objects = subjects(bitmap, rotationDegrees)
+        val objectCoverage = objects?.let { PortraitMath.coverage(it) } ?: 0f
+        if (objects != null && objectCoverage >= MIN_COVERAGE) {
+            if (!quiet) DiagnosticLog.info(TAG, "No people; keeping the main object sharp (%.1f%% of the frame)".format(objectCoverage * 100))
+            return objects
+        }
+        if (!quiet) DiagnosticLog.info(TAG, "Nothing to keep sharp for portrait (%.1f%% of the frame); kept as taken".format(max(peopleCoverage, objectCoverage) * 100))
+        return null
+    }
+
+    /**
+     * ML Kit's foreground confidence for [bitmap], on the same grid as [segment]. Null if the
+     * segmenter isn't available (its model is fetched by Play services) or fails; that only turns
+     * off the object fallback, never Portrait for people.
+     */
+    private fun subjects(bitmap: Bitmap, rotationDegrees: Int): FloatArray? {
+        if (subjectsFailed) return null
+        return try {
+            val upright = uprightSquare(bitmap, rotationDegrees)
+            val client = subjectSegmenter ?: SubjectSegmentation.getClient(
+                SubjectSegmenterOptions.Builder().enableForegroundConfidenceMask().build(),
+            ).also { subjectSegmenter = it }
+            val result = Tasks.await(client.process(InputImage.fromBitmap(upright, 0)), SUBJECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            upright.recycle()
+            val buffer = result.foregroundConfidenceMask ?: return null
+            buffer.rewind()
+            val grid = FloatArray(MODEL_SIZE * MODEL_SIZE)
+            if (buffer.remaining() < grid.size) return null
+            buffer.get(grid)
+            PortraitMath.rotateSquare(grid, MODEL_SIZE, -rotationDegrees)
+        } catch (e: Exception) {
+            DiagnosticLog.record(TAG, "Object finder unavailable; Portrait keeps people only", e)
+            subjectsFailed = true
+            null
+        }
+    }
+
+    private fun run(bitmap: Bitmap, rotationDegrees: Int, strength: Float): Boolean {
+        val probability = keepMask(bitmap, rotationDegrees) ?: return false
         val width = bitmap.width
         val height = bitmap.height
         val scale = WORK_SIZE.toFloat() / max(width, height)
@@ -72,7 +159,17 @@ class PortraitBlur @Inject constructor(
 
         val guide = FloatArray(ww * wh)
         val planes = Array(3) { FloatArray(ww * wh) }
-        for (i in pixels.indices) {
+        split(pixels, guide, planes)
+        val mask = PortraitMath.refineMask(probability, MODEL_SIZE, guide, ww, wh)
+        val radius = max(1, (max(ww, wh) * BLUR_RADIUS * strength).roundToInt())
+        val blurred = PortraitMath.blurBackground(planes, mask, ww, wh, radius)
+        composite(bitmap, mask, blurred, ww, wh)
+        return true
+    }
+
+    /** Brightness guide and linear colour planes of [pixels], for the mask and the blur. */
+    private fun split(pixels: IntArray, guide: FloatArray, planes: Array<FloatArray>) {
+        for (i in guide.indices) {
             val c = pixels[i]
             val r = (c shr 16) and 0xFF
             val g = (c shr 8) and 0xFF
@@ -82,25 +179,26 @@ class PortraitBlur @Inject constructor(
             planes[1][i] = PortraitMath.toLinear(g)
             planes[2][i] = PortraitMath.toLinear(b)
         }
-        val mask = PortraitMath.refineMask(probability, MODEL_SIZE, guide, ww, wh)
-        val radius = max(1, (max(ww, wh) * BLUR_RADIUS * strength).roundToInt())
-        val blurred = PortraitMath.blurBackground(planes, mask, ww, wh, radius)
-        composite(bitmap, mask, blurred, ww, wh)
-        return true
+    }
+
+    /** [bitmap] squeezed to a new [MODEL_SIZE]² bitmap and turned upright. */
+    private fun uprightSquare(bitmap: Bitmap, rotationDegrees: Int): Bitmap {
+        val scaled = Bitmap.createScaledBitmap(bitmap, MODEL_SIZE, MODEL_SIZE, true)
+        val upright = if (rotationDegrees % 360 == 0) {
+            if (scaled === bitmap) scaled.copy(Bitmap.Config.ARGB_8888, false) else scaled
+        } else {
+            Bitmap.createBitmap(scaled, 0, 0, MODEL_SIZE, MODEL_SIZE, Matrix().apply { postRotate(rotationDegrees.toFloat()) }, true)
+        }
+        if (upright !== scaled && scaled !== bitmap) scaled.recycle()
+        return upright
     }
 
     /** The model's person probability on a [MODEL_SIZE]² grid laid over [bitmap] as it is stored. */
     private fun segment(bitmap: Bitmap, rotationDegrees: Int): FloatArray {
-        val scaled = Bitmap.createScaledBitmap(bitmap, MODEL_SIZE, MODEL_SIZE, true)
-        val upright = if (rotationDegrees % 360 == 0) {
-            scaled
-        } else {
-            Bitmap.createBitmap(scaled, 0, 0, MODEL_SIZE, MODEL_SIZE, Matrix().apply { postRotate(rotationDegrees.toFloat()) }, true)
-        }
+        val upright = uprightSquare(bitmap, rotationDegrees)
         val pixels = IntArray(MODEL_SIZE * MODEL_SIZE)
         upright.getPixels(pixels, 0, MODEL_SIZE, 0, 0, MODEL_SIZE, MODEL_SIZE)
-        if (upright !== scaled) upright.recycle()
-        if (scaled !== bitmap) scaled.recycle()
+        upright.recycle()
 
         val input = ByteBuffer.allocateDirect(pixels.size * 3 * 4).order(ByteOrder.nativeOrder())
         for (c in pixels) {
@@ -163,6 +261,7 @@ class PortraitBlur @Inject constructor(
         /** Blur radius as a fraction of the photo's long side, roughly an f/1.8 portrait lens. */
         const val BLUR_RADIUS = 0.012f
         const val MIN_COVERAGE = 0.01f
+        const val SUBJECT_TIMEOUT_SECONDS = 5L
         /** Mask values from here up count as fully sharp, and the pixel is left untouched. */
         const val KEEP = 0.998f
     }

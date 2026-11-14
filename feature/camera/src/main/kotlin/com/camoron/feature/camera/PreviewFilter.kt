@@ -93,10 +93,14 @@ internal class PreviewFilter(private val view: View) {
         }
         combined.postConcat(ColorMatrix(look))
         val identity = enhance == null && LookMatrix.isIdentity(look)
-        // TextureView draws through its own hardware layer, whose paint takes the colour filter.
-        (view as? TextureView)?.setLayerPaint(
-            if (identity) null else Paint().apply { colorFilter = ColorMatrixColorFilter(combined) },
-        )
+        val paint = if (identity) null else Paint().apply { colorFilter = ColorMatrixColorFilter(combined) }
+        if (view is TextureView) {
+            // TextureView draws through its own hardware layer, whose paint takes the colour filter.
+            view.setLayerPaint(paint)
+        } else {
+            // Any other view (Portrait's live blur over the preview) gets a layer of its own.
+            view.setLayerType(if (paint == null) View.LAYER_TYPE_NONE else View.LAYER_TYPE_HARDWARE, paint)
+        }
     }
 
     private companion object {
@@ -128,10 +132,13 @@ internal class PreviewFilter(private val view: View) {
             uniform float4 lookB;
 
             float lumaOf(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
+            // Colours arrive premultiplied; the curve works on the colour itself (the camera picture
+            // is opaque, so this only matters for Portrait's see-through blur layer).
+            float3 straight(half4 c) { return c.a > 0.0 ? float3(c.rgb) / float(c.a) : float3(0.0); }
 
             half4 main(float2 coord) {
                 half4 color = content.eval(coord);
-                float3 rgb = float3(color.rgb);
+                float3 rgb = straight(color);
                 if (noise > 0.0) {
                     // Edge-preserving smoothing over the 3x3 neighbourhood: neighbours that differ
                     // by more than the noise barely count, so edges stay crisp.
@@ -142,7 +149,7 @@ internal class PreviewFilter(private val view: View) {
                     float inv = 1.0 / (2.0 * noise * noise * 9.0);
                     for (int dy = -1; dy <= 1; dy++) {
                         for (int dx = -1; dx <= 1; dx++) {
-                            float3 n = float3(content.eval(coord + float2(float(dx), float(dy))).rgb);
+                            float3 n = straight(content.eval(coord + float2(float(dx), float(dy))));
                             float d = lumaOf(n) - centre;
                             float w = exp(-d * d * inv);
                             sum += n * w;
@@ -167,7 +174,7 @@ internal class PreviewFilter(private val view: View) {
                     dot(lookG.rgb, x) + lookG.a,
                     dot(lookB.rgb, x) + lookB.a
                 );
-                return half4(half3(clamp(o, 0.0, 1.0)), color.a);
+                return half4(half3(clamp(o, 0.0, 1.0) * float(color.a)), color.a);
             }
         """
     }

@@ -33,6 +33,7 @@ dependencies {
     implementation(projects.core.imaging)
     implementation(libs.androidx.exifinterface)
     implementation(libs.litert)
+    implementation(libs.play.services.mlkit.subject.segmentation)
     implementation(libs.litert.gpu)
     implementation(libs.litert.gpu.api)
     implementation(libs.hilt.android)
