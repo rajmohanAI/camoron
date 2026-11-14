@@ -56,6 +56,10 @@ internal class VideoRenderer(
     private var encoderEgl: EGLSurface = EGL14.EGL_NO_SURFACE
     private var pacer: FramePacer? = null
     private var clockOffsetNs = 0L
+    /** Makes the frame between each pair for slow motion at 30 fps; null when not wanted or not possible. */
+    private var interpolator: FrameInterpolator? = null
+    private var interpolatorFailed = false
+    private var lastTimestampNs = 0L
 
     private var program = 0
     private var texture = 0
@@ -123,11 +127,25 @@ internal class VideoRenderer(
         filter = Filter(look, enhance)
     }
 
-    /** Starts drawing frames into the encoder's input [surface], paced by [pacer]. */
-    fun startEncoding(surface: Surface, pacer: FramePacer) = onGlThread {
+    /**
+     * Starts drawing frames into the encoder's input [surface], paced by [pacer]. With [inBetween]
+     * at 1 a frame is made between each pair of camera frames (see [FrameInterpolator]).
+     */
+    fun startEncoding(surface: Surface, pacer: FramePacer, inBetween: Int = 0) = onGlThread {
         encoderEgl = windowSurface(surface)
         clockOffsetNs = if (realtimeTimestamps) SystemClock.elapsedRealtimeNanos() - System.nanoTime() else 0L
         this.pacer = pacer
+        if (inBetween > 0 && !interpolatorFailed) {
+            makeCurrent(previewEgl)
+            interpolator = (interpolator ?: runCatching { FrameInterpolator(videoSize) }
+                .onFailure {
+                    interpolatorFailed = true
+                    DiagnosticLog.record(TAG, "Can't make in-between frames on this phone; slow motion keeps the real frames", it)
+                }
+                .getOrNull())
+                ?.also { it.reset() }
+            if (interpolator != null) DiagnosticLog.info(TAG, "Slow motion: making a frame between each pair at ${videoSize.width}x${videoSize.height}")
+        }
     }
 
     /** Stops feeding the encoder; call before stopping it. */
@@ -140,6 +158,8 @@ internal class VideoRenderer(
             onGlThread {
                 surfaceTexture?.setOnFrameAvailableListener(null)
                 releaseEncoderSurface()
+                interpolator?.let { runCatching { it.release() } }
+                interpolator = null
                 if (previewEgl != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, previewEgl)
                 previewEgl = EGL14.EGL_NO_SURFACE
                 if (program != 0) GLES20.glDeleteProgram(program)
@@ -169,7 +189,9 @@ internal class VideoRenderer(
             EGL14.eglSwapBuffers(display, previewEgl)
 
             if (encoderEgl == EGL14.EGL_NO_SURFACE) return
-            val pts = pacer?.next(input.timestamp - clockOffsetNs) ?: return
+            val timestamp = input.timestamp - clockOffsetNs
+            interpolator?.let { middle(it, timestamp) }
+            val pts = pacer?.next(timestamp) ?: return
             makeCurrent(encoderEgl)
             draw(videoSize, if (contentTurned) turned else identity)
             EGLExt.eglPresentationTimeANDROID(display, encoderEgl, pts)
@@ -178,6 +200,34 @@ internal class VideoRenderer(
             // Keep going: one bad frame shouldn't end the video. Report it once.
             if (!reportedError) DiagnosticLog.record(TAG, "Couldn't draw a video frame", e)
             reportedError = true
+        }
+    }
+
+    /**
+     * Takes the new camera frame into [frames] and, once there is a pair, encodes the frame
+     * between them ahead of the new one. Any failure turns it off for good; the video goes on
+     * with the real frames.
+     */
+    private fun middle(frames: FrameInterpolator, timestamp: Long) {
+        try {
+            frames.add(texture, texMatrix)
+            if (frames.ready) {
+                val pts = pacer?.next((lastTimestampNs + timestamp) / 2)
+                if (pts != null) {
+                    makeCurrent(encoderEgl)
+                    val f = filter
+                    frames.drawMiddle(videoSize, if (contentTurned) turned else identity, f.enhance ?: IDENTITY, f.look)
+                    EGLExt.eglPresentationTimeANDROID(display, encoderEgl, pts)
+                    EGL14.eglSwapBuffers(display, encoderEgl)
+                }
+            }
+            lastTimestampNs = timestamp
+        } catch (e: RuntimeException) {
+            DiagnosticLog.record(TAG, "In-between frames failed; slow motion keeps the real frames", e)
+            interpolatorFailed = true
+            interpolator = null
+            runCatching { frames.release() }
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         }
     }
 
@@ -230,6 +280,8 @@ internal class VideoRenderer(
 
     private fun releaseEncoderSurface() {
         pacer = null
+        // Kept for the next recording (its buffers are costly to make), but without this one's frames.
+        interpolator?.reset()
         if (encoderEgl == EGL14.EGL_NO_SURFACE) return
         makeCurrent(previewEgl)
         EGL14.eglDestroySurface(display, encoderEgl)

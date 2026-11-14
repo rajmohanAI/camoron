@@ -105,6 +105,29 @@ class VideoMathTest {
     }
 
     @Test
+    fun `slow motion at 30 fps gets a made frame between each real pair, and nothing else does`() {
+        assertThat(VideoMath.inBetweenFrames(VideoKind.SLOW_MOTION, highSpeed = false, cameraFps = 30)).isEqualTo(1)
+        assertThat(VideoMath.inBetweenFrames(VideoKind.SLOW_MOTION, highSpeed = false, cameraFps = null)).isEqualTo(1)
+        assertThat(VideoMath.inBetweenFrames(VideoKind.SLOW_MOTION, highSpeed = false, cameraFps = 60)).isEqualTo(0)
+        assertThat(VideoMath.inBetweenFrames(VideoKind.SLOW_MOTION, highSpeed = true, cameraFps = 120)).isEqualTo(0)
+        assertThat(VideoMath.inBetweenFrames(VideoKind.STANDARD, highSpeed = false, cameraFps = 30)).isEqualTo(0)
+        assertThat(VideoMath.inBetweenFrames(VideoKind.TIMELAPSE, highSpeed = false, cameraFps = 30)).isEqualTo(0)
+    }
+
+    @Test
+    fun `made frames are spaced like real ones, so 30 fps slow motion plays twice as long`() {
+        val pacer = VideoMath.pacerFor(VideoSpec(VideoKind.SLOW_MOTION), 30..30)
+        val frameNs = 1_000_000_000L / 30
+        // Per camera frame after the first: the made frame, then the real one.
+        val stamps = mutableListOf(pacer.next(0)!!)
+        for (k in 1..3) {
+            stamps += pacer.next(k * frameNs - frameNs / 2)!!
+            stamps += pacer.next(k * frameNs)!!
+        }
+        assertThat(stamps.last() - stamps.first()).isWithin(1_000L).of(6 * frameNs)
+    }
+
+    @Test
     fun `slow motion picks 1080p at 120 fps over faster or smaller options`() {
         val fhd = PixelSize(1920, 1080)
         val hd = PixelSize(1280, 720)
