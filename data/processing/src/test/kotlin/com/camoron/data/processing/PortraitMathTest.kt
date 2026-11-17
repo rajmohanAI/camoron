@@ -61,4 +61,60 @@ class PortraitMathTest {
         assertThat(blurred[5 * w + 21]).isWithin(1e-4f).of(0.1f)
         assertThat(blurred[5 * w + 35]).isWithin(1e-4f).of(0.1f)
     }
+
+    /** An n×n mask with solid squares at the given (x0, y0, x1, y1) cells, x1 and y1 exclusive. */
+    private fun squares(n: Int, vararg boxes: IntArray): FloatArray = FloatArray(n * n) { i ->
+        val x = i % n
+        val y = i / n
+        if (boxes.any { x >= it[0] && y >= it[1] && x < it[2] && y < it[3] }) 1f else 0f
+    }
+
+    @Test
+    fun `isolate keeps only the tapped region and drops stray patches`() {
+        val n = 20
+        val mask = squares(n, intArrayOf(2, 2, 8, 8), intArrayOf(12, 12, 18, 18))
+        val tapped = PortraitMath.isolate(mask, n, seed = PortraitMath.cellAt(0.75f, 0.75f, n))
+        assertThat(tapped[15 * n + 15]).isEqualTo(1f)
+        assertThat(tapped[5 * n + 5]).isEqualTo(0f)
+
+        // Without a tap the larger region wins.
+        val big = squares(n, intArrayOf(1, 1, 10, 10), intArrayOf(14, 14, 17, 17))
+        val kept = PortraitMath.isolate(big, n)
+        assertThat(kept[5 * n + 5]).isEqualTo(1f)
+        assertThat(kept[15 * n + 15]).isEqualTo(0f)
+    }
+
+    @Test
+    fun `isolate fills holes inside the subject`() {
+        val n = 20
+        val mask = squares(n, intArrayOf(3, 3, 17, 17))
+        for (y in 8 until 12) for (x in 8 until 12) mask[y * n + x] = 0f
+        val kept = PortraitMath.isolate(mask, n)
+        assertThat(kept[10 * n + 10]).isEqualTo(1f)
+        assertThat(kept[0]).isEqualTo(0f)
+    }
+
+    @Test
+    fun `pick subject prefers the tapped one, then the nearest, then the big central one`() {
+        val n = 20
+        val left = squares(n, intArrayOf(1, 8, 5, 12))
+        val right = squares(n, intArrayOf(12, 4, 19, 16))
+        val subjects = listOf(left, right)
+        assertThat(PortraitMath.pickSubject(subjects, n, PortraitMath.cellAt(0.15f, 0.5f, n))).isEqualTo(0)
+        assertThat(PortraitMath.pickSubject(subjects, n, PortraitMath.cellAt(0.35f, 0.5f, n))).isEqualTo(0)
+        assertThat(PortraitMath.pickSubject(subjects, n, null)).isEqualTo(1)
+        assertThat(PortraitMath.pickSubject(emptyList(), n, null)).isNull()
+    }
+
+    @Test
+    fun `a tap maps into the centre crop of a taller photo shape`() {
+        // A 3:4 frame cropped to 9:16 keeps the middle 75% of its width.
+        val inside = PortraitMath.focusInCrop(0.5f, 0.3f, 3f / 4, 9f / 16)!!
+        assertThat(inside.x).isWithin(1e-4f).of(0.5f)
+        assertThat(inside.y).isWithin(1e-4f).of(0.3f)
+        val right = PortraitMath.focusInCrop(0.8f, 0.5f, 3f / 4, 9f / 16)!!
+        assertThat(right.x).isWithin(1e-4f).of(0.9f)
+        assertThat(PortraitMath.focusInCrop(0.95f, 0.5f, 3f / 4, 9f / 16)).isNull()
+        assertThat(PortraitMath.focusInCrop(0.2f, 0.7f, 3f / 4, null)).isEqualTo(com.camoron.domain.model.ImagePoint(0.2f, 0.7f))
+    }
 }

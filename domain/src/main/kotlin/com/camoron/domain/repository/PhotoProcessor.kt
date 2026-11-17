@@ -1,6 +1,7 @@
 package com.camoron.domain.repository
 
 import com.camoron.domain.model.CapturedImage
+import com.camoron.domain.model.ImagePoint
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.RawBurst
 
@@ -36,7 +37,8 @@ interface PhotoProcessor {
     /**
      * Portrait's live look: [pixels] ([width]×[height] ARGB, upright, as on screen) come back as an
      * overlay of the blurred background with the subject left transparent, blurred by [strength]
-     * (as for the photo: 1 is about f/1.8). Null when there is nothing to keep sharp.
+     * (as for the photo: 1 is about f/1.8). [focus] is where the user tapped, to keep the subject
+     * there sharp. Null when there is nothing to keep sharp.
      */
-    suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float): IntArray? = null
+    suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float, focus: ImagePoint? = null): IntArray? = null
 }

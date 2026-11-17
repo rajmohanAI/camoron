@@ -62,6 +62,11 @@ data class PhotoAdjustments(
     val portrait: Boolean = false,
     /** Portrait's chosen lens opening: smaller f-numbers blur the background more. */
     val portraitAperture: Float = DEFAULT_APERTURE,
+    /**
+     * Portrait: where the user tapped, across the camera's whole upright frame (before any crop to
+     * the photo's shape), to keep the subject there sharp. Null picks the main subject.
+     */
+    val portraitFocus: ImagePoint? = null,
     /** Where the photo was taken, written into its EXIF; null to leave it out. */
     val location: GeoPoint? = null,
     /** Geo Tag: the place and time printed on the photo; null for none. */

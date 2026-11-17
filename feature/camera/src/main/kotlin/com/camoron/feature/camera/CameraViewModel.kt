@@ -8,6 +8,7 @@ import com.camoron.core.common.DiagnosticLog
 import com.camoron.domain.model.AspectRatioSetting
 import com.camoron.domain.model.CameraCapabilities
 import com.camoron.domain.model.CameraError
+import com.camoron.domain.model.ImagePoint
 import com.camoron.domain.model.CameraExtension
 import com.camoron.domain.model.CameraSettings
 import com.camoron.domain.model.CameraState
@@ -128,6 +129,8 @@ data class CameraUiState(
     val portraitExposure: Int = 0,
     /** Portrait's lens opening (f-number) for the background blur; smaller blurs more. */
     val portraitAperture: Float = PhotoAdjustments.DEFAULT_APERTURE,
+    /** Portrait: where the user last tapped the preview (0 to 1 across it), to keep that subject sharp. */
+    val portraitFocus: ImagePoint? = null,
     /** Seconds left on the self-timer, or null when no countdown is running. */
     val countdown: Int? = null,
     /** The screen is lit white to act as a flash for the front camera. */
@@ -733,7 +736,7 @@ class CameraViewModel @Inject constructor(
         val before = _uiState.value
         if (before.recording || before.panoramaSweeping || mode == before.mode) return
         val rawBefore = before.rawStream
-        _uiState.update { it.copy(mode = mode) }
+        _uiState.update { it.copy(mode = mode, portraitFocus = null) }
         if (mode == CaptureMode.SKY || before.mode == CaptureMode.SKY || mode == CaptureMode.GEOTAG || before.mode == CaptureMode.GEOTAG) {
             syncLocation()
             syncSky()
@@ -825,8 +828,10 @@ class CameraViewModel @Inject constructor(
      */
     suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int): IntArray? {
         val aperture = _uiState.value.portraitAperture
+        // The preview frame is the same upright picture the user tapped, so the tap applies as is.
+        val focus = _uiState.value.portraitFocus
         return runCatching {
-            captureAndSave.portraitPreview(pixels, width, height, PhotoAdjustments.DEFAULT_APERTURE / aperture)
+            captureAndSave.portraitPreview(pixels, width, height, PhotoAdjustments.DEFAULT_APERTURE / aperture, focus)
         }.getOrNull()
     }
 
@@ -842,6 +847,10 @@ class CameraViewModel @Inject constructor(
     }
 
     fun focusAt(x: Float, y: Float) {
+        // In Portrait a tap also chooses what stays sharp.
+        if (_uiState.value.mode == CaptureMode.PORTRAIT) {
+            _uiState.update { it.copy(portraitFocus = ImagePoint(x.coerceIn(0f, 1f), y.coerceIn(0f, 1f))) }
+        }
         val track = _uiState.value.cameraSettings.autoFocusTracking
         viewModelScope.launch { camera.focusAt(x, y, track) }
     }
@@ -1177,14 +1186,29 @@ class CameraViewModel @Inject constructor(
         mirror = state.selectedCamera?.lensFacing == LensFacing.FRONT && state.cameraSettings.selfieMirror,
         look = state.cameraSettings.look,
         enhance = state.cameraSettings.enhance,
-        zoom = state.zoomRatio,
+        zoom = digitalZoom(state),
         portrait = state.mode == CaptureMode.PORTRAIT,
         portraitAperture = state.portraitAperture,
+        // The front camera's preview is a mirror image of the photo it takes.
+        portraitFocus = state.portraitFocus?.takeIf { state.mode == CaptureMode.PORTRAIT }?.let { tap ->
+            if (state.selectedCamera?.lensFacing == LensFacing.FRONT) ImagePoint(1f - tap.x, tap.y) else tap
+        },
         location = if (state.cameraSettings.geotag || state.mode == CaptureMode.GEOTAG) geoFix(state) else null,
         stamp = if (state.mode == CaptureMode.GEOTAG) geoStamp(state) else null,
         insetMirror = state.mode == CaptureMode.DUAL && companionFor(state)?.lensFacing == LensFacing.FRONT &&
             state.cameraSettings.selfieMirror,
     )
+
+    /**
+     * How far the photo is enlarged digitally: the zoom beyond the longest lens it is taken
+     * through. At 3× on a phone with a 3× lens nothing is enlarged, so no zoom sharpening applies.
+     */
+    private fun digitalZoom(state: CameraUiState): Float {
+        val zoom = state.zoomRatio
+        if (zoom <= 1f) return zoom
+        val lens = state.selectedCamera?.opticalZoomRatios.orEmpty().filter { it <= zoom * 1.01f }.maxOrNull() ?: 1f
+        return (zoom / lens).coerceAtLeast(1f)
+    }
 
     /** Save location wants a recent fix; Geo Tag settles for the last known one rather than none. */
     private fun geoFix(state: CameraUiState): GeoPoint? =
@@ -1239,6 +1263,8 @@ class CameraViewModel @Inject constructor(
 
     private suspend fun select(capabilities: CameraCapabilities, zoom: Float = 1f) {
         cancelTimer()
+        // A tap on the other camera's picture says nothing about this one.
+        if (capabilities.cameraId != _uiState.value.selectedCamera?.cameraId) _uiState.update { it.copy(portraitFocus = null) }
         val aspect = _uiState.value.copy(selectedCamera = capabilities).photoAspect.stillAspect
         val extension = _uiState.value.copy(selectedCamera = capabilities).wantedExtension
         val video = _uiState.value.videoSpec
