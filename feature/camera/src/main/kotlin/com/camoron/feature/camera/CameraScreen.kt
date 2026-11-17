@@ -177,9 +177,10 @@ fun CameraScreen(
                 .onSizeChanged { if (it.height > 0) viewModel.onDisplayAspect(it.width.toFloat() / it.height) },
         ) {
             val aspect = state.photoAspect
-            // The scene keeps one scale in every photo shape: 3:4 fills the width, and the taller
-            // shapes, crops of it, show as narrower frames rather than a magnified picture. The
-            // preview always shows exactly the frame being saved. Video is always 16:9.
+            // Every photo shape fills the width, as on Samsung, Pixel and iPhone: 9:16 is taller
+            // and full screen covers the whole screen. They are crops of the sensor's 3:4 picture,
+            // so the picture is larger in them; the frame glides to its new size. The preview
+            // always shows exactly the frame being saved. Video is always 16:9.
             val insets = WindowInsets.safeDrawing.asPaddingValues()
             val topInset = (insets.calculateTopPadding() + TOP_BAR_HEIGHT).value
             val bottomInset = insets.calculateBottomPadding().value
