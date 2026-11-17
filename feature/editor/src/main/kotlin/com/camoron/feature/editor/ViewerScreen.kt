@@ -27,6 +27,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Share
@@ -131,6 +132,7 @@ fun ViewerScreen(
                         horizontalArrangement = Arrangement.SpaceEvenly,
                     ) {
                         ViewerAction(Icons.Filled.Share, stringResource(R.string.share)) { share(context, current) }
+                        ViewerAction(Icons.Filled.AutoFixHigh, stringResource(R.string.optimise)) { optimise(context, current) }
                         ViewerAction(Icons.Filled.Edit, stringResource(R.string.edit), highlight = true) { onEdit(current) }
                         ViewerAction(Icons.Filled.PhotoLibrary, stringResource(R.string.gallery)) { openInGallery(context, current) }
                     }
@@ -148,7 +150,7 @@ private fun ViewerAction(icon: ImageVector, label: String, highlight: Boolean = 
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 6.dp),
+            .padding(horizontal = 14.dp, vertical = 6.dp),
     ) {
         Icon(icon, contentDescription = null, tint = color)
         Text(label, color = color, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
@@ -242,6 +244,19 @@ private fun share(context: Context, uri: String) {
     runCatching { context.startActivity(Intent.createChooser(intent, null)) }
 }
 
+/**
+ * Hands the photo to Camoron's photo optimisation (the app's "Optimise with Camoron" share entry),
+ * which saves a cleaner copy in Pictures/Camoron and leaves this one as it is.
+ */
+private fun optimise(context: Context, uri: String) {
+    val intent = Intent(Intent.ACTION_SEND)
+        .setClassName(context, OPTIMISE_ACTIVITY)
+        .setType("image/jpeg")
+        .putExtra(Intent.EXTRA_STREAM, Uri.parse(uri))
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    runCatching { context.startActivity(intent) }
+}
+
 private fun openInGallery(context: Context, uri: String) {
     val parsed = Uri.parse(uri)
     // Review opens the photo within the camera roll, so you can swipe to your other photos.
@@ -256,5 +271,6 @@ private fun openInGallery(context: Context, uri: String) {
 }
 
 private const val VIEWER_EDGE = 2560
+private const val OPTIMISE_ACTIVITY = "com.camoron.app.optimise.OptimiseShareActivity"
 private const val MAX_ZOOM = 6f
 private const val DOUBLE_TAP_ZOOM = 2.5f

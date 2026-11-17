@@ -37,8 +37,26 @@ class ZoomEnhancer @Inject constructor(
     private var gpu: GpuDelegate? = null
     private var failed = false
 
-    /** Whether a photo taken at [zoom] (digital zoom on its lens) is worth enhancing. */
-    fun worthwhile(zoom: Float): Boolean = zoom >= MIN_ZOOM && !failed
+    /**
+     * Whether a photo taken at [zoom] (digital zoom on its lens) is worth enhancing. Only with the
+     * GPU: on the CPU the model takes minutes for one photo (over 3 minutes for 12 MP on a
+     * Motorola Edge 50 Pro), far too long to wait for a picture.
+     */
+    fun worthwhile(zoom: Float): Boolean = zoom >= MIN_ZOOM && !failed && gpuAvailable
+
+    /** Whether the GPU can run the model; checked once. */
+    private val gpuAvailable: Boolean by lazy {
+        val supported = runCatching {
+            val compatibility = CompatibilityList()
+            try {
+                compatibility.isDelegateSupportedOnThisDevice
+            } finally {
+                compatibility.close()
+            }
+        }.getOrDefault(false)
+        if (!supported) DiagnosticLog.record(TAG, "No GPU for AI zoom enhance; zoomed photos get the regular sharpening instead")
+        supported
+    }
 
     /**
      * Sharpens [bitmap] (mutable ARGB_8888, the whole photo) in place, for a photo taken at [zoom].
@@ -158,14 +176,14 @@ class ZoomEnhancer @Inject constructor(
             FileInputStream(fd.fileDescriptor).channel.map(FileChannel.MapMode.READ_ONLY, fd.startOffset, fd.declaredLength)
         }
         val options = Interpreter.Options()
+        // Only reached when the GPU is supported (see worthwhile).
         val compatibility = CompatibilityList()
-        if (compatibility.isDelegateSupportedOnThisDevice) {
+        try {
             gpu = GpuDelegate(compatibility.bestOptionsForThisDevice).also { options.addDelegate(it) }
-        } else {
-            options.setNumThreads(CPU_THREADS)
+        } finally {
+            compatibility.close()
         }
-        compatibility.close()
-        DiagnosticLog.record(TAG, "AI zoom enhance runs on the ${if (gpu != null) "GPU" else "CPU"}")
+        DiagnosticLog.record(TAG, "AI zoom enhance runs on the GPU")
         Interpreter(model, options).also { interpreter = it }
     }
 
@@ -192,6 +210,5 @@ class ZoomEnhancer @Inject constructor(
 
         /** How much of the AI result shows over the photo. */
         const val STRENGTH = 0.8f
-        const val CPU_THREADS = 4
     }
 }

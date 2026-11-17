@@ -14,6 +14,7 @@ import com.camoron.core.common.timed
 import com.camoron.domain.model.CapturedImage
 import com.camoron.domain.model.GeoPoint
 import com.camoron.domain.model.ImageFormat
+import com.camoron.domain.model.ImagePoint
 import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.PixelSize
@@ -60,6 +61,11 @@ class BitmapPhotoProcessor @Inject constructor(
             val enhance = adjustments.enhance
             // Portrait needs the pixels the right way up to find the people.
             val portrait = original.rotationDegrees.takeIf { adjustments.portrait }
+            val turned = original.rotationDegrees % 180 != 0
+            val focus = adjustments.portraitFocus?.let { tap ->
+                val fullAspect = if (turned) bounds.height.toFloat() / bounds.width else bounds.width.toFloat() / bounds.height
+                PortraitMath.focusInCrop(tap.x, tap.y, fullAspect, adjustments.cropAspect.takeIf { crop != null })
+            }
 
             // A crop request for a shape the sensor already delivers needs no work at all.
             if (crop == null && look == null && !enhance && !adjustments.mirror && portrait == null && adjustments.location == null &&
@@ -74,7 +80,7 @@ class BitmapPhotoProcessor @Inject constructor(
             if (reencode) {
                 val transformed = try {
                     DiagnosticLog.timed(TAG, "Adjusting ${bounds.width}x${bounds.height}") {
-                        transformJpeg(image.bytes, crop, look, enhance, adjustments.zoom, portrait, PhotoAdjustments.DEFAULT_APERTURE / adjustments.portraitAperture)
+                        transformJpeg(image.bytes, crop, look, enhance, adjustments.zoom, portrait, PhotoAdjustments.DEFAULT_APERTURE / adjustments.portraitAperture, focus)
                     }
                 } catch (e: OutOfMemoryError) {
                     // Very large sensors can exceed the heap; keep the photo rather than lose it.
@@ -154,8 +160,8 @@ class BitmapPhotoProcessor @Inject constructor(
         }
     }
 
-    override suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float): IntArray? =
-        withContext(processing) { portraitBlur.preview(pixels, width, height, strength) }
+    override suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float, focus: ImagePoint?): IntArray? =
+        withContext(processing) { portraitBlur.preview(pixels, width, height, strength, focus) }
 
     override suspend fun developRaw(burst: RawBurst): CapturedImage {
         val preview = burst.preview
@@ -252,6 +258,7 @@ class BitmapPhotoProcessor @Inject constructor(
         zoom: Float,
         portrait: Int?,
         portraitStrength: Float = 1f,
+        portraitFocus: ImagePoint? = null,
     ): ByteArray {
         val options = BitmapFactory.Options().apply {
             inMutable = true
@@ -276,7 +283,7 @@ class BitmapPhotoProcessor @Inject constructor(
                 ?: error("Could not copy the decoded photo")
         }
         try {
-            return finishPixels(bitmap, look, enhance, zoom, portrait, portraitStrength)
+            return finishPixels(bitmap, look, enhance, zoom, portrait, portraitStrength, portraitFocus)
         } finally {
             bitmap.recycle()
         }
@@ -293,8 +300,9 @@ class BitmapPhotoProcessor @Inject constructor(
         zoom: Float,
         portrait: Int? = null,
         portraitStrength: Float = 1f,
+        portraitFocus: ImagePoint? = null,
     ): ByteArray {
-        if (portrait != null) portraitBlur.blur(bitmap, portrait, portraitStrength)
+        if (portrait != null) portraitBlur.blur(bitmap, portrait, portraitStrength, portraitFocus)
         if (enhance && zoomEnhancer.worthwhile(zoom)) zoomEnhancer.enhance(bitmap, zoom)
         if (enhance) Enhancer.enhance(bitmap, zoom)
         if (look != null) applyLook(bitmap, look)

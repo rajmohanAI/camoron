@@ -93,7 +93,7 @@ class CameraViewModelTest {
             return frames.first()
         }
         val previewStrengths = mutableListOf<Float>()
-        override suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float): IntArray? {
+        override suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float, focus: com.camoron.domain.model.ImagePoint?): IntArray? {
             previewStrengths += strength
             return IntArray(width * height)
         }
@@ -274,6 +274,25 @@ class CameraViewModelTest {
         vm.onShutter()
         assertThat(processor.applied.last().portrait).isTrue()
         assertThat(controller.bursts).isEmpty()
+    }
+
+    @Test
+    fun `a tap in portrait chooses what stays sharp, in the preview and the photo`() = runTest {
+        val vm = viewModel()
+        vm.onSurfaceReady(Target(1440, 1080))
+        vm.setMode(CaptureMode.PORTRAIT)
+        vm.onShutter()
+        assertThat(processor.applied.last().portraitFocus).isNull()
+
+        vm.focusAt(0.25f, 0.6f)
+        vm.onShutter()
+        assertThat(processor.applied.last().portraitFocus).isEqualTo(com.camoron.domain.model.ImagePoint(0.25f, 0.6f))
+
+        // A new mode starts without a chosen subject.
+        vm.setMode(CaptureMode.PHOTO)
+        vm.setMode(CaptureMode.PORTRAIT)
+        vm.onShutter()
+        assertThat(processor.applied.last().portraitFocus).isNull()
     }
 
     @Test

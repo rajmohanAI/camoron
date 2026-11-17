@@ -1,5 +1,6 @@
 package com.camoron.data.processing
 
+import com.camoron.domain.model.ImagePoint
 import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -142,6 +143,140 @@ internal object PortraitMath {
         }
     }
 
+    /**
+     * The one subject to keep sharp from [mask] (n×n, 0 to 1): the connected region under [seed]
+     * (a cell index, where the user tapped) or else the largest, with its holes filled. Stray
+     * patches elsewhere are dropped, so the background never shows torn sharp islands. A soft rim
+     * two cells wide around the region keeps its edge values for the guided filter to refine.
+     */
+    fun isolate(mask: FloatArray, n: Int, seed: Int? = null): FloatArray {
+        val solid = BooleanArray(n * n) { mask[it] > 0.5f }
+        val label = IntArray(n * n) { -1 }
+        val sizes = ArrayList<Int>()
+        val stack = IntArray(n * n)
+        for (start in solid.indices) {
+            if (!solid[start] || label[start] >= 0) continue
+            val id = sizes.size
+            var top = 0
+            var count = 0
+            stack[top++] = start
+            label[start] = id
+            while (top > 0) {
+                val i = stack[--top]
+                count++
+                val x = i % n
+                val y = i / n
+                for (j in neighbours(x, y, n)) if (j >= 0 && solid[j] && label[j] < 0) {
+                    label[j] = id
+                    stack[top++] = j
+                }
+            }
+            sizes += count
+        }
+        if (sizes.isEmpty()) return FloatArray(n * n)
+        val chosen = seed?.let { label.getOrNull(it) }?.takeIf { it >= 0 } ?: sizes.indices.maxBy { sizes[it] }
+        val keep = BooleanArray(n * n) { label[it] == chosen }
+
+        // Fill holes: background that can't reach the border is enclosed by the subject.
+        val outside = BooleanArray(n * n)
+        var top = 0
+        for (i in 0 until n * n) {
+            val x = i % n
+            val y = i / n
+            if ((x == 0 || y == 0 || x == n - 1 || y == n - 1) && !keep[i]) {
+                outside[i] = true
+                stack[top++] = i
+            }
+        }
+        while (top > 0) {
+            val i = stack[--top]
+            for (j in neighbours(i % n, i / n, n)) if (j >= 0 && !keep[j] && !outside[j]) {
+                outside[j] = true
+                stack[top++] = j
+            }
+        }
+        val near = dilate(keep, n, RIM)
+        return FloatArray(n * n) { i ->
+            when {
+                keep[i] -> mask[i]
+                !outside[i] -> 1f
+                near[i] -> mask[i]
+                else -> 0f
+            }
+        }
+    }
+
+    /**
+     * Which of [subjects] (each n×n, 0 to 1) to keep: the one under [seed] if any covers it, else
+     * the one nearest to it; with no seed, the biggest, favouring the middle of the frame.
+     */
+    fun pickSubject(subjects: List<FloatArray>, n: Int, seed: Int?): Int? {
+        if (subjects.isEmpty()) return null
+        if (seed != null) {
+            subjects.indices.firstOrNull { subjects[it][seed] > 0.5f }?.let { return it }
+            val sx = seed % n
+            val sy = seed / n
+            return subjects.indices.minBy { k -> nearest(subjects[k], n, sx, sy) }
+        }
+        return subjects.indices.maxBy { k ->
+            var score = 0f
+            val m = subjects[k]
+            for (i in m.indices) if (m[i] > 0.5f) {
+                val dx = (i % n + 0.5f) / n - 0.5f
+                val dy = (i / n + 0.5f) / n - 0.5f
+                score += 1f - (dx * dx + dy * dy)
+            }
+            score
+        }
+    }
+
+    /** Squared distance in cells from ([x], [y]) to the nearest solid cell of [mask]. */
+    private fun nearest(mask: FloatArray, n: Int, x: Int, y: Int): Int {
+        var best = Int.MAX_VALUE
+        for (i in mask.indices) if (mask[i] > 0.5f) {
+            val dx = i % n - x
+            val dy = i / n - y
+            best = minOf(best, dx * dx + dy * dy)
+        }
+        return best
+    }
+
+    /**
+     * Where a tap at ([x], [y]) on the camera's whole upright frame (width over height
+     * [fullAspect]) lands in the photo once it is centre-cropped to [cropAspect] (width over
+     * height; null for no crop). Null when the tap lies outside what the photo keeps.
+     */
+    fun focusInCrop(x: Float, y: Float, fullAspect: Float, cropAspect: Float?): ImagePoint? {
+        var fx = x
+        var fy = y
+        if (cropAspect != null && fullAspect > 0f && cropAspect > 0f) {
+            if (cropAspect < fullAspect) fx = (x - 0.5f) * fullAspect / cropAspect + 0.5f
+            else fy = (y - 0.5f) * cropAspect / fullAspect + 0.5f
+        }
+        return if (fx in 0f..1f && fy in 0f..1f) ImagePoint(fx, fy) else null
+    }
+
+    /** The cell index of a point ([x], [y]) from 0 to 1 on an n×n grid. */
+    fun cellAt(x: Float, y: Float, n: Int): Int =
+        (y * n).toInt().coerceIn(0, n - 1) * n + (x * n).toInt().coerceIn(0, n - 1)
+
+    private fun neighbours(x: Int, y: Int, n: Int) = intArrayOf(
+        if (x > 0) y * n + x - 1 else -1,
+        if (x < n - 1) y * n + x + 1 else -1,
+        if (y > 0) (y - 1) * n + x else -1,
+        if (y < n - 1) (y + 1) * n + x else -1,
+    )
+
+    private fun dilate(src: BooleanArray, n: Int, r: Int): BooleanArray {
+        var cur = src
+        repeat(r) {
+            val next = cur.copyOf()
+            for (i in cur.indices) if (cur[i]) for (j in neighbours(i % n, i / n, n)) if (j >= 0) next[j] = true
+            cur = next
+        }
+        return cur
+    }
+
     /** Share of the frame the person covers; too little means there is nobody to keep sharp. */
     fun coverage(probability: FloatArray): Float = probability.count { it > 0.5f }.toFloat() / probability.size
 
@@ -158,4 +293,6 @@ internal object PortraitMath {
     private const val EDGE_LOW = 0.3f
     private const val EDGE_HIGH = 0.7f
     private const val MIN_WEIGHT = 1e-3f
+    /** Cells around the kept subject whose soft edge values survive [isolate]. */
+    private const val RIM = 2
 }

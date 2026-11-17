@@ -1,6 +1,7 @@
 package com.camoron.domain.usecase
 
 import com.camoron.domain.model.CapturedImage
+import com.camoron.domain.model.ImagePoint
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.repository.CameraController
 import com.camoron.domain.repository.MediaRepository
@@ -26,8 +27,8 @@ class CaptureAndSavePhoto @Inject constructor(
     private val saving = Mutex()
 
     /** Portrait's live viewfinder blur; see [PhotoProcessor.portraitPreview]. */
-    suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float): IntArray? =
-        processor.portraitPreview(pixels, width, height, strength)
+    suspend fun portraitPreview(pixels: IntArray, width: Int, height: Int, strength: Float, focus: ImagePoint? = null): IntArray? =
+        processor.portraitPreview(pixels, width, height, strength, focus)
 
     /**
      * Returns the gallery URI of the JPEG; the DNG, if any, is saved alongside it untouched (RAW keeps

@@ -15,6 +15,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import android.view.TextureView
 import android.widget.ImageView
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import android.view.WindowManager
 import android.widget.Toast
@@ -381,7 +382,7 @@ private fun PreviewArea(
                     onSurfaceDestroyed = onSurfaceDestroyed,
                     modifier = Modifier.fillMaxSize().then(if (shapeBlur > 0f) Modifier.blur(SHAPE_BLUR * shapeBlur) else Modifier),
                     portrait = portrait.takeIf { state.mode == CaptureMode.PORTRAIT },
-                    portraitKey = state.portraitAperture,
+                    portraitKey = state.portraitAperture to state.portraitFocus,
                 )
                 FocusIndicator(focusTarget, Modifier.fillMaxSize())
                 overlay()
@@ -463,25 +464,55 @@ private fun CameraPreview(
     val ready by rememberUpdatedState(onSurfaceReady)
     var textureView by remember { mutableStateOf<PreviewTextureView?>(null) }
     var portraitOverlay by remember { mutableStateOf<Bitmap?>(null) }
+    // The blur is worked out on a frame that is already a moment old, so it only shows while the
+    // picture holds still; as soon as the phone or the subject moves it fades out, rather than
+    // leaving a ghost of where things were.
+    val overlayAlpha = remember { Animatable(0f) }
     val portraitRun by rememberUpdatedState(portrait)
     val portraitOn = portrait != null && live
     LaunchedEffect(portraitOn, portraitKey, textureView) {
         val view = textureView
         if (!portraitOn || view == null) {
+            overlayAlpha.snapTo(0f)
             portraitOverlay = null
             return@LaunchedEffect
         }
-        while (true) {
-            val started = System.nanoTime()
-            val frame = view.portraitFrame()
-            val run = portraitRun
-            if (frame != null && run != null) {
-                val (pixels, w, h) = frame
-                val result = run(pixels, w, h)
-                portraitOverlay = result?.let { Bitmap.createBitmap(it, w, h, Bitmap.Config.ARGB_8888) }
+        coroutineScope {
+            var source: IntArray? = null
+            fun show(visible: Boolean) {
+                launch { overlayAlpha.animateTo(if (visible) 1f else 0f, tween(if (visible) PORTRAIT_FADE_IN_MS else PORTRAIT_FADE_OUT_MS)) }
             }
-            val spentMs = (System.nanoTime() - started) / 1_000_000
-            delay((PORTRAIT_FRAME_MS - spentMs).coerceAtLeast(PORTRAIT_MIN_GAP_MS))
+            launch {
+                while (true) {
+                    delay(PORTRAIT_MOTION_CHECK_MS)
+                    val shownFrom = source ?: continue
+                    val now = view.portraitFrame() ?: continue
+                    if (pictureMoved(shownFrom, now.first)) {
+                        source = null
+                        show(false)
+                    }
+                }
+            }
+            while (true) {
+                val started = System.nanoTime()
+                val frame = view.portraitFrame()
+                val run = portraitRun
+                if (frame != null && run != null) {
+                    val (pixels, w, h) = frame
+                    val result = run(pixels, w, h)
+                    val after = view.portraitFrame()?.first
+                    if (result != null && after != null && !pictureMoved(pixels, after)) {
+                        portraitOverlay = Bitmap.createBitmap(result, w, h, Bitmap.Config.ARGB_8888)
+                        source = after
+                        show(true)
+                    } else {
+                        source = null
+                        show(false)
+                    }
+                }
+                val spentMs = (System.nanoTime() - started) / 1_000_000
+                delay((PORTRAIT_FRAME_MS - spentMs).coerceAtLeast(PORTRAIT_MIN_GAP_MS))
+            }
         }
     }
     val destroyed by rememberUpdatedState(onSurfaceDestroyed)
@@ -531,7 +562,7 @@ private fun CameraPreview(
                     view.setImageBitmap(portraitOverlay)
                     (view.tag as PreviewFilter).update(look, enhance(), iso())
                 },
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = overlayAlpha.value },
             )
         }
         shownFreeze?.let {
@@ -550,6 +581,28 @@ private val FREEZE_BLUR = 12.dp
 /** How often Portrait's live blur is redone, at most; slower phones simply take longer per frame. */
 private const val PORTRAIT_FRAME_MS = 100L
 private const val PORTRAIT_MIN_GAP_MS = 16L
+/** How often the live picture is compared with the one the blur was made from. */
+private const val PORTRAIT_MOTION_CHECK_MS = 60L
+private const val PORTRAIT_FADE_IN_MS = 180
+private const val PORTRAIT_FADE_OUT_MS = 90
+/** Average brightness change (0 to 255) between two small frames that counts as the picture moving. */
+private const val PORTRAIT_MOTION_LIMIT = 7f
+
+/** Whether two same-sized small frames differ enough that a blur made from [before] no longer fits [after]. */
+private fun pictureMoved(before: IntArray, after: IntArray): Boolean {
+    if (before.size != after.size) return true
+    var total = 0f
+    var count = 0
+    var i = 0
+    while (i < before.size) {
+        total += kotlin.math.abs(luma(before[i]) - luma(after[i]))
+        count++
+        i += 3
+    }
+    return count == 0 || total / count > PORTRAIT_MOTION_LIMIT
+}
+
+private fun luma(c: Int): Float = 0.299f * ((c shr 16) and 0xFF) + 0.587f * ((c shr 8) and 0xFF) + 0.114f * (c and 0xFF)
 private const val UNFREEZE_FADE_MS = 220
 
 private class PreviewTextureView(

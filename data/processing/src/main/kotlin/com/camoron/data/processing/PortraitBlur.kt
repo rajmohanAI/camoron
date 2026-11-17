@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Matrix
 import com.camoron.core.common.DiagnosticLog
 import com.camoron.core.common.timed
+import com.camoron.domain.model.ImagePoint
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
@@ -43,13 +44,14 @@ class PortraitBlur @Inject constructor(
      * Blurs the background of [bitmap] (mutable ARGB_8888) in place. [rotationDegrees] turns its
      * pixels upright, as the model expects people the right way up. Returns false, leaving the
      * photo as it was, when nobody is in it or the model couldn't run. [strength] scales the blur:
-     * 1 is about an f/1.8 lens, 2 twice as soft, 0.25 barely softened. Blocking.
+     * 1 is about an f/1.8 lens, 2 twice as soft, 0.25 barely softened. [focus] is where the user
+     * tapped, from 0 to 1 across the upright photo: the subject there is kept sharp. Blocking.
      */
     @Synchronized
-    fun blur(bitmap: Bitmap, rotationDegrees: Int, strength: Float = 1f): Boolean {
+    fun blur(bitmap: Bitmap, rotationDegrees: Int, strength: Float = 1f, focus: ImagePoint? = null): Boolean {
         if (failed) return false
         return try {
-            DiagnosticLog.timed(TAG, "Portrait blur of ${bitmap.width}x${bitmap.height}") { run(bitmap, rotationDegrees, strength) }
+            DiagnosticLog.timed(TAG, "Portrait blur of ${bitmap.width}x${bitmap.height}") { run(bitmap, rotationDegrees, strength, focus) }
         } catch (e: OutOfMemoryError) {
             DiagnosticLog.record(TAG, "Not enough memory for the portrait blur", e)
             false
@@ -67,14 +69,15 @@ class PortraitBlur @Inject constructor(
      * The live Portrait look for the viewfinder: [pixels] ([width]×[height] ARGB, already upright)
      * come back as an overlay that holds the blurred background, with the subject left
      * transparent so the sharp preview shows through it. Null when there is nothing to keep sharp
-     * or the models can't run. Blocking; meant for small frames (a few hundred pixels across).
+     * or the models can't run. [focus] is where the user tapped (0 to 1 across the frame). Blocking;
+     * meant for small frames (a few hundred pixels across).
      */
     @Synchronized
-    fun preview(pixels: IntArray, width: Int, height: Int, strength: Float): IntArray? {
+    fun preview(pixels: IntArray, width: Int, height: Int, strength: Float, focus: ImagePoint? = null): IntArray? {
         if (failed || previewFailed || width <= 0 || height <= 0 || pixels.size < width * height) return null
         return try {
             val bitmap = Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
-            val probability = keepMask(bitmap, 0, quiet = true)
+            val probability = keepMask(bitmap, 0, focus, quiet = true)
             bitmap.recycle()
             if (probability == null) return null
             val guide = FloatArray(width * height)
@@ -101,43 +104,71 @@ class PortraitBlur @Inject constructor(
     }
 
     /**
-     * What to keep sharp, on a [MODEL_SIZE]² grid laid over [bitmap] as stored: the people if
-     * there are any, otherwise the main object. Null when neither finds anything.
+     * What to keep sharp, on a [MODEL_SIZE]² grid laid over [bitmap] as stored: one subject, never
+     * scattered patches. With a tap ([focus], upright), the person or object under it; otherwise
+     * the people if there are any, else the main object. Null when nothing clear is found.
      */
-    private fun keepMask(bitmap: Bitmap, rotationDegrees: Int, quiet: Boolean = false): FloatArray? {
+    private fun keepMask(bitmap: Bitmap, rotationDegrees: Int, focus: ImagePoint?, quiet: Boolean = false): FloatArray? {
+        val seed = focus?.let { PortraitMath.cellAt(it.x, it.y, MODEL_SIZE) }
         val people = segment(bitmap, rotationDegrees)
-        val peopleCoverage = PortraitMath.coverage(people)
-        if (peopleCoverage >= MIN_COVERAGE) return people
-        val objects = subjects(bitmap, rotationDegrees)
-        val objectCoverage = objects?.let { PortraitMath.coverage(it) } ?: 0f
-        if (objects != null && objectCoverage >= MIN_COVERAGE) {
-            if (!quiet) DiagnosticLog.info(TAG, "No people; keeping the main object sharp (%.1f%% of the frame)".format(objectCoverage * 100))
-            return objects
+        val hasPeople = PortraitMath.coverage(people) >= MIN_COVERAGE
+        val onPerson = seed != null && people[seed] > 0.5f
+        var what = "the person"
+        val upright = if (hasPeople && (seed == null || onPerson)) {
+            PortraitMath.isolate(people, MODEL_SIZE, seed)
+        } else {
+            val objects = subjects(bitmap, rotationDegrees)
+            val pick = objects?.let { PortraitMath.pickSubject(it, MODEL_SIZE, seed) }
+            when {
+                objects != null && pick != null -> PortraitMath.isolate(objects[pick], MODEL_SIZE, seed).also { what = "the object" }
+                // Tapped where no object was found: the people, if any, rather than nothing.
+                hasPeople -> PortraitMath.isolate(people, MODEL_SIZE)
+                else -> null
+            }
         }
-        if (!quiet) DiagnosticLog.info(TAG, "Nothing to keep sharp for portrait (%.1f%% of the frame); kept as taken".format(max(peopleCoverage, objectCoverage) * 100))
-        return null
+        val coverage = upright?.let { PortraitMath.coverage(it) } ?: 0f
+        if (upright == null || coverage < MIN_COVERAGE || coverage > MAX_COVERAGE) {
+            if (!quiet) DiagnosticLog.info(TAG, "Nothing clear to keep sharp for portrait (%.1f%% of the frame); kept as taken".format(coverage * 100))
+            return null
+        }
+        if (!quiet) DiagnosticLog.info(TAG, "Keeping $what sharp (%.1f%% of the frame%s)".format(coverage * 100, if (seed != null) ", where tapped" else ""))
+        // Back from upright to the way the pixels are stored.
+        return PortraitMath.rotateSquare(upright, MODEL_SIZE, -rotationDegrees)
     }
 
     /**
-     * ML Kit's foreground confidence for [bitmap], on the same grid as [segment]. Null if the
-     * segmenter isn't available (its model is fetched by Play services) or fails; that only turns
-     * off the object fallback, never Portrait for people.
+     * ML Kit's objects in [bitmap], each as its own confidence grid, upright, on the same grid as
+     * [segment]. Null if the segmenter isn't available (its model is fetched by Play services) or
+     * fails; that only turns off objects, never Portrait for people.
      */
-    private fun subjects(bitmap: Bitmap, rotationDegrees: Int): FloatArray? {
+    private fun subjects(bitmap: Bitmap, rotationDegrees: Int): List<FloatArray>? {
         if (subjectsFailed) return null
         return try {
             val upright = uprightSquare(bitmap, rotationDegrees)
             val client = subjectSegmenter ?: SubjectSegmentation.getClient(
-                SubjectSegmenterOptions.Builder().enableForegroundConfidenceMask().build(),
+                SubjectSegmenterOptions.Builder()
+                    .enableMultipleSubjects(SubjectSegmenterOptions.SubjectResultOptions.Builder().enableConfidenceMask().build())
+                    .build(),
             ).also { subjectSegmenter = it }
             val result = Tasks.await(client.process(InputImage.fromBitmap(upright, 0)), SUBJECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             upright.recycle()
-            val buffer = result.foregroundConfidenceMask ?: return null
-            buffer.rewind()
-            val grid = FloatArray(MODEL_SIZE * MODEL_SIZE)
-            if (buffer.remaining() < grid.size) return null
-            buffer.get(grid)
-            PortraitMath.rotateSquare(grid, MODEL_SIZE, -rotationDegrees)
+            result.subjects.mapNotNull { subject ->
+                val buffer = subject.confidenceMask ?: return@mapNotNull null
+                val w = subject.width
+                val h = subject.height
+                if (w <= 0 || h <= 0) return@mapNotNull null
+                buffer.rewind()
+                if (buffer.remaining() < w * h) return@mapNotNull null
+                val values = FloatArray(w * h)
+                buffer.get(values)
+                val grid = FloatArray(MODEL_SIZE * MODEL_SIZE)
+                for (y in 0 until h) for (x in 0 until w) {
+                    val gx = subject.startX + x
+                    val gy = subject.startY + y
+                    if (gx in 0 until MODEL_SIZE && gy in 0 until MODEL_SIZE) grid[gy * MODEL_SIZE + gx] = values[y * w + x]
+                }
+                grid
+            }
         } catch (e: Exception) {
             DiagnosticLog.record(TAG, "Object finder unavailable; Portrait keeps people only", e)
             subjectsFailed = true
@@ -145,8 +176,8 @@ class PortraitBlur @Inject constructor(
         }
     }
 
-    private fun run(bitmap: Bitmap, rotationDegrees: Int, strength: Float): Boolean {
-        val probability = keepMask(bitmap, rotationDegrees) ?: return false
+    private fun run(bitmap: Bitmap, rotationDegrees: Int, strength: Float, focus: ImagePoint?): Boolean {
+        val probability = keepMask(bitmap, rotationDegrees, focus) ?: return false
         val width = bitmap.width
         val height = bitmap.height
         val scale = WORK_SIZE.toFloat() / max(width, height)
@@ -193,7 +224,7 @@ class PortraitBlur @Inject constructor(
         return upright
     }
 
-    /** The model's person probability on a [MODEL_SIZE]² grid laid over [bitmap] as it is stored. */
+    /** The model's person probability on a [MODEL_SIZE]² grid over [bitmap] turned upright. */
     private fun segment(bitmap: Bitmap, rotationDegrees: Int): FloatArray {
         val upright = uprightSquare(bitmap, rotationDegrees)
         val pixels = IntArray(MODEL_SIZE * MODEL_SIZE)
@@ -212,9 +243,7 @@ class PortraitBlur @Inject constructor(
         output.rewind()
         val logits = FloatArray(pixels.size * CLASSES)
         output.asFloatBuffer().get(logits)
-        val person = PortraitMath.personProbability(logits, pixels.size, CLASSES)
-        // Back from upright to the way the pixels are stored.
-        return PortraitMath.rotateSquare(person, MODEL_SIZE, -rotationDegrees)
+        return PortraitMath.personProbability(logits, pixels.size, CLASSES)
     }
 
     /** Lays the blurred background under the sharp person at full resolution, row by row. */
@@ -261,6 +290,8 @@ class PortraitBlur @Inject constructor(
         /** Blur radius as a fraction of the photo's long side, roughly an f/1.8 portrait lens. */
         const val BLUR_RADIUS = 0.012f
         const val MIN_COVERAGE = 0.01f
+        /** A subject filling nearly the whole frame is the scene itself, with nothing behind it to blur. */
+        const val MAX_COVERAGE = 0.92f
         const val SUBJECT_TIMEOUT_SECONDS = 5L
         /** Mask values from here up count as fully sharp, and the pixel is left untouched. */
         const val KEEP = 0.998f
