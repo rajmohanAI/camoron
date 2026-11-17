@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Says when an optimised photo is ready; asked for once, and optimising works without it. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:name=".CamoronApp"
         android:allowBackup="false"
@@ -36,6 +39,27 @@
                 <data android:mimeType="image/png" />
                 <data android:mimeType="image/heic" />
                 <data android:mimeType="image/webp" />
+            </intent-filter>
+        </activity>
+
+        <!-- "Optimise with Camoron" in the share menu. -->
+        <activity
+            android:name=".optimise.OptimiseShareActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/optimise_share_label"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Camoron.Invisible">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
     </application>

@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Camoron</string>
+
+    <!-- Photo optimisation from the share menu -->
+    <string name="optimise_share_label">Optimise with Camoron</string>
+    <string name="optimise_channel">Photo optimisation</string>
+    <string name="optimise_done_title">Photo optimised</string>
+    <string name="optimise_done_text">Saved as a new photo in Pictures/Camoron. Tap to view.</string>
+    <string name="optimise_failed_title">Could not optimise this photo</string>
+    <string name="optimise_nothing">No photo to optimise</string>
+    <string name="optimise_needs_setup">Open Camoron once to finish setting up, then share the photo again</string>
+    <plurals name="optimise_started">
+        <item quantity="one">Optimising your photo. The new copy will appear in Pictures/Camoron.</item>
+        <item quantity="other">Optimising %d photos. The new copies will appear in Pictures/Camoron.</item>
+    </plurals>
 </resources>
