@@ -86,6 +86,8 @@ dependencies {
     implementation(projects.feature.camera)
     implementation(projects.feature.settings)
     implementation(projects.feature.editor)
+    implementation(projects.engine)
+    implementation(projects.domain)
 
     implementation(libs.androidx.core.ktx)
     // Applies the libraries' start-up profiles (Compose and others), so screens are compiled ahead of time.
@@ -95,6 +97,9 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.hilt.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
+    // Runs photo optimisation in the background, even after the share menu has closed.
+    implementation(libs.androidx.work.runtime)
+    implementation(libs.androidx.exifinterface)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 }
