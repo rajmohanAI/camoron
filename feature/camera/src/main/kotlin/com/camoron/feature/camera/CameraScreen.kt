@@ -260,6 +260,7 @@ fun CameraScreen(
                     },
                     onSettings = onOpenSettings,
                     modifier = Modifier.align(Alignment.TopCenter),
+                    onPanoramaDirection = viewModel::togglePanoramaDirection,
                 )
 
                 Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
@@ -273,6 +274,7 @@ fun CameraScreen(
                             histogram = { histogram.value },
                             viewModel = viewModel,
                             modifier = Modifier.padding(horizontal = 12.dp).glass(RoundedCornerShape(20.dp)),
+                            selectedPreset = state.proPreset,
                         )
                     }
                     if (state.showExposureControl && previewing != null) {
@@ -282,6 +284,11 @@ fun CameraScreen(
                             onChange = viewModel::setPortraitExposure,
                             modifier = Modifier.padding(horizontal = 12.dp).glass(RoundedCornerShape(20.dp)),
                         )
+                    }
+                    // Above the lenses and the shutter, where it can be read, not under them at the
+                    // bottom of the picture.
+                    if (state.mode == CaptureMode.GEOTAG) {
+                        GeoTagCard(state, Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
                     }
                     if (state.showApertureControl) {
                         ApertureControl(
@@ -423,7 +430,6 @@ private fun PreviewArea(
         }
         state.countdown?.let { CountdownOverlay(it) }
         if (state.nightCapturing) HoldStillOverlay()
-        if (state.slowMotionUnavailable) PreviewNote(stringResource(R.string.slow_motion_unavailable))
         if (state.highResUnavailable) PreviewNote(stringResource(R.string.highres_unavailable))
         if (state.dualUnavailable) PreviewNote(stringResource(R.string.dual_unavailable))
         if (state.highResActive) {
@@ -431,8 +437,7 @@ private fun PreviewArea(
                 PreviewNote(stringResource(R.string.highres_note, size.megapixels.roundToInt()))
             }
         }
-        if (state.mode == CaptureMode.GEOTAG) GeoTagCard(state, Modifier.align(Alignment.BottomCenter).padding(12.dp))
-        if (state.mode == CaptureMode.PANORAMA) PanoramaHint(state.panoramaFrames)
+        if (state.mode == CaptureMode.PANORAMA) PanoramaHint(state.panoramaFrames, state.panoramaVertical)
         state.panoramaGuide?.let { PanoramaGuideOverlay(it) }
     }
 }
@@ -471,7 +476,10 @@ private fun CameraPreview(
     val overlayAlpha = remember { Animatable(0f) }
     val portraitRun by rememberUpdatedState(portrait)
     val portraitOn = portrait != null && live
-    LaunchedEffect(portraitOn, portraitKey, textureView) {
+    // Read inside the loop rather than restarting it: restarting on every slider move cleared the
+    // blur, so dragging the aperture showed a sharp picture until the finger stopped.
+    val currentKey by rememberUpdatedState(portraitKey)
+    LaunchedEffect(portraitOn, textureView) {
         val view = textureView
         if (!portraitOn || view == null) {
             overlayAlpha.snapTo(0f)
@@ -496,6 +504,7 @@ private fun CameraPreview(
             }
             while (true) {
                 val started = System.nanoTime()
+                val keyUsed = currentKey
                 val frame = view.portraitFrame()
                 val run = portraitRun
                 if (frame != null && run != null) {
@@ -512,7 +521,14 @@ private fun CameraPreview(
                     }
                 }
                 val spentMs = (System.nanoTime() - started) / 1_000_000
-                delay((PORTRAIT_FRAME_MS - spentMs).coerceAtLeast(PORTRAIT_MIN_GAP_MS))
+                // Wait for the next frame, but redo the blur straight away when the aperture or the
+                // sharp point changes, so the background follows the slider as it moves.
+                val key = keyUsed
+                var waitMs = (PORTRAIT_FRAME_MS - spentMs).coerceAtLeast(PORTRAIT_MIN_GAP_MS)
+                while (waitMs > 0 && currentKey == key) {
+                    delay(PORTRAIT_MIN_GAP_MS)
+                    waitMs -= PORTRAIT_MIN_GAP_MS
+                }
             }
         }
     }
@@ -587,7 +603,7 @@ private const val PORTRAIT_MOTION_CHECK_MS = 60L
 private const val PORTRAIT_FADE_IN_MS = 180
 private const val PORTRAIT_FADE_OUT_MS = 90
 /** Average brightness change (0 to 255) between two small frames that counts as the picture moving. */
-private const val PORTRAIT_MOTION_LIMIT = 7f
+private const val PORTRAIT_MOTION_LIMIT = 12f
 
 /** Whether two same-sized small frames differ enough that a blur made from [before] no longer fits [after]. */
 private fun pictureMoved(before: IntArray, after: IntArray): Boolean {

@@ -1,6 +1,7 @@
 package com.camoron.domain.repository
 
 import com.camoron.domain.model.GeoPoint
+import kotlin.math.asin
 
 /** Which way the phone is pointing: for sweeping a panorama, and for Sky view. */
 interface RotationSensor {
@@ -19,6 +20,18 @@ interface RotationSensor {
      * changes in it matter: zero needn't be north.
      */
     fun cameraYaw(front: Boolean): Float?
+
+    /**
+     * How far (radians) the back camera, or the front one when [front], points above the horizon:
+     * 0 level, positive tilted up; null until the sensor has reported. For vertical panoramas.
+     */
+    fun cameraPitch(front: Boolean): Float? {
+        val m = orientation() ?: return null
+        // The camera looks along the phone's −Z (back) or +Z (front); its "up" part is the third
+        // column's last entry.
+        val up = (if (front) 1f else -1f) * m[8]
+        return asin(up.coerceIn(-1f, 1f))
+    }
 
     /**
      * The phone's latest rotation, as a 3×3 row-major matrix turning phone axes (x right, y up, z out

@@ -58,7 +58,7 @@ class CaptureAndSavePhotoTest {
             return frames.first().withBytes(byteArrayOf(7))
         }
 
-        override suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?) =
+        override suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?, vertical: Boolean) =
             frames.first().withBytes(byteArrayOf(5))
 
         override suspend fun developRaw(burst: RawBurst): CapturedImage {

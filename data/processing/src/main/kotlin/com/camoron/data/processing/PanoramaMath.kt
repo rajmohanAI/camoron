@@ -19,6 +19,33 @@ internal object PanoramaMath {
     /** An upright ARGB image; alpha 0 marks pixels with nothing in them. */
     class Frame(val pixels: IntArray, val width: Int, val height: Int)
 
+    /** [frame] turned a quarter turn clockwise: its top becomes its right side. */
+    fun rotateClockwise(frame: Frame): Frame {
+        val w = frame.width
+        val h = frame.height
+        val out = IntArray(w * h)
+        // Source (x, y) lands at (h − 1 − y, x) in the h-wide result.
+        for (y in 0 until h) {
+            val row = y * w
+            val outX = h - 1 - y
+            for (x in 0 until w) out[x * h + outX] = frame.pixels[row + x]
+        }
+        return Frame(out, h, w)
+    }
+
+    /** [frame] turned a quarter turn anticlockwise, undoing [rotateClockwise]. */
+    fun rotateCounterClockwise(frame: Frame): Frame {
+        val w = frame.width
+        val h = frame.height
+        val out = IntArray(w * h)
+        // Source (x, y) lands at (y, w − 1 − x) in the h-wide result.
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) out[(w - 1 - x) * h + y] = frame.pixels[row + x]
+        }
+        return Frame(out, h, w)
+    }
+
     /** Focal length in pixels for a [width]×[height] frame from its 35 mm-equivalent focal length. */
     fun focalPixels(width: Int, height: Int, focalLength35mm: Float?): Float =
         (focalLength35mm ?: DEFAULT_FOCAL_35MM) / FULL_FRAME_DIAGONAL_MM * hypot(width.toFloat(), height.toFloat())

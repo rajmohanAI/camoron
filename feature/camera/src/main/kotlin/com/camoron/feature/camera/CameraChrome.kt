@@ -67,6 +67,8 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.TimerOff
 import androidx.compose.material3.CircularProgressIndicator
@@ -129,6 +131,7 @@ internal fun TopMenu(
     onGeotag: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    onPanoramaDirection: () -> Unit = {},
 ) {
     val settings = state.cameraSettings
     Row(
@@ -206,6 +209,16 @@ internal fun TopMenu(
             val label = stringResource(if (uhd) R.string.resolution_uhd else R.string.resolution_fhd)
             TopMenuButton(stringResource(R.string.cd_resolution), onResolution, label) {
                 TextGlyph(label, if (uhd) MODE_SELECTED else Color.White)
+            }
+        }
+        if (state.mode == CaptureMode.PANORAMA && !state.panoramaSweeping) {
+            val vertical = state.panoramaVertical
+            TopMenuButton(
+                stringResource(R.string.cd_panorama_direction),
+                onPanoramaDirection,
+                stringResource(if (vertical) R.string.panorama_vertical else R.string.panorama_horizontal),
+            ) {
+                MenuIcon(if (vertical) Icons.Filled.SwapVert else Icons.Filled.SwapHoriz, if (vertical) MODE_SELECTED else Color.White)
             }
         }
         if (state.mode == CaptureMode.TIMELAPSE && !state.recording) {
