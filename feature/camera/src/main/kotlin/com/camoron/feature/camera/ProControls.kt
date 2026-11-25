@@ -250,7 +250,9 @@ internal fun ExposureControl(
 }
 
 /**
- * Portrait's background blur, set like a lens opening: f/1.0 blurs the most, f/8 barely at all.
+ * Portrait's background blur: Less on the left, More on the right. Underneath it is still an
+ * f-number (f/8 barely blurs, f/1.0 blurs the most), as the photo's blur is worked out from one,
+ * but the phone's lens never changes, so the slider just says how much blur.
  * Tap the preview to choose what stays sharp.
  */
 @Composable
@@ -263,28 +265,26 @@ internal fun ApertureControl(
     val stops = PhotoAdjustments.APERTURES
     val widest = stops.first()
     val narrowest = stops.last()
-    // f-numbers are a lens ring's log scale, so the slider moves through them evenly and without
-    // steps: it glides like a real aperture ring instead of jumping between a few positions.
-    val position = (ln(aperture.coerceIn(widest, narrowest) / widest) / ln(narrowest / widest)).coerceIn(0f, 1f)
+    // Evenly through the f-numbers' log scale and without steps, so it glides; 1 is the most blur.
+    val blur = 1f - (ln(aperture.coerceIn(widest, narrowest) / widest) / ln(narrowest / widest)).coerceIn(0f, 1f)
     Column(modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(Icons.Filled.BlurOn, contentDescription = null, modifier = Modifier.size(20.dp))
-            // Left is the strongest blur, so the slider reads "more blur" towards the left like a lens ring.
+            Text(description, style = MaterialTheme.typography.labelMedium)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.blur_less), style = MaterialTheme.typography.labelSmall)
             Slider(
-                value = position,
-                onValueChange = { onChange(widest * (narrowest / widest).pow(it.coerceIn(0f, 1f))) },
+                value = blur,
+                onValueChange = { onChange(widest * (narrowest / widest).pow(1f - it.coerceIn(0f, 1f))) },
                 modifier = Modifier.weight(1f).semantics { contentDescription = description },
             )
-            Text(
-                "f/" + formatAperture(aperture),
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.width(44.dp),
-            )
+            Text(stringResource(R.string.blur_more), style = MaterialTheme.typography.labelSmall)
         }
         Text(
             stringResource(R.string.portrait_tap_to_focus),
             style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(start = 28.dp, bottom = 6.dp),
+            modifier = Modifier.padding(bottom = 6.dp),
         )
     }
 }
@@ -299,12 +299,6 @@ private fun ProPreset.labels(): Pair<Int, Int> = when (this) {
     ProPreset.LANDSCAPE -> R.string.preset_landscape to R.string.preset_landscape
     ProPreset.SPORTS -> R.string.preset_sports to R.string.preset_sports
     ProPreset.NIGHT -> R.string.preset_night to R.string.preset_night
-}
-
-/** f/1.8, f/4, f/11: one decimal below ten, whole numbers above, as lenses mark them. */
-internal fun formatAperture(aperture: Float): String {
-    val rounded = (aperture * 10f).roundToInt() / 10f
-    return if (rounded >= 10f || rounded % 1f == 0f) rounded.roundToInt().toString() else rounded.toString()
 }
 
 @Composable

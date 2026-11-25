@@ -16,7 +16,9 @@
     <string name="qr_copy">Copy</string>
     <string name="qr_copied">Copied</string>
     <string name="cd_background_blur">Background blur</string>
-    <string name="portrait_tap_to_focus">More blur to the left. Tap the picture to choose what stays sharp.</string>
+    <string name="portrait_tap_to_focus">Tap the picture to choose what stays sharp.</string>
+    <string name="blur_less">Less</string>
+    <string name="blur_more">More</string>
     <string name="highres_unavailable">This camera has no bigger photos to give, so High-Res takes normal photos here</string>
     <string name="dual_unavailable">This phone won\'t run the front and back cameras together here, so Dual takes normal photos</string>
     <string name="highres_note">%1$d MP photos · hold steady</string>
