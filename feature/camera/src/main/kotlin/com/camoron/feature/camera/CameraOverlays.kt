@@ -133,11 +133,11 @@ internal fun HoldStillOverlay() {
  * while the phone turns.
  */
 @Composable
-internal fun PanoramaHint(frames: Int?) {
+internal fun PanoramaHint(frames: Int?, vertical: Boolean = false) {
     Box(Modifier.fillMaxSize().padding(top = 56.dp), contentAlignment = Alignment.TopCenter) {
         Text(
             if (frames == null) {
-                stringResource(R.string.panorama_start)
+                stringResource(if (vertical) R.string.panorama_start_vertical else R.string.panorama_start)
             } else {
                 pluralStringResource(R.plurals.panorama_turning, frames, frames)
             },

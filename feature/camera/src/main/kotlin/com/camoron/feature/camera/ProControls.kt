@@ -44,8 +44,11 @@ import com.camoron.domain.model.LiveExposure
 import com.camoron.domain.model.ManualControl
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.PhotoAdjustments
+import com.camoron.domain.model.ProPreset
 import com.camoron.domain.model.WhiteBalance
 import com.camoron.domain.model.WhiteBalancePreset
+import kotlin.math.ln
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /** The Pro dials there are; one at a time is open, so the preview stays clear. */
@@ -69,6 +72,7 @@ internal fun ProControls(
     histogram: () -> Histogram?,
     viewModel: CameraViewModel,
     modifier: Modifier = Modifier,
+    selectedPreset: ProPreset? = null,
 ) {
     val unsupported = stringResource(R.string.unsupported_on_camera)
     val auto = stringResource(R.string.control_auto)
@@ -100,6 +104,22 @@ internal fun ProControls(
     }
 
     Column(modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        // Like a camera's mode dial: Auto, P, S, M and scenes, each setting the dials below for you.
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            ProPreset.entries.forEach { preset ->
+                val (short, long) = preset.labels()
+                val name = stringResource(long)
+                FilterChip(
+                    selected = selectedPreset == preset,
+                    onClick = { viewModel.selectProPreset(preset) },
+                    label = { Text(stringResource(short), maxLines = 1) },
+                    modifier = Modifier.semantics { contentDescription = name },
+                )
+            }
+        }
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -230,7 +250,9 @@ internal fun ExposureControl(
 }
 
 /**
- * Portrait's background blur, set like a lens opening: f/1.0 blurs the most, f/8 barely at all.
+ * Portrait's background blur: Less on the left, More on the right. Underneath it is still an
+ * f-number (f/8 barely blurs, f/1.0 blurs the most), as the photo's blur is worked out from one,
+ * but the phone's lens never changes, so the slider just says how much blur.
  * Tap the preview to choose what stays sharp.
  */
 @Composable
@@ -241,30 +263,42 @@ internal fun ApertureControl(
 ) {
     val description = stringResource(R.string.cd_background_blur)
     val stops = PhotoAdjustments.APERTURES
-    val index = stops.indexOfFirst { it >= aperture - 0.01f }.coerceAtLeast(0)
+    val widest = stops.first()
+    val narrowest = stops.last()
+    // Evenly through the f-numbers' log scale and without steps, so it glides; 1 is the most blur.
+    val blur = 1f - (ln(aperture.coerceIn(widest, narrowest) / widest) / ln(narrowest / widest)).coerceIn(0f, 1f)
     Column(modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(Icons.Filled.BlurOn, contentDescription = null, modifier = Modifier.size(20.dp))
-            // Left is the strongest blur, so the slider reads "more blur" towards the left like a lens ring.
+            Text(description, style = MaterialTheme.typography.labelMedium)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.blur_less), style = MaterialTheme.typography.labelSmall)
             Slider(
-                value = index.toFloat(),
-                onValueChange = { onChange(stops[it.roundToInt().coerceIn(0, stops.lastIndex)]) },
-                valueRange = 0f..stops.lastIndex.toFloat(),
-                steps = (stops.size - 2).coerceAtLeast(0),
+                value = blur,
+                onValueChange = { onChange(widest * (narrowest / widest).pow(1f - it.coerceIn(0f, 1f))) },
                 modifier = Modifier.weight(1f).semantics { contentDescription = description },
             )
-            Text(
-                "f/" + if (aperture % 1f == 0f) aperture.toInt().toString() else aperture.toString(),
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.width(44.dp),
-            )
+            Text(stringResource(R.string.blur_more), style = MaterialTheme.typography.labelSmall)
         }
         Text(
             stringResource(R.string.portrait_tap_to_focus),
             style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(start = 28.dp, bottom = 6.dp),
+            modifier = Modifier.padding(bottom = 6.dp),
         )
     }
+}
+
+/** A preset's chip text (short, like a mode dial's letters) and its spoken name. */
+private fun ProPreset.labels(): Pair<Int, Int> = when (this) {
+    ProPreset.AUTO -> R.string.preset_auto to R.string.preset_auto_name
+    ProPreset.PROGRAM -> R.string.preset_program to R.string.preset_program_name
+    ProPreset.SHUTTER -> R.string.preset_shutter to R.string.preset_shutter_name
+    ProPreset.MANUAL -> R.string.preset_manual to R.string.preset_manual_name
+    ProPreset.PORTRAIT -> R.string.preset_portrait to R.string.preset_portrait
+    ProPreset.LANDSCAPE -> R.string.preset_landscape to R.string.preset_landscape
+    ProPreset.SPORTS -> R.string.preset_sports to R.string.preset_sports
+    ProPreset.NIGHT -> R.string.preset_night to R.string.preset_night
 }
 
 @Composable

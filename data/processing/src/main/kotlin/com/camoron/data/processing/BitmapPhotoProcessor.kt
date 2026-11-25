@@ -191,14 +191,19 @@ class BitmapPhotoProcessor @Inject constructor(
         else -> ExifInterface.ORIENTATION_NORMAL
     }
 
-    override suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?): CapturedImage? {
+    override suspend fun stitchPanorama(
+        frames: List<CapturedImage>,
+        yaws: List<Float>,
+        focalLength35mm: Float?,
+        vertical: Boolean,
+    ): CapturedImage? {
         if (frames.size < 2) return null
         return withContext(processing) {
             // Full size first; if memory runs out, try again with frames half as large.
             for (longSide in listOf(PANORAMA_LONG_SIDE, PANORAMA_LONG_SIDE / 2)) {
                 try {
                     return@withContext DiagnosticLog.timed(TAG, "Stitching ${frames.size} panorama frames at $longSide px") {
-                        stitch(frames, yaws, focalLength35mm, longSide)
+                        stitch(frames, yaws, focalLength35mm, longSide, vertical)
                     }
                 } catch (e: OutOfMemoryError) {
                     DiagnosticLog.record(TAG, "Not enough memory to stitch the panorama at $longSide px", e)
@@ -208,16 +213,26 @@ class BitmapPhotoProcessor @Inject constructor(
         }
     }
 
-    private fun stitch(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?, longSide: Int): CapturedImage? {
+    private fun stitch(
+        frames: List<CapturedImage>,
+        yaws: List<Float>,
+        focalLength35mm: Float?,
+        longSide: Int,
+        vertical: Boolean,
+    ): CapturedImage? {
         var focal = 0f
         // Each frame is turned upright, shrunk and projected onto the cylinder straight away, so only
-        // the projected frames are held.
+        // the projected frames are held. A vertical sweep is a sideways one turned on its side: each
+        // frame is laid on its side (its top to the right, so tilting up is turning right), stitched
+        // as usual, and the panorama stood back up.
         val warped = frames.map { image ->
-            val frame = uprightFrame(image.bytes, longSide)
+            val upright = uprightFrame(image.bytes, longSide)
+            val frame = if (vertical) PanoramaMath.rotateClockwise(upright) else upright
             if (focal == 0f) focal = PanoramaMath.focalPixels(frame.width, frame.height, focalLength35mm)
             PanoramaMath.warp(frame, focal)
         }
-        val pano = PanoramaMath.stitchWarped(warped, yaws, focal) ?: return null
+        val stitched = PanoramaMath.stitchWarped(warped, yaws, focal) ?: return null
+        val pano = if (vertical) PanoramaMath.rotateCounterClockwise(stitched) else stitched
         val bitmap = Bitmap.createBitmap(pano.pixels, pano.width, pano.height, Bitmap.Config.ARGB_8888)
         try {
             val bytes = ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }.toByteArray()

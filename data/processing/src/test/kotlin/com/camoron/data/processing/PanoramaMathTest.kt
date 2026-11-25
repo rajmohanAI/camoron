@@ -8,6 +8,21 @@ import kotlin.math.sqrt
 
 class PanoramaMathTest {
 
+    @Test
+    fun `a quarter turn clockwise puts the top on the right, and turning back restores it`() {
+        // 3 wide, 2 tall: 1 2 3 / 4 5 6
+        val frame = PanoramaMath.Frame(intArrayOf(1, 2, 3, 4, 5, 6), 3, 2)
+        val turned = PanoramaMath.rotateClockwise(frame)
+        assertThat(turned.width).isEqualTo(2)
+        assertThat(turned.height).isEqualTo(3)
+        // Clockwise: 4 1 / 5 2 / 6 3, so the old top row (1 2 3) is now the right column.
+        assertThat(turned.pixels.toList()).containsExactly(4, 1, 5, 2, 6, 3).inOrder()
+        val back = PanoramaMath.rotateCounterClockwise(turned)
+        assertThat(back.width).isEqualTo(3)
+        assertThat(back.height).isEqualTo(2)
+        assertThat(back.pixels.toList()).containsExactly(1, 2, 3, 4, 5, 6).inOrder()
+    }
+
     private val f = 300f
     private val frameWidth = 240
     private val frameHeight = 320

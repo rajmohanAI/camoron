@@ -16,11 +16,12 @@
     <string name="qr_copy">Copy</string>
     <string name="qr_copied">Copied</string>
     <string name="cd_background_blur">Background blur</string>
-    <string name="portrait_tap_to_focus">More blur to the left. Tap the picture to choose what stays sharp.</string>
+    <string name="portrait_tap_to_focus">Tap the picture to choose what stays sharp.</string>
+    <string name="blur_less">Less</string>
+    <string name="blur_more">More</string>
     <string name="highres_unavailable">This camera has no bigger photos to give, so High-Res takes normal photos here</string>
     <string name="dual_unavailable">This phone won\'t run the front and back cameras together here, so Dual takes normal photos</string>
     <string name="highres_note">%1$d MP photos · hold steady</string>
-    <string name="slow_motion_unavailable">This phone keeps high-speed video for its own camera app, so Slo-mo here plays 2× slower</string>
     <string name="geotag_finding">Finding your location…</string>
     <string name="geotag_no_permission">Allow location to print where photos are taken</string>
     <string name="mode_slow_motion">Slo-mo</string>
@@ -45,6 +46,22 @@
         <item>NW</item>
     </string-array>
     <string name="panorama_start">Tap the shutter, then turn slowly</string>
+    <string name="preset_auto">Auto</string>
+    <string name="preset_auto_name">Auto: everything automatic</string>
+    <string name="preset_program">P</string>
+    <string name="preset_program_name">P, program: automatic exposure, your exposure and white balance</string>
+    <string name="preset_shutter">S</string>
+    <string name="preset_shutter_name">S, shutter priority: starts at 1/250 s</string>
+    <string name="preset_manual">M</string>
+    <string name="preset_manual_name">M, manual: holds the current ISO and shutter for you to set</string>
+    <string name="preset_portrait">Portrait</string>
+    <string name="preset_landscape">Landscape</string>
+    <string name="preset_sports">Sports</string>
+    <string name="preset_night">Night</string>
+    <string name="panorama_start_vertical">Tap the shutter, then tilt slowly up or down</string>
+    <string name="cd_panorama_direction">Panorama direction</string>
+    <string name="panorama_horizontal">Sideways</string>
+    <string name="panorama_vertical">Up and down</string>
     <plurals name="panorama_turning">
         <item quantity="one">Turn slowly so the ring meets the dot · %d photo</item>
         <item quantity="other">Turn slowly so the ring meets the dot · %d photos</item>

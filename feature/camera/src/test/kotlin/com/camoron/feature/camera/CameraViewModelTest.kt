@@ -103,7 +103,7 @@ class CameraViewModelTest {
             return burst.preview
         }
         val stitched = mutableListOf<List<Float>>()
-        override suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?): CapturedImage {
+        override suspend fun stitchPanorama(frames: List<CapturedImage>, yaws: List<Float>, focalLength35mm: Float?, vertical: Boolean): CapturedImage {
             stitched += yaws
             return frames.first()
         }

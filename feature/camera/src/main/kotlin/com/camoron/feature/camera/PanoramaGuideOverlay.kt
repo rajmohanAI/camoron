@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,35 +29,45 @@ import androidx.compose.runtime.CompositionLocalProvider
 import com.camoron.domain.model.PanoramaPlan
 
 /**
- * The panorama guide while sweeping: a level line across the middle with the current heading as a
- * dot in the centre, and a ring for the next frame that slides towards it as the phone turns, with
+ * The panorama guide while sweeping: a level line across the middle (or, for a vertical sweep, a
+ * line up the middle) with the current heading as a dot in the centre, and a ring for the next frame that slides towards it as the phone turns, with
  * dots for the frames after it. Along the bottom, a strip shows the frames taken so far.
  */
 @Composable
 internal fun PanoramaGuideOverlay(guide: PanoramaGuide, modifier: Modifier = Modifier) {
     Box(modifier.fillMaxSize()) {
-        Canvas(Modifier.fillMaxWidth().height(64.dp).align(Alignment.Center)) {
-            val y = size.height / 2
-            val centre = size.width / 2
-            val spacing = size.width * SPACING
+        val vertical = guide.vertical
+        val track = if (vertical) Modifier.fillMaxHeight().width(64.dp) else Modifier.fillMaxWidth().height(64.dp)
+        Canvas(track.align(Alignment.Center)) {
+            // Positions along the sweep: sideways left to right, or vertically with "up" at the top.
+            val length = if (vertical) size.height else size.width
+            val across = (if (vertical) size.width else size.height) / 2
+            fun at(along: Float) = if (vertical) Offset(across, length - along) else Offset(along, across)
+            val centre = length / 2
+            val spacing = length * SPACING
             val ring = 15.dp.toPx()
             // Before a direction is chosen, both ways are shown; the side the phone leans to leads.
             val ways = if (guide.direction != 0f) listOf(guide.direction) else listOf(1f, -1f)
-            drawRect(Color.Black.copy(alpha = 0.35f), topLeft = Offset(0f, y - 14.dp.toPx()), size = Size(size.width, 28.dp.toPx()))
+            val band = 28.dp.toPx()
+            if (vertical) {
+                drawRect(Color.Black.copy(alpha = 0.35f), topLeft = Offset(across - band / 2, 0f), size = Size(band, length))
+            } else {
+                drawRect(Color.Black.copy(alpha = 0.35f), topLeft = Offset(0f, across - band / 2), size = Size(length, band))
+            }
             for (way in ways) {
                 val lead = guide.direction != 0f || way == guide.leaning
                 val moved = if (lead) guide.progress else 0f
                 val target = centre + way * spacing * (1f - moved)
-                drawLine(Color.White.copy(alpha = 0.8f), Offset(centre, y), Offset(if (way > 0) size.width else 0f, y), strokeWidth = 2.dp.toPx())
+                drawLine(Color.White.copy(alpha = 0.8f), at(centre), at(if (way > 0) length else 0f), strokeWidth = 2.dp.toPx())
                 for (k in 1 until DOTS) {
-                    val x = target + way * spacing * k
-                    if (x in 0f..size.width) drawCircle(Color.White, radius = 4.dp.toPx(), center = Offset(x, y))
+                    val p = target + way * spacing * k
+                    if (p in 0f..length) drawCircle(Color.White, radius = 4.dp.toPx(), center = at(p))
                 }
-                drawCircle(Glass.Accent.copy(alpha = if (lead) 1f else 0.5f), radius = ring, center = Offset(target, y), style = Stroke(width = 6.dp.toPx()))
+                drawCircle(Glass.Accent.copy(alpha = if (lead) 1f else 0.5f), radius = ring, center = at(target), style = Stroke(width = 6.dp.toPx()))
             }
             // Where the phone points now.
-            drawCircle(Color.White, radius = 9.dp.toPx(), center = Offset(centre, y))
-            drawCircle(Glass.Accent, radius = 5.dp.toPx(), center = Offset(centre, y))
+            drawCircle(Color.White, radius = 9.dp.toPx(), center = at(centre))
+            drawCircle(Glass.Accent, radius = 5.dp.toPx(), center = at(centre))
         }
 
         // The panorama so far, growing the way the phone turns.

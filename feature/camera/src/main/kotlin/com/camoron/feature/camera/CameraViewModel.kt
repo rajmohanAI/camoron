@@ -27,6 +27,7 @@ import com.camoron.domain.model.LookMatrix
 import com.camoron.domain.model.ManualSettings
 import com.camoron.domain.model.NightSetting
 import com.camoron.domain.model.PanoramaPlan
+import com.camoron.domain.model.ProPreset
 import com.camoron.domain.model.PhotoAdjustments
 import com.camoron.domain.model.PixelSize
 import com.camoron.domain.model.SkyCatalogue
@@ -161,6 +162,10 @@ data class CameraUiState(
     val panoramaFrames: Int? = null,
     /** Where the sweep is heading, for the on-screen guide; null when no panorama is being swept. */
     val panoramaGuide: PanoramaGuide? = null,
+    /** Pro mode's ready-made starting point last picked, if any. */
+    val proPreset: ProPreset? = null,
+    /** Panorama sweeps up or down (tilting the phone) instead of sideways. */
+    val panoramaVertical: Boolean = false,
     /** System.nanoTime() when the current recording started, or null when not recording. */
     val recordingStartedNanos: Long? = null,
     val event: CameraEvent? = null,
@@ -177,11 +182,6 @@ data class CameraUiState(
     val showResolutionControl: Boolean
         get() = mode.isVideo && mode != CaptureMode.SLOW_MOTION &&
             selectedCamera?.videoResolutions?.contains(VideoResolution.UHD) == true
-
-    /** Slo-mo is open, but the phone keeps high-speed filming for its own camera app. */
-    val slowMotionUnavailable: Boolean
-        get() = mode == CaptureMode.SLOW_MOTION &&
-            (cameraState as? CameraState.Previewing)?.capabilities?.supportsHighSpeedVideo == false
 
     /** Timer and aspect ratio belong to photos; a panorama takes its own shape. */
     val showPhotoControls: Boolean get() = !mode.isVideo && mode != CaptureMode.PANORAMA
@@ -813,6 +813,13 @@ class CameraViewModel @Inject constructor(
         if (_uiState.value.mode == CaptureMode.PRO) applySettings(next)
     }
 
+    /** Pro mode: sets the dials from a ready-made preset, matched to the scene in view now. */
+    fun selectProPreset(preset: ProPreset) {
+        val previewing = _uiState.value.cameraState as? CameraState.Previewing ?: return
+        _uiState.update { it.copy(proPreset = preset) }
+        updateSettings { preset.settings(previewing.capabilities, previewing.liveExposure, it) }
+    }
+
     fun setIso(iso: Int?) = updateSettings { it.copy(iso = iso) }
     fun setShutter(exposureNs: Long?) = updateSettings { it.copy(exposureTimeNs = exposureNs) }
     fun setExposureCompensation(steps: Int) = updateSettings { it.copy(exposureCompensation = steps) }
@@ -887,6 +894,12 @@ class CameraViewModel @Inject constructor(
 
     fun eventConsumed() = _uiState.update { it.copy(event = null) }
 
+    /** Panorama: sideways or up-and-down; not while a sweep is running. */
+    fun togglePanoramaDirection() {
+        if (_uiState.value.panoramaSweeping) return
+        _uiState.update { it.copy(panoramaVertical = !it.panoramaVertical) }
+    }
+
     /** Panorama: the first tap starts the sweep, the next one (or the last frame) finishes it. */
     private fun togglePanorama() {
         val state = _uiState.value
@@ -902,7 +915,7 @@ class CameraViewModel @Inject constructor(
             return
         }
         panoramaStop = false
-        _uiState.update { it.copy(panoramaFrames = 0, panoramaGuide = PanoramaGuide()) }
+        _uiState.update { it.copy(panoramaFrames = 0, panoramaGuide = PanoramaGuide(vertical = state.panoramaVertical)) }
         viewModelScope.launch { sweepPanorama(state, selected) }
     }
 
@@ -913,18 +926,23 @@ class CameraViewModel @Inject constructor(
      */
     private suspend fun sweepPanorama(state: CameraUiState, selected: CameraCapabilities) {
         val front = selected.lensFacing == LensFacing.FRONT
+        val vertical = state.panoramaVertical
         val frames = mutableListOf<CapturedImage>()
         val yaws = mutableListOf<Float>()
+        // Sideways, the frames follow the turn (yaw); vertically, the tilt (pitch).
+        fun heading(): Float? = if (vertical) rotation.cameraPitch(front) else rotation.cameraYaw(front)
+        val upright = deviceRotation % 180 == 0
         val step = PanoramaPlan.step(
             selected.equivalentFocalLengthMm,
             state.zoomRatio,
-            portrait = deviceRotation % 180 == 0,
+            // A vertical sweep steps across the frame's height, so the frame counts the other way round.
+            portrait = if (vertical) !upright else upright,
             longOverShort = state.cameraSettings.aspectRatio.stillAspect.ratio.toFloat(),
         )
         val started = SystemClock.elapsedRealtime()
         try {
             camera.lockExposure(true)
-            var last = awaitYaw(front) ?: run {
+            var last = awaitHeading(::heading) ?: run {
                 DiagnosticLog.info(TAG, "The rotation sensor didn't report")
                 return
             }
@@ -942,7 +960,7 @@ class CameraViewModel @Inject constructor(
                     addPanoramaThumbnail(frames.last(), state.cameraSettings.selfieMirror && front)
                 }
                 delay(PANORAMA_POLL_MS)
-                val now = rotation.cameraYaw(front) ?: continue
+                val now = heading() ?: continue
                 turned += PanoramaPlan.wrap(now - last)
                 last = now
                 if (direction == 0f && abs(turned - shotAt) >= step) direction = sign(turned - shotAt)
@@ -950,7 +968,7 @@ class CameraViewModel @Inject constructor(
                 val progress = if (direction == 0f) abs(turned - shotAt) / step else (turned - shotAt) * direction / step
                 val leaning = if (direction != 0f) direction else sign(turned - shotAt)
                 _uiState.update { s ->
-                    val guide = s.panoramaGuide ?: PanoramaGuide()
+                    val guide = s.panoramaGuide ?: PanoramaGuide(vertical = vertical)
                     s.copy(panoramaGuide = guide.copy(direction = direction, leaning = leaning, progress = progress.coerceIn(0f, 1f)))
                 }
             }
@@ -977,7 +995,7 @@ class CameraViewModel @Inject constructor(
             location = if (state.cameraSettings.geotag) location.current() else null,
         )
         val focal = selected.equivalentFocalLengthMm?.let { it * state.zoomRatio }
-        val uri = runCatching { captureAndSave.savePanorama(frames, yaws, focal, adjustments) }
+        val uri = runCatching { captureAndSave.savePanorama(frames, yaws, focal, adjustments, vertical) }
             .onFailure { DiagnosticLog.record(TAG, "Couldn't stitch the panorama", it) }
             .getOrNull()
         if (uri != null) DiagnosticLog.info(TAG, "Panorama saved ${SystemClock.elapsedRealtime() - started} ms after the first tap")
@@ -992,13 +1010,13 @@ class CameraViewModel @Inject constructor(
     }
 
     /** The first heading the sensor reports, or null if it says nothing for a while. */
-    private suspend fun awaitYaw(front: Boolean): Float? = withTimeoutOrNull(SENSOR_WAIT_MS) {
-        var yaw = rotation.cameraYaw(front)
-        while (yaw == null) {
+    private suspend fun awaitHeading(read: () -> Float?): Float? = withTimeoutOrNull(SENSOR_WAIT_MS) {
+        var heading = read()
+        while (heading == null) {
             delay(PANORAMA_POLL_MS)
-            yaw = rotation.cameraYaw(front)
+            heading = read()
         }
-        yaw
+        heading
     }
 
     private fun toggleRecording() {
@@ -1404,6 +1422,8 @@ class ScannedPage(val jpeg: ByteArray, val width: Int, val height: Int)
  * (0 to 1), and small copies of the frames taken so far.
  */
 data class PanoramaGuide(
+    /** The sweep goes up (+1) or down (−1) rather than right or left. */
+    val vertical: Boolean = false,
     val direction: Float = 0f,
     val leaning: Float = 0f,
     val progress: Float = 0f,
