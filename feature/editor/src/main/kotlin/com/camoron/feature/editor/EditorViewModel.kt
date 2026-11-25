@@ -126,9 +126,11 @@ class EditorViewModel @Inject constructor(
     /** The crop rectangle when a straighten drag began, so repeated adjustments don't keep shrinking it. */
     private var straightenBase: CropRectF? = null
 
-    fun open(uri: String) {
+    /** Opens [uri] for editing, on [startTab] when a tool was chosen first (from AI tools). */
+    fun open(uri: String, startTab: EditorTab? = null) {
         if (openedUri == uri) return
         openedUri = uri
+        startTab?.let { tab -> _state.update { it.copy(tab = tab) } }
         viewModelScope.launch {
             try {
                 val image = library.read(uri)

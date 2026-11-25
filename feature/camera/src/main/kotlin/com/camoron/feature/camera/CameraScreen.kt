@@ -735,7 +735,8 @@ private fun BottomBar(
             .fillMaxWidth()
             // See-through, so a full-screen preview carries on behind the shutter like the phone's own camera.
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f))))
-            .padding(top = 8.dp, bottom = 16.dp),
+            // The extra room at the bottom holds the folded tab bar's handle, clear of the shutter.
+            .padding(top = 8.dp, bottom = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {

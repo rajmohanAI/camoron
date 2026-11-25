@@ -121,4 +121,14 @@
     <string name="aspect_4_3">4:3</string>
     <string name="aspect_9_16">9:16</string>
     <string name="aspect_16_9">16:9</string>
+    <string name="edit_home_hint">Choose a photo to edit</string>
+    <string name="all_photos">All photos</string>
+    <string name="ai_tools">AI tools</string>
+    <string name="ai_tools_hint">Pick a tool, then a photo</string>
+    <string name="ai_eraser">Magic eraser</string>
+    <string name="ai_eraser_desc">Remove people and objects you don\'t want</string>
+    <string name="ai_try_on">Virtual try-on</string>
+    <string name="ai_try_on_desc">Glasses, makeup, hairstyles, beards and more</string>
+    <string name="ai_optimise">Optimise</string>
+    <string name="ai_optimise_desc">A cleaner, sharper copy of any photo</string>
 </resources>

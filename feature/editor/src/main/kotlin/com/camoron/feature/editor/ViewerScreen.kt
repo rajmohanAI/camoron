@@ -248,7 +248,7 @@ private fun share(context: Context, uri: String) {
  * Hands the photo to Camoron's photo optimisation (the app's "Optimise with Camoron" share entry),
  * which saves a cleaner copy in Pictures/Camoron and leaves this one as it is.
  */
-private fun optimise(context: Context, uri: String) {
+internal fun optimise(context: Context, uri: String) {
     val intent = Intent(Intent.ACTION_SEND)
         .setClassName(context, OPTIMISE_ACTIVITY)
         .setType("image/jpeg")
