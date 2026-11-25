@@ -14,4 +14,12 @@
         <item quantity="one">Optimising your photo. The new copy will appear in Pictures/Camoron.</item>
         <item quantity="other">Optimising %d photos. The new copies will appear in Pictures/Camoron.</item>
     </plurals>
+
+    <!-- The tab bar along the bottom -->
+    <string name="tab_camera">Camera</string>
+    <string name="tab_gallery">Gallery</string>
+    <string name="tab_edit">Edit</string>
+    <string name="tab_ai_tools">AI tools</string>
+    <string name="tab_profile">Profile and settings</string>
+    <string name="tab_bar_show">Show tabs</string>
 </resources>

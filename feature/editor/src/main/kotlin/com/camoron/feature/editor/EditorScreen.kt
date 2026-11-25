@@ -91,9 +91,10 @@ fun EditorScreen(
     uri: String,
     onClose: () -> Unit,
     onSaved: (String) -> Unit,
+    startTab: EditorTab? = null,
     viewModel: EditorViewModel = hiltViewModel(),
 ) {
-    LaunchedEffect(uri) { viewModel.open(uri) }
+    LaunchedEffect(uri) { viewModel.open(uri, startTab) }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var confirmDiscard by remember { mutableStateOf(false) }
